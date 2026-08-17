@@ -1,0 +1,63 @@
+name: Bug report
+description: Report reproducible behavior that violates a documented contract.
+title: "bug: "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Do not include credentials, production data, or vulnerability details. Use private vulnerability reporting for security issues.
+  - type: input
+    id: version
+    attributes:
+      label: Version or commit
+      description: Release, commit SHA, or branch where the issue occurs.
+      placeholder: v0.x.y or commit SHA
+    validations:
+      required: true
+  - type: dropdown
+    id: profile
+    attributes:
+      label: Deployment profile
+      options:
+        - Documentation only
+        - Local stdio
+        - Remote HTTP
+        - Policy laboratory
+        - Other or not known
+    validations:
+      required: true
+  - type: textarea
+    id: behavior
+    attributes:
+      label: Observed behavior
+      description: What happened? Use synthetic and redacted examples.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+      description: Link the contract, invariant, or milestone criterion if possible.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Minimal reproduction
+      description: Provide the smallest safe sequence using synthetic data.
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: OS, runtime, MCP client, Supabase CLI/project type, and relevant versions.
+  - type: checkboxes
+    id: safety
+    attributes:
+      label: Safety check
+      options:
+        - label: I removed credentials, tokens, personal data, and production record content.
+          required: true
+        - label: This is not a privately reportable vulnerability.
+          required: true

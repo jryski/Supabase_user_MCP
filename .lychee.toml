@@ -1,0 +1,13 @@
+cache = true
+max_cache_age = "1d"
+max_concurrency = 8
+retry_wait_time = 2
+timeout = 20
+user_agent = "Supabase_user_MCP documentation link checker"
+
+exclude = [
+  "^https://github.com/jryski/Supabase_user_MCP/actions/workflows/docs.yml/badge.svg$",
+  "^https://github.com/jryski/Supabase_user_MCP/security/advisories/new$",
+]
+
+exclude_path = ["LICENSE"]

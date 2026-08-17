@@ -1,0 +1,20 @@
+{
+  "name": "@supabase-user-mcp/contracts",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Versioned runtime contracts for Supabase User MCP",
+  "license": "Apache-2.0",
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "dependencies": {
+    "zod": "4.4.3"
+  }
+}

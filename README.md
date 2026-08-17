@@ -1,199 +1,167 @@
 # Supabase User MCP
 
-A data-plane MCP server for Supabase that connects **as an identity** — a human or an
-agent — so that Row Level Security actually applies.
+[![Project status: M0 active](https://img.shields.io/badge/status-M0%20active-f59e0b)](docs/ROADMAP.md)
+[![Documentation](https://github.com/jryski/Supabase_user_MCP/actions/workflows/docs.yml/badge.svg)](https://github.com/jryski/Supabase_user_MCP/actions/workflows/docs.yml)
+[![CI](https://github.com/jryski/Supabase_user_MCP/actions/workflows/ci.yml/badge.svg)](https://github.com/jryski/Supabase_user_MCP/actions/workflows/ci.yml)
+[![License: Apache 2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 
-Status: **pre-alpha / scoping.** Nothing here is production-ready yet.
+**Give every human and agent its own database identity boundary.**
 
----
+Supabase User MCP is an independent, security-first data-plane MCP server for
+applications built on Supabase. It is designed to let AI clients work with
+application data as a specific user or agent while PostgreSQL Row Level Security
+(RLS) remains the final authorization authority.
+
+> [!WARNING]
+> This repository is in active M0 development. It contains only a zero-authority
+> protocol probe—not a deployable user-data server—and must not be connected to
+> production data.
 
 ## Why this exists
 
-The official Supabase MCP server is a **control-plane** tool. It is aimed at one
-developer working on their own project: it authenticates with a personal access token or
-the `service_role` key, it exposes schema and administrative operations, and Supabase's
-own documentation is explicit that it is intended for development and testing rather than
-production data.
+Supabase's hosted MCP server is a developer control-plane tool. It manages projects,
+schemas, migrations, functions, and operational resources under a developer's
+authority. Supabase explicitly recommends using that server for development and
+testing rather than exposing it to customers or production data.
 
-That is a reasonable product with a deliberate boundary. This project is not an argument
-that the boundary is wrong. It is an argument that there is a **second, different**
-product on the other side of it.
+Supabase User MCP explores the complementary data-plane problem:
 
-|                   | Official MCP (control plane) | This project (data plane)          |
-| ----------------- | ---------------------------- | ---------------------------------- |
-| Audience          | One developer                | A team, plus a fleet of agents     |
-| Identity          | Project owner / `service_role` | Individual user or agent         |
-| Operations        | Schema, admin, migrations    | Read / write business records       |
-| Environment       | Branch or staging            | Production, unavoidably             |
-| RLS               | Bypassed                     | Enforced                            |
-| Blast radius      | Entire project               | Whatever that one identity can do   |
+| | Supabase hosted MCP | Supabase User MCP |
+| --- | --- | --- |
+| Primary user | Developer | Application user or bounded agent |
+| Plane | Project control plane | Application data plane |
+| Typical actions | Schema, migration, project operations | Domain-specific reads and writes |
+| Authorization | Developer account and project scope | User, client, tenant, capability, and row |
+| Database boundary | Administrative tooling | RLS must remain effective |
+| Intended environment | Development and test | Production only after the security gates pass |
 
-Different audience, different identity model, different threat model.
+The goal is not to make prompt injection impossible. The goal is to ensure that a
+compromised model cannot exceed the authority of the identity and capability it was
+given.
 
-### The problem in one sentence
+## Security thesis
 
-Every agent that connects through a `service_role` credential is a full database
-compromise waiting for one poisoned document.
-
-This is not hypothetical. A publicly disclosed attack in 2025 showed an agent reading
-support tickets through an MCP server, encountering a ticket whose body was written as
-instructions to the model rather than as a complaint, and — running with credentials that
-bypass RLS — querying a sensitive table and writing the results back where the attacker
-could read them. The row was data to the human and a command to the model.
-
-### Why this gets worse, not better
-
-The interesting scale is not three humans. It is agents, which multiply in a way that
-people do not. A new workflow means a new agent, and today every one of them is handed the
-same master key. A three-person team with a shared credential is an access-control
-annoyance. Two dozen agents with a shared credential is a fleet-wide containment failure.
-
-There is currently no answer for that. This is an attempt at one.
-
-### One mechanism, two problems
-
-Per-identity connections solve multi-user access and prompt-injection containment with the
-same lever. If an agent connects as itself, an injected instruction can only ever do what
-that agent was already permitted to do. Least privilege partitions the team **and** caps
-the damage. There is no need to choose.
-
----
-
-## How Supabase identity actually works
-
-Worth stating plainly, because conflating two separate systems is where most of the
-confusion in this space lives.
-
-1. **Postgres roles** are real database users created with `CREATE ROLE`.
-2. **Supabase Auth users** are rows in a table. They are *not* Postgres roles.
-
-When a user signs in, Supabase Auth issues a signed JWT containing their user ID. That
-token is presented to PostgREST, which connects to Postgres as one of two *shared* roles:
-`anon` or `authenticated`. A thousand users all arrive as the same database role.
-
-Individual identity is therefore **not** the database role. It is carried inside the
-request as JWT claims, readable mid-query via `auth.uid()` and `auth.jwt()`.
-
-This is the crux: **RLS policies do not ask which database user you are. They ask what is
-in the token.** The official MCP server connects with a raw admin credential and never
-establishes that token context at all — which is precisely why RLS has nothing to act on.
-
-A related gotcha, and the source of endless confusion in both directions: RLS is enforced
-based on the `Authorization` header, not the `apikey` header. A user token in
-`Authorization` will override `service_role` supplied as the API key.
-
----
-
-## Design
-
-A deliberately thin server. It holds no privileged credential of its own.
-
-```
-Agent / Claude Desktop
-        │
-        │  identity token (per agent, per user)
-        ▼
-  Supabase User MCP  ──── passes token as Authorization header ────▶ PostgREST
-        │                                                              │
-        │  no service_role. no DDL. no admin surface.                  ▼
-        └──────────────────────────────────────────────────────▶  Postgres + RLS
+```text
+MCP client
+    │ authenticated request
+    ▼
+Supabase User MCP
+    ├── validates identity and request context
+    ├── exposes a small, allowlisted tool surface
+    ├── enforces limits, approval states, and audit metadata
+    ▼
+Supabase Data API / PostgREST
+    ▼
+PostgreSQL + RLS
+    ├── caller and OAuth-client policy
+    ├── tenant and capability policy
+    └── row and operation policy
 ```
 
-Design commitments:
+The project follows six non-negotiable principles:
 
-- **No ambient authority.** The server never holds a credential more powerful than the
-  caller's.
-- **Pass-through, not translate.** The identity token goes to PostgREST as-is so
-  `auth.uid()` resolves correctly.
-- **Data plane only.** No schema changes, no migrations, no project administration. If a
-  tool could alter the shape of the database, it does not belong here.
-- **Agents are first-class identities**, not humans sharing a login. An agent gets its own
-  identity, its own policies, and its own audit trail.
-- **Untrusted content stays untrusted.** Retrieved rows are data. Nothing read from the
-  database is ever treated as an instruction.
-- **Writes are gated separately from reads.** Read broadly, write narrowly, and require a
-  human for anything canonical or irreversible.
+1. **No master key in the MCP request path.** A public tool handler must never use a
+   `service_role` or secret key to perform user actions.
+2. **The database makes the final decision.** Application checks improve usability;
+   RLS and database constraints enforce authorization.
+3. **Tools are capabilities, not a generic REST console.** The initial server will not
+   expose arbitrary SQL, tables, schemas, RPC names, URLs, or HTTP methods.
+4. **Reads and writes are different authorities.** Canonical or irreversible changes
+   use a database-enforced proposal and approval workflow.
+5. **Untrusted content stays data.** Tool results are bounded and marked as untrusted;
+   prompt injection is tested as a containment problem.
+6. **Claims require evidence.** A milestone is complete only when its positive,
+   negative, cross-identity, and adversarial tests pass.
 
-### Build vs. fork
+## Planned product surface
 
-The upstream server is Apache 2.0, so forking is permitted and requires no one's
-blessing. But the useful surface here barely overlaps with an admin tool, so a clean
-implementation is likely simpler than a fork stripped down to nothing. Supabase has also
-published guidance for MCP servers that act on behalf of authenticated users and validate
-Auth-issued tokens like any other OAuth client — meaning the pattern this project needs is
-already a sanctioned one. It is simply meant for MCP servers you write yourself.
+The first useful release is deliberately narrow:
 
----
+- `memory_search` — bounded full-text or semantic search over authorized records
+- `memory_get` — retrieve one authorized memory record by opaque identifier
+- `memory_list_recent` — list authorized recent records with a hard page limit
+- `memory_append_observation` — append non-canonical information idempotently
+- `memory_propose_change` — stage a canonical mutation for human review
+- `memory_get_proposal` — inspect approval status without applying the change
 
-## Scope
+The names describe the reference sovereign-memory implementation. Adapters may later
+map the same capability model to other Supabase application schemas. See the complete
+[feature catalog](docs/FEATURES.md).
 
-### In scope
+## Current phase
 
-- Per-identity connection using Supabase Auth tokens
-- Token pass-through such that RLS is enforced on every query
-- Read tools (select, filter, semantic search over embedding columns)
-- Write tools, separately permissioned from reads
-- Distinct agent identities with per-agent policy
-- Audit trail: which identity did what, when
-- A policy authoring and verification workflow
+The project is in **M0: protocol and policy foundation**. Before server code is
+treated as viable, M0 must resolve two identity questions:
 
-### Out of scope
+- How a remote HTTP MCP server obtains a downstream Supabase token without violating
+  MCP audience-binding and token-transit requirements.
+- How durable non-human principals are provisioned and revoked, given that Supabase's
+  OAuth server currently documents authorization-code and refresh-token grants rather
+  than a `client_credentials` grant.
 
-- DDL, migrations, schema inspection beyond what a caller may already read
-- Project or organization administration
-- Anything requiring `service_role`
-- Replacing the official MCP server. This complements it; they serve different planes.
+These are architecture gates, not implementation details. The local stdio proof and the
+remote HTTP service are tracked as separate deployment profiles until the remote identity
+chain is demonstrated end to end.
 
-### Non-negotiable
+The executable M0 spike now proves a strict TypeScript workspace, MCP `2026-07-28`
+stdio negotiation, structured input/output validation, and a deliberately non-authoritative
+tool. It has no Supabase client, credentials, network access, or data operations. See the
+[compatibility evidence](docs/evidence/M0_COMPATIBILITY_SPIKE.md).
 
-Policies are written and verified **before** any identity is issued. Minting identities
-that have no defined permissions is how you end up with three accounts that all
-accidentally behave like admin.
+## Try the M0 compatibility probe
 
----
+Prerequisites: Node.js `22.20.0` and npm `11.19.0`.
+
+```shell
+npm ci
+npm run check
+npm run build
+npm start
+```
+
+`npm start` launches a JSON-RPC stdio server for an MCP `2026-07-28` client; it is not an
+interactive terminal application. The only exposed tool is `system_compatibility_probe`,
+which performs no network or data operation. Exact versions and verification commands are
+documented in the [development guide](docs/DEVELOPMENT.md).
 
 ## Roadmap
 
-**M0 — Policy model.** Define the identity taxonomy (human roles, agent classes) and write
-RLS policies against it. Verify with the policy tester before a single line of server code.
+| Milestone | Outcome | Release gate |
+| --- | --- | --- |
+| M0 | Protocol, identity, policy, and threat-model decisions | Architecture review is complete |
+| M1 | Local policy laboratory with representative principals and records | Access matrix passes |
+| M2 | Read-only stdio reference server | RLS isolation is proven end to end |
+| M3 | Idempotent writes and canonical approval workflow | Direct canonical mutation is impossible |
+| M4 | Standards-compliant remote HTTP and OAuth profile | Audience and downstream-token chain pass review |
+| M5 | Fleet operations, observability, and adversarial hardening | Revocation and containment drills pass |
+| M6 | Stable v1 contract | Independent security review and release checklist pass |
 
-**M1 — Minimum viable pass-through.** One read tool, one identity, token forwarded
-correctly, RLS demonstrably enforced. Prove the mechanism.
+Each milestone has deliverables, dependencies, exclusions, and measurable exit criteria
+in the [development roadmap](docs/ROADMAP.md).
 
-**M2 — Write path.** Separately permissioned writes, with human-review gating on canonical
-tables.
+## Documentation
 
-**M3 — Fleet.** Multiple concurrent agent identities, per-agent policy, audit trail.
-
-**M4 — Injection test suite.** Adversarial content planted in ingested records, with a
-proof that containment holds per identity.
-
----
-
-## Reference deployment
-
-Developed against a live Postgres 17 project with fourteen tables covering supplier
-records, procurement history, document indexes, and an embedding-backed knowledge store
-that ingests from email and documents.
-
-Two properties of that deployment motivate the whole design. First, RLS is enabled on
-every table and there are currently **zero policies** — which means access today is
-strictly binary: everything via `service_role`, or nothing. Second, the knowledge store
-ingests from untrusted upstream sources, so injected instructions are a live risk rather
-than a theoretical one.
-
-That schema already carries the right instincts in places — a cross-model message table
-declares its contents untrusted data and flags rows requiring human decision. Those
-instincts are currently documented in comments. The point of this project is to make the
-database enforce them.
-
----
+- [Product definition](docs/PRODUCT.md) — users, jobs, boundaries, and success measures
+- [Architecture](docs/ARCHITECTURE.md) — components, trust boundaries, and deployment profiles
+- [Feature catalog](docs/FEATURES.md) — proposed tools and platform capabilities
+- [Security model](docs/SECURITY_MODEL.md) — identities, capabilities, RLS, and approvals
+- [Threat model](docs/THREAT_MODEL.md) — assets, attackers, abuse cases, and mitigations
+- [Roadmap](docs/ROADMAP.md) — implementation sequence and release gates
+- [Development guide](docs/DEVELOPMENT.md) — pinned stack, layout, and engineering standards
+- [M0 compatibility evidence](docs/evidence/M0_COMPATIBILITY_SPIKE.md) — pinned versions and protocol proof
+- [Architecture decisions](docs/decisions/README.md) — consequential decisions and open gates
 
 ## Contributing
 
-Early. The most valuable contributions right now are adversarial: reasons the pass-through
-model is unsound, cases where RLS is insufficient, or prior art that makes this redundant.
+The highest-value contributions today are adversarial reviews, prior art, policy-test
+cases, and small documentation corrections. Please read [CONTRIBUTING.md](CONTRIBUTING.md)
+and [GOVERNANCE.md](GOVERNANCE.md) before opening a pull request. Security reports belong
+in the private process described in [SECURITY.md](SECURITY.md), not in a public issue.
 
-## License
+## Project status and independence
 
-Apache 2.0, matching upstream.
+Supabase User MCP is an independent open-source project. It is not an official Supabase
+product and is not endorsed by Supabase, Inc. “Supabase” is used to identify compatibility
+with the Supabase platform.
+
+Licensed under the [Apache License 2.0](LICENSE).
