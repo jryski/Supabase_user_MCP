@@ -1,0 +1,58 @@
+name: Feature proposal
+description: Propose a bounded capability or developer improvement.
+title: "proposal: "
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: User and problem
+      description: Who needs this, and what outcome is currently difficult or impossible?
+    validations:
+      required: true
+  - type: textarea
+    id: capability
+    attributes:
+      label: Smallest useful capability
+      description: Describe the minimum contract, not an implementation wishlist.
+    validations:
+      required: true
+  - type: dropdown
+    id: authority
+    attributes:
+      label: Authority class
+      options:
+        - No data authority
+        - Read
+        - Append-only write
+        - Staged or canonical write
+        - Approval
+        - Principal or policy administration
+        - Not known
+    validations:
+      required: true
+  - type: textarea
+    id: boundaries
+    attributes:
+      label: Trust boundaries and failure modes
+      description: Which identities, credentials, tenants, data, or external systems are involved?
+    validations:
+      required: true
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance criteria
+      description: Include observable success, denial, size, time, and rollback behavior.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: What smaller or safer approaches were considered?
+  - type: checkboxes
+    id: scope
+    attributes:
+      label: Scope check
+      options:
+        - label: This does not require arbitrary SQL, caller-selected URLs, or project administration.
+          required: true

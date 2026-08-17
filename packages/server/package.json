@@ -1,0 +1,24 @@
+{
+  "name": "@supabase-user-mcp/server",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Reference Supabase User MCP server",
+  "license": "Apache-2.0",
+  "type": "module",
+  "bin": {
+    "supabase-user-mcp": "./dist/cli.js"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "dependencies": {
+    "@modelcontextprotocol/server": "2.0.0",
+    "@supabase-user-mcp/contracts": "0.0.0"
+  }
+}

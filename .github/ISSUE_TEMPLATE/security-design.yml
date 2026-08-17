@@ -1,0 +1,41 @@
+name: Security design review
+description: Challenge a proposed invariant, trust boundary, policy, or abuse case publicly without exploit secrets.
+title: "security design: "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Use this form for design discussion only. Report exploitable vulnerabilities through GitHub Private Vulnerability Reporting.
+  - type: textarea
+    id: claim
+    attributes:
+      label: Claim or invariant under review
+      description: Link the relevant document, ADR, feature, or line.
+    validations:
+      required: true
+  - type: textarea
+    id: counterexample
+    attributes:
+      label: Safe counterexample or concern
+      description: Use synthetic examples and omit weaponizable details.
+    validations:
+      required: true
+  - type: textarea
+    id: impact
+    attributes:
+      label: Potential impact
+      description: Which principal, tenant, data, or operation could be affected?
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Evidence and primary sources
+      description: Link normative specifications, official docs, or a safe reproduction.
+  - type: checkboxes
+    id: disclosure
+    attributes:
+      label: Disclosure check
+      options:
+        - label: This issue does not contain a live exploit, credential, or private vulnerability detail.
+          required: true

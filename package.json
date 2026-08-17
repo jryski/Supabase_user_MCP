@@ -1,0 +1,37 @@
+{
+  "name": "supabase-user-mcp-workspace",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Security-first, user-scoped Supabase data-plane MCP reference implementation",
+  "license": "Apache-2.0",
+  "type": "module",
+  "packageManager": "npm@11.19.0",
+  "engines": {
+    "node": ">=22.20.0 <23",
+    "npm": ">=11.19.0 <12"
+  },
+  "workspaces": [
+    "packages/*"
+  ],
+  "scripts": {
+    "build": "tsc -b",
+    "check": "npm run format:check && npm run lint && npm run typecheck && npm run test",
+    "clean": "tsc -b --clean",
+    "dev": "tsx packages/server/src/cli.ts",
+    "format": "biome format --write .",
+    "format:check": "biome format .",
+    "lint": "biome lint .",
+    "start": "node packages/server/dist/cli.js",
+    "test": "npm run build && vitest run",
+    "test:compatibility": "npm run build && vitest run test/compatibility",
+    "typecheck": "tsc -b --pretty false && tsc -p tsconfig.test.json --noEmit --pretty false"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "2.5.8",
+    "@modelcontextprotocol/client": "2.0.0",
+    "@types/node": "22.20.1",
+    "tsx": "4.23.12",
+    "typescript": "7.0.2",
+    "vitest": "4.1.10"
+  }
+}
