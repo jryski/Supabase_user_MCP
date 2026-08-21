@@ -233,6 +233,37 @@ describe('shared read-tool safety contract', () => {
     ).toThrow(`Wire response must not exceed ${MAX_RESPONSE_BYTES} UTF-8 bytes.`);
   });
 
+  it('serializes the complete JSON-RPC and MCP result envelope at the public seam', () => {
+    const requestId = 'req_雪_"quoted"\\slash\nline';
+    const successOutput = {
+      ok: true,
+      record: { id: memoryId, title: 'Escaped "title"', content: 'line one\nline two' },
+    };
+    const successEnvelope = JSON.parse(serializeReadToolWireResponse(requestId, successOutput));
+
+    expect(successEnvelope.id).toBe(requestId);
+    expect(successEnvelope.jsonrpc).toBe('2.0');
+    expect(successEnvelope.result.content).toEqual([
+      { type: 'text', text: JSON.stringify(successOutput) },
+    ]);
+    expect(JSON.parse(successEnvelope.result.content[0].text)).toEqual(successOutput);
+    expect(successEnvelope.result.isError).toBe(false);
+
+    const errorOutput = {
+      ok: false,
+      error: { code: 'INTERNAL_ERROR', message: 'Synthetic failure' },
+    };
+    const errorEnvelope = JSON.parse(serializeReadToolWireResponse(requestId, errorOutput));
+
+    expect(errorEnvelope.id).toBe(requestId);
+    expect(errorEnvelope.jsonrpc).toBe('2.0');
+    expect(errorEnvelope.result.content).toEqual([
+      { type: 'text', text: JSON.stringify(errorOutput) },
+    ]);
+    expect(JSON.parse(errorEnvelope.result.content[0].text)).toEqual(errorOutput);
+    expect(errorEnvelope.result.isError).toBe(true);
+  });
+
   it('uses the same non-enumerating error for missing and unauthorized exact records', () => {
     const missingPublicResult = publicMemoryGetUnavailable('missing');
     const unauthorizedPublicResult = publicMemoryGetUnavailable('unauthorized');
