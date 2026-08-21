@@ -38,21 +38,35 @@ origins, schemas, relations, RPCs, URLs, raw SQL, and PostgREST operators. Memor
 an opaque `mem_` token and pagination cursors use an opaque `cur_` token; callers must not
 construct or decode either token.
 
-All three tools have a 65,536-byte serialized response ceiling and a 2,000 ms execution
-ceiling. `memory_search` accepts at most 512 query characters, five allowlisted filters
-(tag and creation-time filters combined), and 20 rows. `memory_list_recent` accepts at most
-five allowlisted tag filters and 25 rows. `memory_get` accepts exactly one opaque ID and
-returns at most one row. Limits are inclusive; values one above a ceiling are invalid.
-Search and recent-list results omit total counts. Recent-list ordering is fixed to
-creation time descending with opaque ID descending as the tie-breaker; callers cannot
-select sort fields or direction.
+All three tools have a 65,536-byte wire-response ceiling and a 2,000 ms execution
+ceiling. The byte unit is the UTF-8 encoding of the complete serialized JSON-RPC response,
+including the request ID, MCP result/content envelope, JSON escaping, and structured tool
+output. Output schemas reserve the minimum envelope; `serializeReadToolWireResponse` is the
+executable final-boundary check because the request ID also consumes the budget.
+`memory_search` accepts at most 512 query characters, five allowlisted filters (tag and
+creation-time filters combined), and 20 rows. When both creation bounds are present,
+`createdAfter` must be earlier than or equal to `createdBefore`. `memory_list_recent` accepts
+at most five allowlisted tag filters and 25 rows. `memory_get` accepts exactly one opaque ID
+and returns at most one row. Limits are inclusive; values one above a ceiling are invalid.
+Search and recent-list results omit total counts. Recent-list ordering is fixed to creation
+time descending with opaque ID descending as the tie-breaker; callers cannot select sort
+fields or direction.
+
+Each descriptor declares one attempt with no automatic retry, idempotent and parallel-safe
+read behavior, no approval requirement, and `read_access` audit classification. Validation,
+unavailable records, response overflow, timeout, and unexpected failures map respectively
+to `INVALID_REQUEST`, `RESOURCE_UNAVAILABLE`, `RESPONSE_LIMIT_EXCEEDED`,
+`DEADLINE_EXCEEDED`, and `INTERNAL_ERROR`; reaching 2,000 ms is the timeout condition. These
+are contract declarations only: this milestone adds no database access, network access, or
+server handler.
 
 The only serialized record fields are `id`, `title`, `content`, `contentTrust`, `createdAt`,
 and `provenanceSummary`; search results additionally include `rank`. Stored `content` is
 always labeled `contentTrust: "untrusted"`. Each output is either `{ ok: true, ... }` or a
 closed `{ ok: false, error: { code, message, retryable } }` result. Exact-record misses and
-authorization denials both return the identical `RESOURCE_UNAVAILABLE` / `Record is
-unavailable.` public error and never include the requested ID or diagnostic details.
+authorization denials both pass their distinct internal reasons through
+`publicMemoryGetUnavailable`, which returns the byte-identical `RESOURCE_UNAVAILABLE` /
+`Record is unavailable.` public error without the requested ID or diagnostic details.
 
 ## Reference memory tools
 

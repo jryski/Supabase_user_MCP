@@ -26,6 +26,13 @@ const SearchFiltersSchema = z
         Number(filters.createdBefore !== undefined) <=
       MAX_FILTERS,
     `At most ${MAX_FILTERS} filters are allowed.`,
+  )
+  .refine(
+    (filters) =>
+      filters.createdAfter === undefined ||
+      filters.createdBefore === undefined ||
+      Date.parse(filters.createdAfter) <= Date.parse(filters.createdBefore),
+    '`createdAfter` must not be after `createdBefore`.',
   );
 
 export const MemorySearchInputSchema = z
@@ -46,14 +53,20 @@ const OpaqueMemoryIdSchema = z
   .max(132)
   .regex(/^mem_[A-Za-z0-9_-]+$/, 'Expected an opaque memory identifier.');
 
+const MemoryRecordFields = {
+  id: OpaqueMemoryIdSchema,
+  title: z.string().max(256),
+  content: z.string().max(8192),
+  contentTrust: z.literal('untrusted'),
+  createdAt: z.iso.datetime({ offset: true }),
+  provenanceSummary: z.string().max(512),
+};
+
+const MemoryRecordSchema = z.object(MemoryRecordFields).strict();
+
 const SearchResultSchema = z
   .object({
-    id: OpaqueMemoryIdSchema,
-    title: z.string().max(256),
-    content: z.string().max(8192),
-    contentTrust: z.literal('untrusted'),
-    createdAt: z.iso.datetime({ offset: true }),
-    provenanceSummary: z.string().max(512),
+    ...MemoryRecordFields,
     rank: z.number().min(0).max(1),
   })
   .strict();
@@ -96,6 +109,24 @@ const ReadToolErrorSchema = z.discriminatedUnion('code', [
     .strict(),
 ]);
 
+const PUBLIC_MEMORY_GET_UNAVAILABLE = Object.freeze({
+  ok: false as const,
+  error: Object.freeze({
+    code: 'RESOURCE_UNAVAILABLE' as const,
+    message: 'Record is unavailable.' as const,
+    retryable: false as const,
+  }),
+});
+
+export type MemoryGetUnavailableReason = 'missing' | 'unauthorized';
+
+export function publicMemoryGetUnavailable(
+  reason: MemoryGetUnavailableReason,
+): typeof PUBLIC_MEMORY_GET_UNAVAILABLE {
+  void reason;
+  return PUBLIC_MEMORY_GET_UNAVAILABLE;
+}
+
 const ReadToolErrorOutputSchema = z
   .object({
     ok: z.literal(false),
@@ -103,8 +134,43 @@ const ReadToolErrorOutputSchema = z
   })
   .strict();
 
-function withinResponseByteLimit(value: unknown): boolean {
-  return new TextEncoder().encode(JSON.stringify(value)).byteLength <= MAX_RESPONSE_BYTES;
+export type ReadToolRequestId = string | number | null;
+
+function readToolWireResponse(requestId: ReadToolRequestId, output: unknown) {
+  const isError =
+    typeof output === 'object' && output !== null && 'ok' in output && output.ok === false;
+
+  return {
+    jsonrpc: '2.0' as const,
+    id: requestId,
+    result: {
+      content: [{ type: 'text' as const, text: JSON.stringify(output) }],
+      isError,
+    },
+  };
+}
+
+export function readToolWireResponseByteLength(
+  requestId: ReadToolRequestId,
+  output: unknown,
+): number {
+  return new TextEncoder().encode(JSON.stringify(readToolWireResponse(requestId, output)))
+    .byteLength;
+}
+
+export function serializeReadToolWireResponse(
+  requestId: ReadToolRequestId,
+  output: unknown,
+): string {
+  const serialized = JSON.stringify(readToolWireResponse(requestId, output));
+  if (new TextEncoder().encode(serialized).byteLength > MAX_RESPONSE_BYTES) {
+    throw new RangeError(`Wire response must not exceed ${MAX_RESPONSE_BYTES} UTF-8 bytes.`);
+  }
+  return serialized;
+}
+
+function withinMinimumWireResponseByteLimit(value: unknown): boolean {
+  return readToolWireResponseByteLength(null, value) <= MAX_RESPONSE_BYTES;
 }
 
 const MemorySearchSuccessSchema = z
@@ -117,22 +183,14 @@ const MemorySearchSuccessSchema = z
 
 export const MemorySearchOutputSchema = z
   .union([MemorySearchSuccessSchema, ReadToolErrorOutputSchema])
-  .refine(withinResponseByteLimit, `Response must not exceed ${MAX_RESPONSE_BYTES} bytes.`);
+  .refine(
+    withinMinimumWireResponseByteLimit,
+    `Wire response must not exceed ${MAX_RESPONSE_BYTES} UTF-8 bytes.`,
+  );
 
 export type MemorySearchOutput = z.infer<typeof MemorySearchOutputSchema>;
 
 export const MemoryGetInputSchema = z.object({ id: OpaqueMemoryIdSchema }).strict();
-
-const MemoryRecordSchema = z
-  .object({
-    id: OpaqueMemoryIdSchema,
-    title: z.string().max(256),
-    content: z.string().max(8192),
-    contentTrust: z.literal('untrusted'),
-    createdAt: z.iso.datetime({ offset: true }),
-    provenanceSummary: z.string().max(512),
-  })
-  .strict();
 
 const MemoryGetSuccessSchema = z
   .object({
@@ -143,7 +201,10 @@ const MemoryGetSuccessSchema = z
 
 export const MemoryGetOutputSchema = z
   .union([MemoryGetSuccessSchema, ReadToolErrorOutputSchema])
-  .refine(withinResponseByteLimit, `Response must not exceed ${MAX_RESPONSE_BYTES} bytes.`);
+  .refine(
+    withinMinimumWireResponseByteLimit,
+    `Wire response must not exceed ${MAX_RESPONSE_BYTES} UTF-8 bytes.`,
+  );
 
 export type MemoryGetInput = z.infer<typeof MemoryGetInputSchema>;
 export type MemoryGetOutput = z.infer<typeof MemoryGetOutputSchema>;
@@ -174,14 +235,33 @@ const MemoryListRecentSuccessSchema = z
 
 export const MemoryListRecentOutputSchema = z
   .union([MemoryListRecentSuccessSchema, ReadToolErrorOutputSchema])
-  .refine(withinResponseByteLimit, `Response must not exceed ${MAX_RESPONSE_BYTES} bytes.`);
+  .refine(
+    withinMinimumWireResponseByteLimit,
+    `Wire response must not exceed ${MAX_RESPONSE_BYTES} UTF-8 bytes.`,
+  );
 
 export type MemoryListRecentInput = z.infer<typeof MemoryListRecentInputSchema>;
 export type MemoryListRecentOutput = z.infer<typeof MemoryListRecentOutputSchema>;
 
 const SHARED_LIMITS = Object.freeze({
   maxResponseBytes: MAX_RESPONSE_BYTES,
+  maxResponseBytesUnit: 'utf8_jsonrpc_mcp_wire_response' as const,
   maxExecutionMs: MAX_TOOL_EXECUTION_MS,
+});
+
+const READ_TOOL_BEHAVIOR = Object.freeze({
+  retry: Object.freeze({ maxAttempts: 1, policy: 'none' as const }),
+  idempotency: 'idempotent' as const,
+  concurrency: 'parallel_safe' as const,
+  approval: 'not_required' as const,
+  audit: 'read_access' as const,
+  errorMapping: Object.freeze({
+    validation: 'INVALID_REQUEST' as const,
+    unavailable: 'RESOURCE_UNAVAILABLE' as const,
+    responseLimit: 'RESPONSE_LIMIT_EXCEEDED' as const,
+    timeout: 'DEADLINE_EXCEEDED' as const,
+    unexpected: 'INTERNAL_ERROR' as const,
+  }),
 });
 
 export const MEMORY_SEARCH_TOOL = Object.freeze({
@@ -190,6 +270,7 @@ export const MEMORY_SEARCH_TOOL = Object.freeze({
   operation: 'authorized_memory_search_v1',
   inputSchema: MemorySearchInputSchema,
   outputSchema: MemorySearchOutputSchema,
+  ...READ_TOOL_BEHAVIOR,
   limits: Object.freeze({
     maxFilters: MAX_FILTERS,
     maxRows: MAX_SEARCH_ROWS,
@@ -203,6 +284,7 @@ export const MEMORY_GET_TOOL = Object.freeze({
   operation: 'authorized_memory_get_v1',
   inputSchema: MemoryGetInputSchema,
   outputSchema: MemoryGetOutputSchema,
+  ...READ_TOOL_BEHAVIOR,
   limits: Object.freeze({ maxFilters: 0, maxRows: 1, ...SHARED_LIMITS }),
 });
 
@@ -213,6 +295,7 @@ export const MEMORY_LIST_RECENT_TOOL = Object.freeze({
   ordering: 'created_at_desc_id_desc',
   inputSchema: MemoryListRecentInputSchema,
   outputSchema: MemoryListRecentOutputSchema,
+  ...READ_TOOL_BEHAVIOR,
   limits: Object.freeze({
     maxFilters: MAX_FILTERS,
     maxRows: MAX_RECENT_ROWS,

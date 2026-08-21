@@ -16,12 +16,27 @@ import {
   MemoryListRecentOutputSchema,
   MemorySearchInputSchema,
   MemorySearchOutputSchema,
+  publicMemoryGetUnavailable,
+  readToolWireResponseByteLength,
+  serializeReadToolWireResponse,
 } from './read-tools.js';
 
 const memoryId = 'mem_AAAAAAAAAAAAAAAAAAAAAA';
 const cursor = 'cur_AAAAAAAAAAAAAAAA';
 
 describe('memory_search contract', () => {
+  it('rejects a creation range whose lower bound is after its upper bound', () => {
+    expect(
+      MemorySearchInputSchema.safeParse({
+        query: 'synthetic memory',
+        filters: {
+          createdAfter: '2026-08-21T00:00:00.000Z',
+          createdBefore: '2026-08-20T00:00:00.000Z',
+        },
+      }).success,
+    ).toBe(false);
+  });
+
   it('accepts only bounded, allowlisted search input', () => {
     expect(
       MemorySearchInputSchema.parse({
@@ -157,37 +172,107 @@ describe('memory_list_recent contract', () => {
 });
 
 describe('shared read-tool safety contract', () => {
-  it('uses the same non-enumerating error for missing and unauthorized exact records', () => {
-    const unavailable = {
-      ok: false,
-      error: {
-        code: 'RESOURCE_UNAVAILABLE',
-        message: 'Record is unavailable.',
-        retryable: false,
-      },
-    } as const;
+  it('accepts exact ID, cursor, and combined-filter ceilings and rejects one over', () => {
+    const maxId = `mem_${'A'.repeat(128)}`;
+    const maxCursor = `cur_${'A'.repeat(1020)}`;
+    const exactFilters = {
+      tags: ['one', 'two', 'three'],
+      createdAfter: '2026-08-19T00:00:00.000Z',
+      createdBefore: '2026-08-20T00:00:00.000Z',
+    };
 
-    const missingPublicResult = MemoryGetOutputSchema.parse(unavailable);
-    const unauthorizedPublicResult = MemoryGetOutputSchema.parse(unavailable);
-
-    expect(missingPublicResult).toEqual(unauthorizedPublicResult);
+    expect(MemoryGetInputSchema.safeParse({ id: maxId }).success).toBe(true);
+    expect(MemoryGetInputSchema.safeParse({ id: `${maxId}A` }).success).toBe(false);
+    expect(MemoryListRecentInputSchema.safeParse({ cursor: maxCursor }).success).toBe(true);
+    expect(MemoryListRecentInputSchema.safeParse({ cursor: `${maxCursor}A` }).success).toBe(false);
+    expect(MemorySearchInputSchema.safeParse({ query: 'x', filters: exactFilters }).success).toBe(
+      true,
+    );
     expect(
-      MemoryGetOutputSchema.safeParse({
-        ok: false,
-        error: { ...unavailable.error, code: 'NOT_FOUND', recordId: memoryId },
+      MemorySearchInputSchema.safeParse({
+        query: 'x',
+        filters: { ...exactFilters, tags: [...exactFilters.tags, 'four'] },
       }).success,
     ).toBe(false);
   });
 
-  it('publishes fixed operations and conservative filter, row, byte, and time ceilings', () => {
+  it('budgets the complete UTF-8 JSON-RPC and MCP wire response at the byte boundary', () => {
+    const item = {
+      id: memoryId,
+      title: 'Synthetic title',
+      content: '',
+      contentTrust: 'untrusted',
+      createdAt: '2026-08-20T00:00:00.000Z',
+      provenanceSummary: 'synthetic fixture',
+      rank: 1,
+    } as const;
+    const items = Array.from({ length: 8 }, () => ({ ...item, content: 'x'.repeat(8192) }));
+    const requestId = 'req_boundary';
+    const oversizedBytes = readToolWireResponseByteLength(requestId, { ok: true, items });
+    const bytesToRemove = oversizedBytes - MAX_RESPONSE_BYTES;
+    const lastContentBytes = 8192 - bytesToRemove;
+    const lastItem = items.at(-1);
+    if (lastItem === undefined) {
+      throw new Error('Boundary fixture must contain an item.');
+    }
+    lastItem.content = `${'é'.repeat(Math.floor(lastContentBytes / 2))}${
+      lastContentBytes % 2 === 0 ? '' : 'x'
+    }`;
+
+    const exactOutput = { ok: true as const, items };
+    expect(MemorySearchOutputSchema.safeParse(exactOutput).success).toBe(true);
+    const exact = serializeReadToolWireResponse(requestId, exactOutput);
+    expect(new TextEncoder().encode(exact).byteLength).toBe(MAX_RESPONSE_BYTES);
+    expect(() =>
+      serializeReadToolWireResponse(requestId, {
+        ok: true,
+        items: items.map((entry, index) =>
+          index === items.length - 1 ? { ...entry, content: `${entry.content}x` } : entry,
+        ),
+      }),
+    ).toThrow(`Wire response must not exceed ${MAX_RESPONSE_BYTES} UTF-8 bytes.`);
+  });
+
+  it('uses the same non-enumerating error for missing and unauthorized exact records', () => {
+    const missingPublicResult = publicMemoryGetUnavailable('missing');
+    const unauthorizedPublicResult = publicMemoryGetUnavailable('unauthorized');
+
+    expect(missingPublicResult).toEqual(unauthorizedPublicResult);
+    expect(JSON.stringify(missingPublicResult)).toBe(JSON.stringify(unauthorizedPublicResult));
+    expect(
+      MemoryGetOutputSchema.safeParse({
+        ok: false,
+        error: { ...missingPublicResult.error, code: 'NOT_FOUND', recordId: memoryId },
+      }).success,
+    ).toBe(false);
+  });
+
+  it('publishes frozen execution, approval, audit, and error behavior', () => {
+    const sharedBehavior = {
+      retry: { maxAttempts: 1, policy: 'none' },
+      idempotency: 'idempotent',
+      concurrency: 'parallel_safe',
+      approval: 'not_required',
+      audit: 'read_access',
+      errorMapping: {
+        validation: 'INVALID_REQUEST',
+        unavailable: 'RESOURCE_UNAVAILABLE',
+        responseLimit: 'RESPONSE_LIMIT_EXCEEDED',
+        timeout: 'DEADLINE_EXCEEDED',
+        unexpected: 'INTERNAL_ERROR',
+      },
+    } as const;
+
     expect(MEMORY_SEARCH_TOOL).toMatchObject({
       name: 'memory_search',
       capability: 'memory:search',
       operation: 'authorized_memory_search_v1',
+      ...sharedBehavior,
       limits: {
         maxFilters: MAX_FILTERS,
         maxRows: MAX_SEARCH_ROWS,
         maxResponseBytes: MAX_RESPONSE_BYTES,
+        maxResponseBytesUnit: 'utf8_jsonrpc_mcp_wire_response',
         maxExecutionMs: MAX_TOOL_EXECUTION_MS,
       },
     });
@@ -195,13 +280,21 @@ describe('shared read-tool safety contract', () => {
       name: 'memory_get',
       capability: 'memory:read',
       operation: 'authorized_memory_get_v1',
+      ...sharedBehavior,
     });
     expect(MEMORY_LIST_RECENT_TOOL).toMatchObject({
       name: 'memory_list_recent',
       capability: 'memory:read',
       operation: 'authorized_memory_list_recent_v1',
       ordering: 'created_at_desc_id_desc',
+      ...sharedBehavior,
     });
+    for (const descriptor of [MEMORY_SEARCH_TOOL, MEMORY_GET_TOOL, MEMORY_LIST_RECENT_TOOL]) {
+      expect(Object.isFrozen(descriptor)).toBe(true);
+      expect(Object.isFrozen(descriptor.limits)).toBe(true);
+      expect(Object.isFrozen(descriptor.retry)).toBe(true);
+      expect(Object.isFrozen(descriptor.errorMapping)).toBe(true);
+    }
 
     const largeItem = {
       id: memoryId,
