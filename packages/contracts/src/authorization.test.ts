@@ -191,21 +191,60 @@ describe('authorization vocabulary', () => {
     expect(AuthorizationAccessRowSchema.parse(row)).toEqual(row);
   });
 
-  it('enforces denial-reason coherence with deterministic boundary precedence', () => {
-    const identityAndClientDenied = {
-      ...VALID_ROW,
-      principal: { ...VALID_ROW.principal, identityEligibility: 'denied' },
-      client: { ...VALID_ROW.client, state: 'revoked' },
-      expectedResult: { decision: 'deny', denialReason: 'identity_denied' },
-    } as const;
-    expect(AuthorizationAccessRowSchema.safeParse(identityAndClientDenied).success).toBe(true);
-    expect(
-      AuthorizationAccessRowSchema.safeParse({
-        ...identityAndClientDenied,
-        expectedResult: { decision: 'deny', denialReason: 'client_denied' },
-      }).success,
-    ).toBe(false);
+  const denialPrecedenceCases = [
+    ['identity', 'client', 'identity_denied', 'client_denied'],
+    ['identity', 'membership', 'identity_denied', 'membership_denied'],
+    ['identity', 'capability', 'identity_denied', 'capability_denied'],
+    ['identity', 'record', 'identity_denied', 'record_unavailable'],
+    ['client', 'membership', 'client_denied', 'membership_denied'],
+    ['client', 'capability', 'client_denied', 'capability_denied'],
+    ['client', 'record', 'client_denied', 'record_unavailable'],
+    ['membership', 'capability', 'membership_denied', 'capability_denied'],
+    ['membership', 'record', 'membership_denied', 'record_unavailable'],
+    ['capability', 'record', 'capability_denied', 'record_unavailable'],
+  ] as const;
 
+  function rowDeniedAt(
+    boundaries: ReadonlySet<(typeof denialPrecedenceCases)[number][0 | 1]>,
+    denialReason: (typeof DENIAL_REASON_CLASSES)[number],
+  ) {
+    return {
+      ...VALID_ROW,
+      principal: {
+        ...VALID_ROW.principal,
+        identityEligibility: boundaries.has('identity')
+          ? ('denied' as const)
+          : ('verified' as const),
+      },
+      client: {
+        ...VALID_ROW.client,
+        state: boundaries.has('client') ? ('revoked' as const) : ('active' as const),
+      },
+      workspace: {
+        ...VALID_ROW.workspace,
+        membershipState: boundaries.has('membership') ? ('revoked' as const) : ('active' as const),
+      },
+      grantState: boundaries.has('capability') ? ('revoked' as const) : ('active' as const),
+      recordState: boundaries.has('record') ? ('absent' as const) : ('present' as const),
+      expectedResult: { decision: 'deny' as const, denialReason },
+    };
+  }
+
+  it.each(denialPrecedenceCases)(
+    'gives %s denial precedence over %s denial',
+    (higherBoundary, lowerBoundary, higherReason, lowerReason) => {
+      const deniedBoundaries = new Set([higherBoundary, lowerBoundary]);
+
+      expect(
+        AuthorizationAccessRowSchema.safeParse(rowDeniedAt(deniedBoundaries, higherReason)).success,
+      ).toBe(true);
+      expect(
+        AuthorizationAccessRowSchema.safeParse(rowDeniedAt(deniedBoundaries, lowerReason)).success,
+      ).toBe(false);
+    },
+  );
+
+  it('rejects a denial reason when every authorization boundary is eligible', () => {
     expect(
       AuthorizationAccessRowSchema.safeParse({
         ...VALID_ROW,
