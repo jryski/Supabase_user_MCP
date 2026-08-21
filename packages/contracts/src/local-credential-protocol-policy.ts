@@ -153,7 +153,13 @@ const localCredentialObservationSchema = z
   .strict();
 
 export function assertLocalCredentialPolicy(observation: unknown): void {
-  const result = localCredentialObservationSchema.safeParse(observation);
+  const result = (() => {
+    try {
+      return localCredentialObservationSchema.safeParse(observation);
+    } catch {
+      throw new InvalidLocalCredentialObservationError();
+    }
+  })();
   if (!result.success) {
     throw new InvalidLocalCredentialObservationError();
   }

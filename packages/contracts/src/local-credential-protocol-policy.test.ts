@@ -7,6 +7,7 @@ import {
   CredentialRevokedError,
   CredentialSourceAbsentError,
   CredentialSourceUnreadableError,
+  InvalidLocalCredentialObservationError,
   LOCAL_CREDENTIAL_POLICY,
   MCP_PROTOCOL_POLICY,
   UnsupportedMcpProtocolVersionError,
@@ -139,6 +140,55 @@ describe('local credential policy', () => {
       expect(String(caught)).not.toContain(String(tokenState));
     },
   );
+
+  it('normalizes an exception from a credential observation getter without leaking its secret', () => {
+    const secret = 'SECRET getter';
+    const observation = {
+      ...validObservation,
+      get tokenState(): never {
+        throw new Error(secret);
+      },
+    };
+
+    let caught: unknown;
+    try {
+      assertUnknownObservation(observation);
+    } catch (error) {
+      caught = error;
+    }
+
+    expect(caught).toBeInstanceOf(InvalidLocalCredentialObservationError);
+    expect(caught).toMatchObject({
+      code: 'credential_observation_invalid',
+      message: 'Local credential observation is invalid.',
+    });
+    expect(caught).not.toHaveProperty('cause');
+    expect(String(caught)).not.toContain(secret);
+  });
+
+  it('normalizes an exception from a credential observation proxy without leaking its secret', () => {
+    const secret = 'SECRET proxy';
+    const observation = new Proxy(validObservation, {
+      ownKeys(): never {
+        throw new Error(secret);
+      },
+    });
+
+    let caught: unknown;
+    try {
+      assertUnknownObservation(observation);
+    } catch (error) {
+      caught = error;
+    }
+
+    expect(caught).toBeInstanceOf(InvalidLocalCredentialObservationError);
+    expect(caught).toMatchObject({
+      code: 'credential_observation_invalid',
+      message: 'Local credential observation is invalid.',
+    });
+    expect(caught).not.toHaveProperty('cause');
+    expect(String(caught)).not.toContain(secret);
+  });
 
   it.each(['exists', 'ownerOnly', 'ownedByCurrentUser', 'readable'] as const)(
     'rejects a non-boolean %s safety field',
