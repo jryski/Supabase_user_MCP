@@ -90,8 +90,10 @@ map the same capability model to other Supabase application schemas. See the com
 
 ## Current phase
 
-The project is in **M0: protocol and policy foundation**. Before server code is
-treated as viable, M0 must resolve two identity questions:
+The project is in **M0: protocol and policy foundation**. Active contributor work is
+organized under [epic #19](https://github.com/jryski/Supabase_user_MCP/issues/19)
+and the [v0.1 read-only implementation plan](docs/IMPLEMENTATION_PLAN.md).
+Before server code is treated as viable, M0 must resolve two identity questions:
 
 - How a remote HTTP MCP server obtains a downstream Supabase token without violating
   MCP audience-binding and token-transit requirements.
