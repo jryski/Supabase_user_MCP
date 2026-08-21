@@ -9,6 +9,7 @@ be rediscovered or silently reversed.
 | --- | --- | --- |
 | [0001](0001-reference-implementation-language.md) | Reference implementation language | Accepted |
 | [0002](0002-remote-identity-chain.md) | Remote identity and downstream token chain | Proposed / blocking |
+| [0003](0003-local-credential-and-protocol-policy.md) | Local credential and protocol policy | Accepted |
 
 ## Process
 
