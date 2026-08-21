@@ -30,6 +30,30 @@ Every public tool must define:
 - errors that do not reveal forbidden resource existence; and
 - positive, denied, cross-identity, and malformed-input tests.
 
+### Read-tool contract v1
+
+The executable schemas in `@supabase-user-mcp/contracts` freeze the initial read-only
+surface. Every object is closed: unknown keys are invalid, including caller-selected
+origins, schemas, relations, RPCs, URLs, raw SQL, and PostgREST operators. Memory IDs use
+an opaque `mem_` token and pagination cursors use an opaque `cur_` token; callers must not
+construct or decode either token.
+
+All three tools have a 65,536-byte serialized response ceiling and a 2,000 ms execution
+ceiling. `memory_search` accepts at most 512 query characters, five allowlisted filters
+(tag and creation-time filters combined), and 20 rows. `memory_list_recent` accepts at most
+five allowlisted tag filters and 25 rows. `memory_get` accepts exactly one opaque ID and
+returns at most one row. Limits are inclusive; values one above a ceiling are invalid.
+Search and recent-list results omit total counts. Recent-list ordering is fixed to
+creation time descending with opaque ID descending as the tie-breaker; callers cannot
+select sort fields or direction.
+
+The only serialized record fields are `id`, `title`, `content`, `contentTrust`, `createdAt`,
+and `provenanceSummary`; search results additionally include `rank`. Stored `content` is
+always labeled `contentTrust: "untrusted"`. Each output is either `{ ok: true, ... }` or a
+closed `{ ok: false, error: { code, message, retryable } }` result. Exact-record misses and
+authorization denials both return the identical `RESOURCE_UNAVAILABLE` / `Record is
+unavailable.` public error and never include the requested ID or diagnostic details.
+
 ## Reference memory tools
 
 ### `memory_search`
