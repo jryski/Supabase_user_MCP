@@ -26,7 +26,11 @@ verification, a Supabase client, and data tools remain unimplemented.
   regular file, is owned by another operating-system user, or permits group or other
   access.
 - Credential and protocol checks complete before any data tool is registered.
-- Failure is denied by default and reports only a stable, non-secret class.
+- Failure is denied by default and reports only a stable, non-secret class. The executable
+  observation boundary accepts untrusted runtime input and validates it with a strict schema
+  before applying policy. `null`, `undefined`, arrays, missing or unknown properties, invalid
+  enum values (including token states), and non-boolean safety fields are invalid observations;
+  TypeScript declarations are not treated as runtime validation.
 
 ## Decision drivers
 
@@ -91,6 +95,7 @@ must no longer be served with that credential.
 
 | Condition | Stable code |
 | --- | --- |
+| Invalid runtime observation | `credential_observation_invalid` |
 | Forbidden transport | `credential_transport_forbidden` |
 | Absent source | `credential_source_absent` |
 | Unreadable source | `credential_source_unreadable` |
@@ -137,9 +142,10 @@ evidence and a new or superseding decision rather than an implicit fallback.
 ## Validation
 
 `packages/contracts/src/local-credential-protocol-policy.test.ts` exercises the allowed
-source; forbidden CLI, query, and tool transports; absent, unreadable, symlinked,
-non-regular, wrong-owner, and unsafe-permission sources; malformed, expired, revoked, and
-refresh-required lifecycle states; and exact protocol negotiation.
+source; strict runtime rejection of nullish, array, unknown-property, mistyped safety-field,
+and unsupported token-state observations; forbidden CLI, query, and tool transports; absent,
+unreadable, symlinked, non-regular, wrong-owner, and unsafe-permission sources; malformed,
+expired, revoked, and refresh-required lifecycle states; and exact protocol negotiation.
 
 The protocol pin is supported by the existing M0 compatibility test and
 [compatibility evidence](../evidence/M0_COMPATIBILITY_SPIKE.md), which exercise MCP

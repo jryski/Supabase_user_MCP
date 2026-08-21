@@ -17,6 +17,17 @@ import {
 } from './local-credential-protocol-policy.js';
 
 describe('local credential policy', () => {
+  const validObservation = {
+    transport: 'protected-local-file',
+    exists: true,
+    fileType: 'regular-file',
+    ownerOnly: true,
+    ownedByCurrentUser: true,
+    readable: true,
+    tokenState: 'valid',
+  } as const;
+  const assertUnknownObservation = assertLocalCredentialPolicy as (observation: unknown) => void;
+
   it('allows only a protected regular local file carrying a valid user token', () => {
     expect(LOCAL_CREDENTIAL_POLICY.allowedTransport).toBe('protected-local-file');
 
@@ -102,6 +113,51 @@ describe('local credential policy', () => {
     expect(caught).toBeInstanceOf(ErrorClass);
     expect(caught).toMatchObject({ code });
     expect(String(caught)).not.toContain('token');
+  });
+
+  it.each([
+    ['unknown string', 'unknown'],
+    ['uppercase string', 'VALID'],
+    ['null', null],
+    ['undefined', undefined],
+    ['number', 1],
+  ])(
+    'rejects an invalid %s token state with a stable non-secret observation error',
+    (_name, tokenState) => {
+      let caught: unknown;
+      try {
+        assertUnknownObservation({ ...validObservation, tokenState });
+      } catch (error) {
+        caught = error;
+      }
+
+      expect(caught).toMatchObject({
+        name: 'InvalidLocalCredentialObservationError',
+        code: 'credential_observation_invalid',
+        message: 'Local credential observation is invalid.',
+      });
+      expect(String(caught)).not.toContain(String(tokenState));
+    },
+  );
+
+  it.each(['exists', 'ownerOnly', 'ownedByCurrentUser', 'readable'] as const)(
+    'rejects a non-boolean %s safety field',
+    (field) => {
+      expect(() => assertUnknownObservation({ ...validObservation, [field]: 'false' })).toThrow(
+        expect.objectContaining({ code: 'credential_observation_invalid' }),
+      );
+    },
+  );
+
+  it.each([
+    ['null', null],
+    ['undefined', undefined],
+    ['array', []],
+    ['unknown property', { ...validObservation, unexpected: true }],
+  ])('rejects an invalid %s observation', (_name, observation) => {
+    expect(() => assertUnknownObservation(observation)).toThrow(
+      expect.objectContaining({ code: 'credential_observation_invalid' }),
+    );
   });
 
   it.each([

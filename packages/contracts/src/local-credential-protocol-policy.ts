@@ -1,3 +1,5 @@
+import { z } from 'zod';
+
 export const MCP_PROTOCOL_POLICY = Object.freeze({
   supportedVersions: Object.freeze(['2026-07-28'] as const),
   negotiation: 'exact-match' as const,
@@ -45,6 +47,15 @@ export function assertSupportedMcpProtocolVersion(version: string): void {
 
 export abstract class LocalCredentialPolicyError extends Error {
   abstract readonly code: string;
+}
+
+export class InvalidLocalCredentialObservationError extends LocalCredentialPolicyError {
+  readonly code = 'credential_observation_invalid';
+
+  constructor() {
+    super('Local credential observation is invalid.');
+    this.name = 'InvalidLocalCredentialObservationError';
+  }
 }
 
 export class UnsupportedCredentialTransportError extends LocalCredentialPolicyError {
@@ -129,25 +140,43 @@ export interface LocalCredentialObservation {
   readonly tokenState: CredentialTokenState;
 }
 
-export function assertLocalCredentialPolicy(observation: LocalCredentialObservation): void {
-  if (observation.transport !== LOCAL_CREDENTIAL_POLICY.allowedTransport) {
+const localCredentialObservationSchema = z
+  .object({
+    transport: z.enum(['protected-local-file', 'cli-argument', 'query-parameter', 'tool-argument']),
+    exists: z.boolean(),
+    fileType: z.enum(['regular-file', 'symbolic-link', 'other']),
+    ownerOnly: z.boolean(),
+    ownedByCurrentUser: z.boolean(),
+    readable: z.boolean(),
+    tokenState: z.enum(['valid', 'malformed', 'expired', 'revoked', 'refresh-required']),
+  })
+  .strict();
+
+export function assertLocalCredentialPolicy(observation: unknown): void {
+  const result = localCredentialObservationSchema.safeParse(observation);
+  if (!result.success) {
+    throw new InvalidLocalCredentialObservationError();
+  }
+
+  const validatedObservation: LocalCredentialObservation = result.data;
+  if (validatedObservation.transport !== LOCAL_CREDENTIAL_POLICY.allowedTransport) {
     throw new UnsupportedCredentialTransportError();
   }
-  if (!observation.exists) {
+  if (!validatedObservation.exists) {
     throw new CredentialSourceAbsentError();
   }
   if (
-    observation.fileType !== LOCAL_CREDENTIAL_POLICY.requiredFileType ||
-    !observation.ownerOnly ||
-    !observation.ownedByCurrentUser
+    validatedObservation.fileType !== LOCAL_CREDENTIAL_POLICY.requiredFileType ||
+    !validatedObservation.ownerOnly ||
+    !validatedObservation.ownedByCurrentUser
   ) {
     throw new UnsafeCredentialSourceError();
   }
-  if (!observation.readable) {
+  if (!validatedObservation.readable) {
     throw new CredentialSourceUnreadableError();
   }
 
-  switch (observation.tokenState) {
+  switch (validatedObservation.tokenState) {
     case 'valid':
       return;
     case 'malformed':
@@ -158,5 +187,7 @@ export function assertLocalCredentialPolicy(observation: LocalCredentialObservat
       throw new CredentialRevokedError();
     case 'refresh-required':
       throw new CredentialRefreshRequiredError();
+    default:
+      throw new InvalidLocalCredentialObservationError();
   }
 }
