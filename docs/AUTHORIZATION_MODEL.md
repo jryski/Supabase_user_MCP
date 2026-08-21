@@ -5,9 +5,17 @@
 
 ## Security boundary
 
-Authorization is denied by default. An allow decision requires a verified principal, an active
-client, an active workspace membership, an active capability grant, an allowed record state,
-and the relevant row predicate. Authentication by itself is never sufficient.
+Authorization is denied by default. An allow decision requires all of these conditions at once:
+
+1. principal identity eligibility is `verified`;
+2. client state is `active`;
+3. workspace membership state is `active`;
+4. capability grant state is `active`; and
+5. record state is `present` (the allowed-present condition).
+
+Authentication by itself is never sufficient. `AuthorizationAccessRowSchema` rejects an allow when
+any required condition is ineligible; it also rejects a deny whose reason does not match the
+trusted state.
 
 Principal, client, and workspace identifiers in this contract are opaque references to verified
 context or trusted authorization data. They are not accepted as ownership claims from tool
@@ -28,6 +36,15 @@ authorization keys.
 
 ## States and capabilities
 
+Principal identity eligibility is an explicit trusted dimension:
+
+- `verified`: trusted identity processing established an eligible principal for this row; and
+- `denied`: no eligible verified principal is available, including a cross-principal fixture.
+
+`identityEligibility` is derived from verified request context or trusted authorization data. A
+caller cannot promote itself by supplying this field, and an identifier by itself never implies
+`verified` eligibility.
+
 Membership, client, and grant state each use the same closed vocabulary:
 
 - `active`: eligible for further authorization checks;
@@ -41,8 +58,12 @@ The M0 capability vocabulary is exactly:
 
 Capabilities are exact strings. `*`, `memory:*`, and every undeclared value are invalid.
 
-Record state is `present` or `absent`. It describes the synthetic fixture presented to the policy
-test; it does not let a caller assert ownership or tenancy.
+`present` is the only allowed-present record state. `absent` must produce `record_unavailable` when
+no higher-precedence boundary already denies the row. Record state describes the synthetic fixture
+presented to the policy test; it does not let a caller assert ownership or tenancy.
+
+All exported vocabulary arrays are frozen with `Object.freeze` at runtime as well as typed as
+readonly tuples. Consumers cannot broaden a vocabulary by mutating an imported array.
 
 ## Access-matrix contract
 
@@ -53,7 +74,11 @@ non-empty array of these rows. Every object is strict, and identifiers must matc
 ```json
 [
   {
-    "principal": { "id": "principal-human-1", "kind": "human" },
+    "principal": {
+      "id": "principal-human-1",
+      "kind": "human",
+      "identityEligibility": "verified"
+    },
     "client": { "id": "client-cli-1", "state": "active" },
     "workspace": { "id": "workspace-alpha", "membershipState": "active" },
     "grantState": "active",
@@ -64,10 +89,11 @@ non-empty array of these rows. Every object is strict, and identifiers must matc
 ]
 ```
 
-Each policy fixture must supply the exact principal, client, workspace, grant state, capability,
-record state, and expected result shown by this shape. Negative and cross-identity fixtures use
-the same fields and a denied result; they must not add caller-selected `ownerId`, `tenantId`, or
-similar authority assertions.
+Each policy fixture must supply the exact principal (including trusted identity eligibility), client,
+workspace, grant state, capability, record state, and expected result shown by this shape. Negative
+and cross-identity fixtures use different opaque principal, client, or workspace identifiers and
+set the corresponding trusted eligibility or lifecycle state to a denied condition. They must not
+add caller-selected `ownerId`, `tenantId`, or similar authority assertions.
 
 ## Expected results and denial classes
 
@@ -86,6 +112,20 @@ reason. The stable denial classes are:
 | `membership_denied` | Workspace membership does not authorize the operation. |
 | `capability_denied` | The required exact capability is not currently granted. |
 | `record_unavailable` | The row is absent or unavailable in the authorized scope. |
+
+When more than one boundary is ineligible, the schema chooses exactly one denial class in this
+fixed precedence order:
+
+1. `identity_denied`;
+2. `client_denied`;
+3. `membership_denied`;
+4. `capability_denied`; and
+5. `record_unavailable`.
+
+The expected result must be coherent with that order. An ineligible row must deny with its
+highest-precedence reason. A fully eligible row must allow; a deny on a fully eligible row is also
+invalid. This makes fixture outcomes deterministic and prevents an expected allow from masking an
+expired client, revoked membership or grant, denied identity, or absent record.
 
 Public errors must not distinguish a missing row from a row belonging to another principal,
 client, or workspace. Expired and revoked states may be recorded in trusted audit evidence but

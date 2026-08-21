@@ -1,17 +1,21 @@
 import * as z from 'zod/v4';
 
-export const PRINCIPAL_KINDS = [
+export const PRINCIPAL_KINDS = Object.freeze([
   'human',
   'delegated_agent',
   'service_agent',
   'reviewer',
   'system_worker',
-] as const;
+] as const);
 
 export const PrincipalKindSchema = z.enum(PRINCIPAL_KINDS);
 export type PrincipalKind = z.infer<typeof PrincipalKindSchema>;
 
-export const AUTHORIZATION_STATES = ['active', 'expired', 'revoked'] as const;
+export const IDENTITY_ELIGIBILITY_STATES = Object.freeze(['verified', 'denied'] as const);
+export const IdentityEligibilitySchema = z.enum(IDENTITY_ELIGIBILITY_STATES);
+export type IdentityEligibility = z.infer<typeof IdentityEligibilitySchema>;
+
+export const AUTHORIZATION_STATES = Object.freeze(['active', 'expired', 'revoked'] as const);
 export const MembershipStateSchema = z.enum(AUTHORIZATION_STATES);
 export const ClientStateSchema = z.enum(AUTHORIZATION_STATES);
 export const GrantStateSchema = z.enum(AUTHORIZATION_STATES);
@@ -19,17 +23,17 @@ export type MembershipState = z.infer<typeof MembershipStateSchema>;
 export type ClientState = z.infer<typeof ClientStateSchema>;
 export type GrantState = z.infer<typeof GrantStateSchema>;
 
-export const CAPABILITIES = ['memory:search', 'memory:read'] as const;
+export const CAPABILITIES = Object.freeze(['memory:search', 'memory:read'] as const);
 export const CapabilitySchema = z.enum(CAPABILITIES);
 export type Capability = z.infer<typeof CapabilitySchema>;
 
-export const DENIAL_REASON_CLASSES = [
+export const DENIAL_REASON_CLASSES = Object.freeze([
   'identity_denied',
   'client_denied',
   'membership_denied',
   'capability_denied',
   'record_unavailable',
-] as const;
+] as const);
 export const DenialReasonClassSchema = z.enum(DENIAL_REASON_CLASSES);
 export type DenialReasonClass = z.infer<typeof DenialReasonClassSchema>;
 
@@ -51,12 +55,13 @@ export const AuthorizationIdentifierSchema = z
   .string()
   .regex(/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/);
 
-export const AuthorizationAccessRowSchema = z
+const AuthorizationAccessRowBaseSchema = z
   .object({
     principal: z
       .object({
         id: AuthorizationIdentifierSchema,
         kind: PrincipalKindSchema,
+        identityEligibility: IdentityEligibilitySchema,
       })
       .strict(),
     client: z
@@ -77,6 +82,37 @@ export const AuthorizationAccessRowSchema = z
     expectedResult: ExpectedResultSchema,
   })
   .strict();
+
+type AuthorizationAccessRowInput = z.infer<typeof AuthorizationAccessRowBaseSchema>;
+
+function expectedDenialReason(row: AuthorizationAccessRowInput): DenialReasonClass | undefined {
+  if (row.principal.identityEligibility !== 'verified') return 'identity_denied';
+  if (row.client.state !== 'active') return 'client_denied';
+  if (row.workspace.membershipState !== 'active') return 'membership_denied';
+  if (row.grantState !== 'active') return 'capability_denied';
+  if (row.recordState !== 'present') return 'record_unavailable';
+  return undefined;
+}
+
+export const AuthorizationAccessRowSchema = AuthorizationAccessRowBaseSchema.superRefine(
+  (row, context) => {
+    const denialReason = expectedDenialReason(row);
+
+    const resultIsCoherent = denialReason
+      ? row.expectedResult.decision === 'deny' && row.expectedResult.denialReason === denialReason
+      : row.expectedResult.decision === 'allow';
+
+    if (!resultIsCoherent) {
+      context.addIssue({
+        code: 'custom',
+        path: ['expectedResult'],
+        message: denialReason
+          ? `ineligible row must deny with ${denialReason}`
+          : 'eligible row must allow',
+      });
+    }
+  },
+);
 export type AuthorizationAccessRow = z.infer<typeof AuthorizationAccessRowSchema>;
 
 export const AccessMatrixSchema = z.array(AuthorizationAccessRowSchema).min(1);
