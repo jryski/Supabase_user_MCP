@@ -94,8 +94,10 @@ payload does not arrive in any target readable by a lower-trust audience.
 
 Containment is a property of composed read and write scope. For a writer principal `P`, let
 `R(P)` be its complete read closure. For every target `W` that `P` may write, identify the
-full audience `readers(W)` and each reader's complete read closure. A write is contained
-only when this invariant holds:
+full audience `readers(W)` and each reader's complete read closure. The inventory must carry
+the trusted `readerAudienceComplete: true` assertion: an empty reader list with that assertion
+means a verified-zero audience, while an omitted assertion means the audience is unknown and
+fails closed. A write is contained only when this invariant holds:
 
 > For every `Q` in `readers(W)`, `R(Q)` is a superset of `R(P)`.
 
@@ -105,6 +107,12 @@ that require such a crossing must enumerate and mediate it explicitly, for examp
 the proposal state machine; an incidental authorized write is not containment. Malformed or
 ambiguous closure inventories fail closed because an incomplete audience cannot establish
 the invariant.
+
+The contract bounds identifiers to 256 characters, closure members to 100 per principal,
+writable targets to 100, and readers to 100 per target. Unsafe results expose at most 100 flow
+diagnostics and 25 missing closure members per diagnostic; explicit omitted counts summarize
+additional unsafe flows or missing members. Inputs one over any input limit are invalid rather
+than partially analyzed.
 
 ## Trust-boundary review questions
 

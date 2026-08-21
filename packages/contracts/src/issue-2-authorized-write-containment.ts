@@ -1,14 +1,26 @@
 import * as z from 'zod/v4';
 
+export const ISSUE_2_AUTHORIZED_WRITE_LIMITS = {
+  identifierLength: 256,
+  closureMembers: 100,
+  writableTargets: 100,
+  readersPerTarget: 100,
+  unsafeFlowDiagnostics: 100,
+  missingMembersPerDiagnostic: 25,
+} as const;
+
 const Issue2IdentifierSchema = z
   .string()
   .min(1)
+  .max(ISSUE_2_AUTHORIZED_WRITE_LIMITS.identifierLength)
   .refine((value) => value.trim() === value, 'Identifiers must not have surrounding whitespace.');
 
 const Issue2ReaderClosureSchema = z
   .object({
     principalId: Issue2IdentifierSchema,
-    readClosure: z.array(Issue2IdentifierSchema),
+    readClosure: z
+      .array(Issue2IdentifierSchema)
+      .max(ISSUE_2_AUTHORIZED_WRITE_LIMITS.closureMembers),
   })
   .strict()
   .superRefine(({ readClosure }, context) => {
@@ -20,7 +32,10 @@ const Issue2ReaderClosureSchema = z
 const Issue2WritableTargetSchema = z
   .object({
     targetId: Issue2IdentifierSchema,
-    readers: z.array(Issue2ReaderClosureSchema),
+    readerAudienceComplete: z.literal(true),
+    readers: z
+      .array(Issue2ReaderClosureSchema)
+      .max(ISSUE_2_AUTHORIZED_WRITE_LIMITS.readersPerTarget),
   })
   .strict()
   .superRefine(({ readers }, context) => {
@@ -33,7 +48,9 @@ const Issue2WritableTargetSchema = z
 export const Issue2AuthorizedWriteContainmentInputSchema = z
   .object({
     writer: Issue2ReaderClosureSchema,
-    writableTargets: z.array(Issue2WritableTargetSchema),
+    writableTargets: z
+      .array(Issue2WritableTargetSchema)
+      .max(ISSUE_2_AUTHORIZED_WRITE_LIMITS.writableTargets),
   })
   .strict()
   .superRefine(({ writableTargets }, context) => {
@@ -43,25 +60,17 @@ export const Issue2AuthorizedWriteContainmentInputSchema = z
     }
   });
 
-export interface Issue2ReaderClosure {
-  principalId: string;
-  readClosure: readonly string[];
-}
-
-export interface Issue2WritableTarget {
-  targetId: string;
-  readers: readonly Issue2ReaderClosure[];
-}
-
-export interface Issue2AuthorizedWriteContainmentInput {
-  writer: Issue2ReaderClosure;
-  writableTargets: readonly Issue2WritableTarget[];
-}
+export type Issue2ReaderClosure = z.infer<typeof Issue2ReaderClosureSchema>;
+export type Issue2WritableTarget = z.infer<typeof Issue2WritableTargetSchema>;
+export type Issue2AuthorizedWriteContainmentInput = z.infer<
+  typeof Issue2AuthorizedWriteContainmentInputSchema
+>;
 
 export interface Issue2UnsafeFlow {
   targetId: string;
   readerPrincipalId: string;
   missingFromReaderClosure: readonly string[];
+  omittedMissingMemberCount: number;
 }
 
 export type Issue2AuthorizedWriteContainmentDecision =
@@ -70,6 +79,7 @@ export type Issue2AuthorizedWriteContainmentDecision =
       allowed: false;
       reason: 'unsafe-flow';
       unsafeFlows: readonly Issue2UnsafeFlow[];
+      omittedUnsafeFlowCount: number;
     }
   | { allowed: false; reason: 'invalid-input'; unsafeFlows: readonly [] };
 
@@ -83,25 +93,46 @@ export function evaluateIssue2AuthorizedWriteContainment(
 
   const policy = parsed.data;
   const unsafeFlows: Issue2UnsafeFlow[] = [];
+  let unsafeFlowCount = 0;
 
   for (const target of policy.writableTargets) {
     for (const reader of target.readers) {
       const readerClosure = new Set(reader.readClosure);
-      const missingFromReaderClosure = policy.writer.readClosure.filter(
-        (resource) => !readerClosure.has(resource),
-      );
+      const missingFromReaderClosure: string[] = [];
+      let missingMemberCount = 0;
 
-      if (missingFromReaderClosure.length > 0) {
-        unsafeFlows.push({
-          targetId: target.targetId,
-          readerPrincipalId: reader.principalId,
-          missingFromReaderClosure,
-        });
+      for (const resource of policy.writer.readClosure) {
+        if (!readerClosure.has(resource)) {
+          missingMemberCount += 1;
+          if (
+            missingFromReaderClosure.length <
+            ISSUE_2_AUTHORIZED_WRITE_LIMITS.missingMembersPerDiagnostic
+          ) {
+            missingFromReaderClosure.push(resource);
+          }
+        }
+      }
+
+      if (missingMemberCount > 0) {
+        unsafeFlowCount += 1;
+        if (unsafeFlows.length < ISSUE_2_AUTHORIZED_WRITE_LIMITS.unsafeFlowDiagnostics) {
+          unsafeFlows.push({
+            targetId: target.targetId,
+            readerPrincipalId: reader.principalId,
+            missingFromReaderClosure,
+            omittedMissingMemberCount: missingMemberCount - missingFromReaderClosure.length,
+          });
+        }
       }
     }
   }
 
   return unsafeFlows.length === 0
     ? { allowed: true, reason: 'contained', unsafeFlows: [] }
-    : { allowed: false, reason: 'unsafe-flow', unsafeFlows };
+    : {
+        allowed: false,
+        reason: 'unsafe-flow',
+        unsafeFlows,
+        omittedUnsafeFlowCount: unsafeFlowCount - unsafeFlows.length,
+      };
 }
