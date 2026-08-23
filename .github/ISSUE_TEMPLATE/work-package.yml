@@ -1,0 +1,64 @@
+name: Contributor work package
+description: Propose a bounded issue that can be implemented and verified independently.
+title: "work package: "
+labels:
+  - type:work-package
+body:
+  - type: textarea
+    id: outcome
+    attributes:
+      label: Outcome
+      description: State one observable user or security outcome.
+    validations:
+      required: true
+  - type: textarea
+    id: scope
+    attributes:
+      label: Included scope and likely files
+      description: Name the smallest coherent public seams and files this work changes.
+    validations:
+      required: true
+  - type: textarea
+    id: exclusions
+    attributes:
+      label: Explicit exclusions
+      description: State what this issue will not build, access, or authorize.
+    validations:
+      required: true
+  - type: textarea
+    id: dependencies
+    attributes:
+      label: Dependencies
+      description: Link prerequisite issues, ADRs, contracts, or exact repository coordinates.
+  - type: textarea
+    id: authority
+    attributes:
+      label: Authority and trust-boundary impact
+      description: Identify identities, credentials, capabilities, data, transports, and database boundaries crossed.
+    validations:
+      required: true
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance criteria
+      description: Include positive, denied, cross-identity, malformed, size, time, failure, cleanup, and rollback behavior as applicable.
+    validations:
+      required: true
+  - type: textarea
+    id: verification
+    attributes:
+      label: Verification commands
+      description: Give exact focused and full commands a reviewer can run from a clean checkout.
+    validations:
+      required: true
+  - type: checkboxes
+    id: safety
+    attributes:
+      label: Safety boundary
+      options:
+        - label: Uses synthetic fixtures only unless a separately approved scope is linked.
+          required: true
+        - label: Does not introduce service_role, arbitrary SQL, or caller-selected upstream resources.
+          required: true
+        - label: Does not claim production readiness beyond its milestone gate.
+          required: true

@@ -2,7 +2,7 @@
 
 - **Status:** Proposed
 - **Method:** asset and abuse-case analysis informed by STRIDE
-- **Last reviewed:** 2026-08-17
+- **Last reviewed:** 2026-08-20
 
 ## Scope
 
@@ -52,7 +52,7 @@ can be exercised locally.
 | --- | --- | --- | --- | --- |
 | T01 | Cross-tenant object access | Guess another workspace's record ID | Tenant membership plus row predicate; non-enumerating errors | Access-matrix tests |
 | T02 | Cross-agent escalation | Reuse a human token from an unapproved OAuth client | Exact issuer/audience/client validation and client-aware RLS | Client-substitution tests |
-| T03 | Stored prompt injection | A document instructs the model to exfiltrate secrets | Least privilege, narrow tools, bounded output, no ambient admin key | Planted adversarial fixtures |
+| T03 | Stored prompt injection | A document instructs the model to exfiltrate secrets | Least privilege, narrow tools, bounded output, no ambient admin key, and authorized-write containment | Planted adversarial fixtures plus read/write closure analysis |
 | T04 | Credential transit or confusion | Present a token intended for another resource | Resource indicators, audience validation, separate downstream credential strategy | Token matrix and protocol tests |
 | T05 | SSRF and token exfiltration | Put an attacker URL in a tool argument | Fixed upstream origin; no caller-controlled URL or redirect | URL fuzz tests |
 | T06 | Generic API escape | Select an arbitrary table, RPC, method, or schema | Domain tools and server-side allowlists | Schema and method fuzz tests |
@@ -68,6 +68,7 @@ can be exercised locally.
 | T16 | Supply-chain compromise | Mutable action tag or dependency executes malicious code | Lockfile, pinned versions and action SHAs, provenance review | CI policy check |
 | T17 | OAuth redirect or mix-up | Code is sent to the wrong issuer or redirect | Exact redirect matching, PKCE, state, issuer validation | OAuth conformance tests |
 | T18 | Data inference | Counts or ranking reveal forbidden records | Filter before ranking/aggregation; suppress sensitive totals | Differential-result tests |
+| T19 | Authorized-write exfiltration | An agent copies authorized reads into a lower-trust reader's authorized target | Verify every write-target audience against reader closure; enumerate and mediate required cross-audience writes | Static closure analysis plus fixtures proving the payload does not arrive |
 
 ## Prompt-injection containment
 
@@ -86,7 +87,32 @@ The containment test corpus will include records that attempt to:
 - expand result limits through nested or encoded arguments.
 
 Passing means the unauthorized action is denied or unavailable, not merely that one model
-declines to attempt it.
+declines to attempt it. For authorized-write exfiltration, passing instead means that the
+payload does not arrive in any target readable by a lower-trust audience.
+
+### Authorized-write containment invariant
+
+Containment is a property of composed read and write scope. For a writer principal `P`, let
+`R(P)` be its complete read closure. For every target `W` that `P` may write, identify the
+full audience `readers(W)` and each reader's complete read closure. The inventory must carry
+the trusted `readerAudienceComplete: true` assertion: an empty reader list with that assertion
+means a verified-zero audience, while an omitted assertion means the audience is unknown and
+fails closed. A write is contained only when this invariant holds:
+
+> For every `Q` in `readers(W)`, `R(Q)` is a superset of `R(P)`.
+
+If any target reader lacks any member of the writer's read closure, the policy set creates
+an authorized-write exfiltration channel and must fail containment analysis. Product flows
+that require such a crossing must enumerate and mediate it explicitly, for example through
+the proposal state machine; an incidental authorized write is not containment. Malformed or
+ambiguous closure inventories fail closed because an incomplete audience cannot establish
+the invariant.
+
+The contract bounds identifiers to 256 characters, closure members to 100 per principal,
+writable targets to 100, and readers to 100 per target. Unsafe results expose at most 100 flow
+diagnostics and 25 missing closure members per diagnostic; explicit omitted counts summarize
+additional unsafe flows or missing members. Inputs one over any input limit are invalid rather
+than partially analyzed.
 
 ## Trust-boundary review questions
 
@@ -105,7 +131,9 @@ Every feature review answers:
 
 Even with all planned controls:
 
-- An authorized agent can misuse data it is legitimately allowed to read.
+- An authorized agent can misuse data it is legitimately allowed to read through channels
+  outside the analyzed database policy set. Authorized writes inside that policy set remain
+  subject to the containment invariant above.
 - RLS cannot prevent a model from disclosing authorized data through another channel.
 - A compromised human account inherits that human's legitimate authority until detected
   or revoked.
