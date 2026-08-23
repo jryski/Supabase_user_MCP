@@ -45,3 +45,12 @@ INSERT INTO policy_lab.memories (memory_id, workspace_id, title) VALUES
   ('memory-client-revoked', 'workspace-client-revoked', 'Revoked client memory'),
   ('memory-beta', 'workspace-beta', 'Beta synthetic memory'),
   ('memory-denied-principal', 'workspace-denied-principal', 'Denied principal memory');
+
+INSERT INTO policy_lab.audit_events (
+  event_id, recorded_at, principal_id, client_id, workspace_id, event_type, metadata
+) VALUES
+  ('audit-active', '2026-08-23T12:00:00Z', '00000000-0000-0000-0000-000000000001', 'client-active', 'workspace-alpha', 'memory.read.allowed', '{"outcome":"allowed","resource_kind":"synthetic_memory"}'),
+  ('audit-client-revoked', '2026-08-23T12:01:00Z', '00000000-0000-0000-0000-000000000001', 'client-revoked', 'workspace-client-revoked', 'memory.read.denied', '{"outcome":"denied","reason":"client_revoked"}'),
+  ('audit-membership-revoked', '2026-08-23T12:02:00Z', '00000000-0000-0000-0000-000000000001', 'client-active', 'workspace-membership-revoked', 'memory.read.denied', '{"outcome":"denied","reason":"membership_revoked"}'),
+  ('audit-grant-revoked', '2026-08-23T12:03:00Z', '00000000-0000-0000-0000-000000000001', 'client-active', 'workspace-grant-revoked', 'memory.read.denied', '{"outcome":"denied","reason":"grant_revoked"}'),
+  ('audit-other-principal', '2026-08-23T12:04:00Z', '00000000-0000-0000-0000-000000000002', 'client-other', 'workspace-beta', 'memory.read.allowed', '{"outcome":"allowed","resource_kind":"synthetic_memory"}');
