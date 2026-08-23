@@ -22,6 +22,7 @@
     "format:check": "biome format .",
     "lint": "biome lint .",
     "policy-lab:reset": "supabase db reset --local",
+    "policy-lab:test:catalog": "node scripts/run-policy-lab-catalog-test.mjs",
     "policy-lab:test": "supabase test db --local",
     "start": "node packages/server/dist/cli.js",
     "test": "npm run build && vitest run",
