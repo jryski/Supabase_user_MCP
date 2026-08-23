@@ -9,6 +9,87 @@ function response(body: string, status = 200): Response {
 }
 
 describe('createFixedSupabaseClient', () => {
+  it('makes only the fixed search RPC with JWT, schema, fields, and bounded arguments', async () => {
+    const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(response('{"rows":[]}'));
+    const client = createFixedSupabaseClient({
+      origin,
+      credentials: { projectPublishableKey: 'sb_publishable_key', userAccessToken: token },
+      fetch,
+    });
+    const signal = new AbortController().signal;
+    await client.searchMemoryRows(
+      {
+        query: 'needle',
+        mode: 'semantic',
+        filters: { tags: ['safe'] },
+        limit: 7,
+        cursor: 'cur_12345678901234567890',
+      },
+      signal,
+    );
+    const [url, init] = fetch.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe(`${origin}/rest/v1/rpc/authorized_memory_search_v1`);
+    expect(init).toMatchObject({
+      method: 'POST',
+      headers: {
+        Accept: 'application/json',
+        'Content-Type': 'application/json',
+        'Accept-Profile': 'memory',
+        'Content-Profile': 'memory',
+        Authorization: `Bearer ${token}`,
+        apikey: 'sb_publishable_key',
+      },
+      body: JSON.stringify({
+        query: 'needle',
+        mode: 'semantic',
+        filters: { tags: ['safe'] },
+        limit: 7,
+        cursor: 'cur_12345678901234567890',
+      }),
+    });
+    expect(init.signal).toBeInstanceOf(AbortSignal);
+  });
+
+  it('rejects runtime override attempts before fetch', async () => {
+    const fetch = vi.fn<typeof globalThis.fetch>();
+    const client = createFixedSupabaseClient({
+      origin,
+      credentials: { projectPublishableKey: 'key', userAccessToken: token },
+      fetch,
+    });
+    await expect(
+      (client.searchMemoryRows as (input: unknown) => Promise<unknown>)({
+        query: 'x',
+        origin: 'https://evil.invalid',
+        rpc: 'steal',
+        schema: 'private',
+        limit: 100,
+      }),
+    ).rejects.toMatchObject({ code: 'FIXED_CLIENT_INVALID_REQUEST' });
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it('rejects invalid cursors, excess rows, and non-allowlisted response fields', async () => {
+    const credentials = { projectPublishableKey: 'key', userAccessToken: token };
+    const input = { query: 'x', mode: 'text' as const, limit: 1 };
+    for (const [body, status, code] of [
+      ['{}', 400, 'FIXED_CLIENT_INVALID_CURSOR'],
+      ['{"rows":[{"id":"a"},{"id":"b"}]}', 200, 'FIXED_CLIENT_MALFORMED_RESPONSE'],
+      [
+        '{"rows":[{"id":"a","title":"t","content":"c","createdAt":"2026-08-23T12:00:00.000Z","provenanceSummary":"p","rank":1,"ownerId":"hidden"}]}',
+        200,
+        'FIXED_CLIENT_MALFORMED_RESPONSE',
+      ],
+    ] as const) {
+      const client = createFixedSupabaseClient({
+        origin,
+        credentials,
+        fetch: vi.fn().mockResolvedValue(response(body, status)),
+      });
+      await expect(client.searchMemoryRows(input)).rejects.toMatchObject({ code });
+    }
+  });
+
   it('makes only the fixed bounded identity-preserving read', async () => {
     const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(response('[{"id":"one"}]'));
     const client = createFixedSupabaseClient({
@@ -40,7 +121,7 @@ describe('createFixedSupabaseClient', () => {
       credentials: { projectPublishableKey: 'publishable', userAccessToken: token },
       fetch,
     });
-    expect(Object.keys(client)).toEqual(['listMemoryRows']);
+    expect(Object.keys(client)).toEqual(['listMemoryRows', 'searchMemoryRows']);
     // Runtime hostile callers cannot smuggle origin, headers, method, or another identity.
     await (client.listMemoryRows as (value?: unknown) => Promise<unknown>)({
       origin: 'https://evil.invalid',
