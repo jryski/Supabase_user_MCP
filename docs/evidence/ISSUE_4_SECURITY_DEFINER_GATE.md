@@ -1,7 +1,7 @@
 # Issue 4: pre-grant SECURITY DEFINER gate
 
 This evidence note records the documentation and executable contract for governing issue
-#4. The accepted rule is fail closed: no `EXECUTE` grant to `anon` or `authenticated` is
+`#4`. The accepted rule is fail closed: no `EXECUTE` grant to `anon` or `authenticated` is
 added for a `SECURITY DEFINER` routine until the owning review records every gate result.
 
 ## Threat and invariant mapping
