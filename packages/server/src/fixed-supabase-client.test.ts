@@ -121,7 +121,12 @@ describe('createFixedSupabaseClient', () => {
       credentials: { projectPublishableKey: 'publishable', userAccessToken: token },
       fetch,
     });
-    expect(Object.keys(client)).toEqual(['listMemoryRows', 'searchMemoryRows']);
+    expect(Object.keys(client)).toEqual([
+      'listMemoryRows',
+      'searchMemoryRows',
+      'getMemoryRow',
+      'listRecentMemoryRows',
+    ]);
     // Runtime hostile callers cannot smuggle origin, headers, method, or another identity.
     await (client.listMemoryRows as (value?: unknown) => Promise<unknown>)({
       origin: 'https://evil.invalid',
@@ -132,6 +137,124 @@ describe('createFixedSupabaseClient', () => {
       `${origin}/rest/v1/memories?select=id%2Ccontent&limit=100`,
     );
     expect(fetch.mock.calls[0]?.[1]?.headers).toMatchObject({ Authorization: `Bearer ${token}` });
+  });
+
+  it('calls authorized get RPC with a fixed method, profile, and allowlisted body', async () => {
+    const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(
+      response(
+        JSON.stringify({
+          record: {
+            id: 'mem_ABCDEFGHIJKLMNOPQRSTUV',
+            title: 'Visible memory',
+            content: 'Synthetic',
+            createdAt: '2026-08-24T12:00:00.000Z',
+            provenanceSummary: 'synthetic fixture',
+          },
+        }),
+      ),
+    );
+    const client = createFixedSupabaseClient({
+      origin,
+      credentials: { projectPublishableKey: 'key', userAccessToken: token },
+      fetch,
+    });
+
+    await expect(client.getMemoryRow({ id: 'mem_ABCDEFGHIJKLMNOPQRSTUV' })).resolves.toMatchObject({
+      id: 'mem_ABCDEFGHIJKLMNOPQRSTUV',
+      title: 'Visible memory',
+    });
+    expect(fetch).toHaveBeenCalledOnce();
+    const [url, init] = fetch.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe(`${origin}/rest/v1/rpc/authorized_memory_get_v1`);
+    expect(init.method).toBe('POST');
+    expect(init.headers).toMatchObject({
+      Accept: 'application/json',
+      'Accept-Profile': 'memory',
+      'Content-Profile': 'memory',
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${token}`,
+      apikey: 'key',
+    });
+    expect(JSON.parse(init.body as string)).toEqual({ id: 'mem_ABCDEFGHIJKLMNOPQRSTUV' });
+  });
+
+  it('calls list-recent RPC with fixed envelope, pagination, and allowlisted rows', async () => {
+    const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(
+      response(
+        JSON.stringify({
+          rows: [
+            {
+              id: 'mem_ABCDEFGHIJKLMNOPQRSTUV',
+              title: 'Visible memory',
+              content: 'Synthetic',
+              createdAt: '2026-08-24T12:00:00.000Z',
+              provenanceSummary: 'synthetic fixture',
+            },
+          ],
+          nextCursor: 'cur_XXXXXXXXXXXXXXXXXX',
+        }),
+      ),
+    );
+    const client = createFixedSupabaseClient({
+      origin,
+      credentials: { projectPublishableKey: 'key', userAccessToken: token },
+      fetch,
+    });
+
+    await expect(
+      client.listRecentMemoryRows({
+        filters: { tags: ['safe'] },
+        limit: 1,
+        cursor: 'cur_ABCDEFGHIJKLMNOPQRST',
+      }),
+    ).resolves.toMatchObject({
+      rows: [{ id: 'mem_ABCDEFGHIJKLMNOPQRSTUV' }],
+      nextCursor: 'cur_XXXXXXXXXXXXXXXXXX',
+    });
+    expect(fetch).toHaveBeenCalledOnce();
+    const [url, init] = fetch.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe(`${origin}/rest/v1/rpc/authorized_memory_list_recent_v1`);
+    expect(init.method).toBe('POST');
+    expect(JSON.parse(init.body as string)).toEqual({
+      filters: { tags: ['safe'] },
+      limit: 1,
+      cursor: 'cur_ABCDEFGHIJKLMNOPQRST',
+    });
+  });
+
+  it('maps malformed get/list envelopes to fixed client malformed failures', async () => {
+    const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(response('{"record":null}'));
+    const client = createFixedSupabaseClient({
+      origin,
+      credentials: { projectPublishableKey: 'key', userAccessToken: token },
+      fetch,
+    });
+    await expect(client.getMemoryRow({ id: 'mem_ABCDEFGHIJKLMNOPQRSTUV' })).resolves.toBeNull();
+
+    const missingColumn = vi.fn<typeof globalThis.fetch>().mockResolvedValue(
+      response(
+        JSON.stringify({
+          rows: [
+            {
+              id: 'mem_ABCDEFGHIJKLMNOPQRSTUV',
+              title: 'Visible memory',
+              content: 'Synthetic',
+              createdAt: '2026-08-24T12:00:00.000Z',
+              ownerId: 'hidden',
+            },
+          ],
+        }),
+      ),
+    );
+    const malformedListClient = createFixedSupabaseClient({
+      origin,
+      credentials: { projectPublishableKey: 'key', userAccessToken: token },
+      fetch: missingColumn,
+    });
+
+    await expect(malformedListClient.listRecentMemoryRows({ limit: 1 })).rejects.toMatchObject({
+      code: 'FIXED_CLIENT_MALFORMED_RESPONSE',
+    });
   });
 
   it.each([

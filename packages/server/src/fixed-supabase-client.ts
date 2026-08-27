@@ -1,13 +1,38 @@
 import type { LocalCredentials } from './local-credential-loader.js';
+<<<<<<< HEAD
 import { MemorySearchInputSchema, type MemorySearchInput } from '@supabase-user-mcp/contracts';
 
 const FIXED_PATH = '/rest/v1/memories?select=id%2Ccontent&limit=100';
 const FIXED_SCHEMA = 'memory';
 const FIXED_SEARCH_PATH = '/rest/v1/rpc/authorized_memory_search_v1';
+=======
+import {
+  MemoryGetInputSchema,
+  type MemoryGetInput,
+  MemoryListRecentInputSchema,
+  type MemoryListRecentInput,
+} from '@supabase-user-mcp/contracts';
+
+const FIXED_PATH = '/rest/v1/memories?select=id%2Ccontent&limit=100';
+const FIXED_SCHEMA = 'memory';
+const FIXED_GET_PATH = '/rest/v1/rpc/authorized_memory_get_v1';
+const FIXED_LIST_RECENT_PATH = '/rest/v1/rpc/authorized_memory_list_recent_v1';
+>>>>>>> b0ce5a5 (Implement memory_get/list_recent against fixed client seam)
 const DEFAULT_TIMEOUT_MS = 5_000;
 const MAX_TIMEOUT_MS = 10_000;
 const DEFAULT_MAX_RESPONSE_BYTES = 256 * 1024;
 const MAX_RESPONSE_BYTES = 1024 * 1024;
+const OPAQUE_CURSOR = /^cur_[A-Za-z0-9_-]{16,1020}$/;
+
+const ALLOWED_MEMORY_ROW_FIELDS = Object.freeze([
+  'id',
+  'title',
+  'content',
+  'createdAt',
+  'provenanceSummary',
+] as const);
+
+export type FixedMemoryRecordField = (typeof ALLOWED_MEMORY_ROW_FIELDS)[number];
 
 export type FixedSupabaseClientErrorCode =
   | 'FIXED_CLIENT_INVALID_CREDENTIAL'
@@ -37,8 +62,22 @@ export interface FixedSupabaseClientConfig {
   readonly maxResponseBytes?: number;
 }
 
+export interface FixedMemoryGetRow {
+  readonly id: string;
+  readonly title: string;
+  readonly content: string;
+  readonly createdAt: string;
+  readonly provenanceSummary: string;
+}
+
+export interface FixedMemoryListRecentResult {
+  readonly rows: ReadonlyArray<FixedMemoryGetRow>;
+  readonly nextCursor?: string;
+}
+
 export interface FixedSupabaseClient {
   readonly listMemoryRows: () => Promise<ReadonlyArray<Readonly<Record<string, unknown>>>>;
+<<<<<<< HEAD
   readonly searchMemoryRows: (
     input: MemorySearchInput,
     signal?: AbortSignal,
@@ -57,6 +96,16 @@ export interface FixedMemorySearchRow {
 export interface FixedMemorySearchResult {
   readonly rows: ReadonlyArray<FixedMemorySearchRow>;
   readonly nextCursor?: string;
+=======
+  readonly getMemoryRow: (
+    input: MemoryGetInput,
+    signal?: AbortSignal,
+  ) => Promise<FixedMemoryGetRow | null>;
+  readonly listRecentMemoryRows: (
+    input: MemoryListRecentInput,
+    signal?: AbortSignal,
+  ) => Promise<FixedMemoryListRecentResult>;
+>>>>>>> b0ce5a5 (Implement memory_get/list_recent against fixed client seam)
 }
 
 function invalid(): never {
@@ -65,6 +114,27 @@ function invalid(): never {
 
 function boundedInteger(value: number, maximum: number): boolean {
   return Number.isSafeInteger(value) && value > 0 && value <= maximum;
+}
+
+function hasAllowedKeys(
+  record: Readonly<Record<string, unknown>>,
+  allowed: readonly string[],
+): boolean {
+  const keys = Object.keys(record);
+  if (keys.length !== allowed.length) return false;
+  for (const key of keys) {
+    if (!allowed.includes(key)) return false;
+  }
+  return true;
+}
+
+function hasRequiredStringFields(
+  record: Readonly<Record<string, unknown>>,
+  fields: readonly string[],
+): boolean {
+  return (
+    hasAllowedKeys(record, fields) && fields.every((field) => typeof record[field] === 'string')
+  );
 }
 
 async function readBoundedBody(response: Response, maximum: number): Promise<string> {
@@ -88,6 +158,67 @@ async function readBoundedBody(response: Response, maximum: number): Promise<str
     throw new FixedSupabaseClientError('FIXED_CLIENT_NETWORK_FAILURE');
   }
   return Buffer.concat(chunks, length).toString('utf8');
+}
+
+function parseGetRow(value: unknown, code: FixedSupabaseClientErrorCode): FixedMemoryGetRow {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    throw new FixedSupabaseClientError(code);
+  }
+  if (
+    !hasRequiredStringFields(value as Readonly<Record<string, unknown>>, ALLOWED_MEMORY_ROW_FIELDS)
+  ) {
+    throw new FixedSupabaseClientError(code);
+  }
+  return Object.freeze({
+    id: (value as Record<string, unknown>).id as string,
+    title: (value as Record<string, unknown>).title as string,
+    content: (value as Record<string, unknown>).content as string,
+    createdAt: (value as Record<string, unknown>).createdAt as string,
+    provenanceSummary: (value as Record<string, unknown>).provenanceSummary as string,
+  });
+}
+
+function parseMemoryGetPayload(value: unknown): FixedMemoryGetRow | null {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    throw new FixedSupabaseClientError('FIXED_CLIENT_MALFORMED_RESPONSE');
+  }
+  const envelope = value as Readonly<Record<string, unknown>>;
+  const keys = Object.keys(envelope);
+  if (keys.length === 0) return null;
+  if (keys.length !== 1 || keys[0] !== 'record') {
+    throw new FixedSupabaseClientError('FIXED_CLIENT_MALFORMED_RESPONSE');
+  }
+  if (envelope.record === null) return null;
+  return parseGetRow(envelope.record, 'FIXED_CLIENT_MALFORMED_RESPONSE');
+}
+
+function parseMemoryListPayload(value: unknown): FixedMemoryListRecentResult {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    throw new FixedSupabaseClientError('FIXED_CLIENT_MALFORMED_RESPONSE');
+  }
+  const envelope = value as Readonly<Record<string, unknown>>;
+  const keys = Object.keys(envelope).sort();
+  if (keys.length < 1 || keys.length > 2) {
+    throw new FixedSupabaseClientError('FIXED_CLIENT_MALFORMED_RESPONSE');
+  }
+  const allowed = ['nextCursor', 'rows'];
+  if (!keys.every((key) => allowed.includes(key))) {
+    throw new FixedSupabaseClientError('FIXED_CLIENT_MALFORMED_RESPONSE');
+  }
+  const rawRows = envelope.rows;
+  if (!Array.isArray(rawRows)) {
+    throw new FixedSupabaseClientError('FIXED_CLIENT_MALFORMED_RESPONSE');
+  }
+  const rows = rawRows.map((value) => parseGetRow(value, 'FIXED_CLIENT_MALFORMED_RESPONSE'));
+  if (envelope.nextCursor !== undefined) {
+    if (typeof envelope.nextCursor !== 'string' || !OPAQUE_CURSOR.test(envelope.nextCursor)) {
+      throw new FixedSupabaseClientError('FIXED_CLIENT_INVALID_CURSOR');
+    }
+  }
+  return Object.freeze({
+    rows,
+    ...(envelope.nextCursor === undefined ? {} : { nextCursor: envelope.nextCursor }),
+  });
 }
 
 export function createFixedSupabaseClient(config: FixedSupabaseClientConfig): FixedSupabaseClient {
@@ -125,12 +256,17 @@ export function createFixedSupabaseClient(config: FixedSupabaseClientConfig): Fi
     invalid();
   }
   const fetchImplementation = config.fetch ?? globalThis.fetch;
-  const url = `${parsedOrigin.origin}${FIXED_PATH}`;
-  const headers = Object.freeze({
+  const listHeaders = Object.freeze({
     Accept: 'application/json',
     'Accept-Profile': FIXED_SCHEMA,
     Authorization: `Bearer ${token}`,
     apikey: key,
+  });
+
+  const postHeaders = Object.freeze({
+    ...listHeaders,
+    'Content-Type': 'application/json',
+    'Content-Profile': FIXED_SCHEMA,
   });
 
   const listMemoryRows = async (): Promise<ReadonlyArray<Readonly<Record<string, unknown>>>> => {
@@ -138,9 +274,9 @@ export function createFixedSupabaseClient(config: FixedSupabaseClientConfig): Fi
     const timer = setTimeout(() => controller.abort(), timeoutMs);
     let upstream: Response;
     try {
-      upstream = await fetchImplementation(url, {
+      upstream = await fetchImplementation(`${parsedOrigin.origin}${FIXED_PATH}`, {
         method: 'GET',
-        headers,
+        headers: listHeaders,
         signal: controller.signal,
       });
     } catch {
@@ -170,6 +306,7 @@ export function createFixedSupabaseClient(config: FixedSupabaseClientConfig): Fi
     return parsed as ReadonlyArray<Readonly<Record<string, unknown>>>;
   };
 
+<<<<<<< HEAD
   const searchMemoryRows = async (
     unsafeInput: MemorySearchInput,
     callerSignal?: AbortSignal,
@@ -178,6 +315,14 @@ export function createFixedSupabaseClient(config: FixedSupabaseClientConfig): Fi
     if (!parsedInput.success) {
       throw new FixedSupabaseClientError('FIXED_CLIENT_INVALID_REQUEST');
     }
+=======
+  const requestMemoryRpc = async <TInput>(
+    path: string,
+    input: TInput,
+    callerSignal?: AbortSignal,
+  ): Promise<unknown> => {
+    const parsedInput = JSON.parse(JSON.stringify(input));
+>>>>>>> b0ce5a5 (Implement memory_get/list_recent against fixed client seam)
     const controller = new AbortController();
     const cancel = () => controller.abort();
     callerSignal?.addEventListener('abort', cancel, { once: true });
@@ -185,6 +330,7 @@ export function createFixedSupabaseClient(config: FixedSupabaseClientConfig): Fi
     const timer = setTimeout(cancel, timeoutMs);
     let upstream: Response;
     try {
+<<<<<<< HEAD
       upstream = await fetchImplementation(`${parsedOrigin.origin}${FIXED_SEARCH_PATH}`, {
         method: 'POST',
         headers: {
@@ -193,6 +339,12 @@ export function createFixedSupabaseClient(config: FixedSupabaseClientConfig): Fi
           'Content-Profile': FIXED_SCHEMA,
         },
         body: JSON.stringify(parsedInput.data),
+=======
+      upstream = await fetchImplementation(`${parsedOrigin.origin}${path}`, {
+        method: 'POST',
+        headers: postHeaders,
+        body: JSON.stringify(parsedInput),
+>>>>>>> b0ce5a5 (Implement memory_get/list_recent against fixed client seam)
         signal: controller.signal,
       });
     } catch {
@@ -212,6 +364,7 @@ export function createFixedSupabaseClient(config: FixedSupabaseClientConfig): Fi
       throw new FixedSupabaseClientError('FIXED_CLIENT_RESPONSE_TOO_LARGE');
     }
     const body = await readBoundedBody(upstream, maxResponseBytes);
+<<<<<<< HEAD
     let value: unknown;
     try {
       value = JSON.parse(body);
@@ -252,4 +405,46 @@ export function createFixedSupabaseClient(config: FixedSupabaseClientConfig): Fi
   };
 
   return Object.freeze({ listMemoryRows, searchMemoryRows });
+=======
+    try {
+      return JSON.parse(body);
+    } catch {
+      throw new FixedSupabaseClientError('FIXED_CLIENT_MALFORMED_RESPONSE');
+    }
+  };
+
+  const getMemoryRow = async (
+    unsafeInput: MemoryGetInput,
+    callerSignal?: AbortSignal,
+  ): Promise<FixedMemoryGetRow | null> => {
+    const parsedInput = MemoryGetInputSchema.safeParse(unsafeInput);
+    if (!parsedInput.success) {
+      throw new FixedSupabaseClientError('FIXED_CLIENT_INVALID_REQUEST');
+    }
+    const payload = await requestMemoryRpc(FIXED_GET_PATH, parsedInput.data, callerSignal);
+    return parseMemoryGetPayload(payload);
+  };
+
+  const listRecentMemoryRows = async (
+    unsafeInput: MemoryListRecentInput,
+    callerSignal?: AbortSignal,
+  ): Promise<FixedMemoryListRecentResult> => {
+    const parsedInput = MemoryListRecentInputSchema.safeParse(unsafeInput);
+    if (!parsedInput.success) {
+      throw new FixedSupabaseClientError('FIXED_CLIENT_INVALID_REQUEST');
+    }
+    const payload = await requestMemoryRpc(FIXED_LIST_RECENT_PATH, parsedInput.data, callerSignal);
+    const result = parseMemoryListPayload(payload);
+    if (result.rows.length > parsedInput.data.limit) {
+      throw new FixedSupabaseClientError('FIXED_CLIENT_MALFORMED_RESPONSE');
+    }
+    return result;
+  };
+
+  return Object.freeze({
+    listMemoryRows,
+    getMemoryRow,
+    listRecentMemoryRows,
+  });
+>>>>>>> b0ce5a5 (Implement memory_get/list_recent against fixed client seam)
 }
