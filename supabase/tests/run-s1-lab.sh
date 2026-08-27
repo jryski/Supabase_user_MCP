@@ -73,6 +73,12 @@ supabase db reset \
   --network-id "$NETWORK_NAME" \
   >/dev/null
 
+log "Running the policy-lab pgTAP matrix."
+supabase test db \
+  --workdir "$PROJECT_ROOT" \
+  --local \
+  --network-id "$NETWORK_NAME"
+
 if docker inspect \
   supabase_kong_supabase-user-mcp-s1 \
   supabase_db_supabase-user-mcp-s1 \
