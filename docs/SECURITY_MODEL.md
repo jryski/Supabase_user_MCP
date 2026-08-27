@@ -136,6 +136,39 @@ Every exposed relation must satisfy the following review checklist:
 Database table grants and RLS policies are tested separately: grants decide whether the
 API role can reach a relation; RLS decides which rows are available after that.
 
+## SECURITY DEFINER pre-grant gate
+
+Before any `EXECUTE` grant to `anon` or `authenticated`, the routine's owning review must
+record that every item below passes. The ordering is fail closed: keep the routine
+inaccessible to both API roles until all items pass and the review result is recorded.
+
+- Identity is derived from verified request context, never from caller-supplied principal
+  arguments. Caller-supplied principal arguments must be removed, not merely compared to
+  `auth.uid()`.
+- The routine has a fixed safe `search_path`: empty when possible, otherwise an explicit
+  allowlist containing only required trusted schemas.
+- Every revoke and grant names the schema-qualified routine with its exact argument types,
+  so overloads cannot retain or receive access accidentally. Default access is removed with
+  `REVOKE EXECUTE ON FUNCTION schema.name(argument_types) FROM PUBLIC` before any narrower
+  grant is considered.
+- The owner and its effective privileges are reviewed. Unneeded `LOGIN`, `BYPASSRLS`, role
+  memberships, and object privileges are removed; owner authority is no broader than the
+  routine requires.
+- The owning review records the routine, owner, identity derivation, `search_path`, ACL
+  state, tests, reviewer, result, and date.
+
+Issue #3 checks L08 and L09 are inputs to this gate, not a second lint engine. L08 detects
+an API-executable `SECURITY DEFINER` routine without a fixed `search_path`. L09 is a
+source-text heuristic for request-identity markers and always requires human review: a
+marker can exist without safe authorization, while identity enforcement may be delegated.
+Neither check proves that caller-supplied principal arguments were removed or that the
+owning review is complete.
+
+For pre-existing schemas, enumerate `SECURITY DEFINER` routines and their effective ACLs,
+remove unintended `PUBLIC` access, then review each routine before adding an API grant.
+No current API grant is not the same as safe-to-grant. Existing service-role-only routines
+remain inaccessible until reviewed; existence or prior operation is not evidence of safety.
+
 ## Canonical mutation protocol
 
 Canonical and irreversible changes use a proposal state machine:
