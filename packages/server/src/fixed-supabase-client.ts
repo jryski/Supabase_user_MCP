@@ -1,7 +1,9 @@
 import type { LocalCredentials } from './local-credential-loader.js';
+import { MemorySearchInputSchema, type MemorySearchInput } from '@supabase-user-mcp/contracts';
 
 const FIXED_PATH = '/rest/v1/memories?select=id%2Ccontent&limit=100';
 const FIXED_SCHEMA = 'memory';
+const FIXED_SEARCH_PATH = '/rest/v1/rpc/authorized_memory_search_v1';
 const DEFAULT_TIMEOUT_MS = 5_000;
 const MAX_TIMEOUT_MS = 10_000;
 const DEFAULT_MAX_RESPONSE_BYTES = 256 * 1024;
@@ -9,6 +11,8 @@ const MAX_RESPONSE_BYTES = 1024 * 1024;
 
 export type FixedSupabaseClientErrorCode =
   | 'FIXED_CLIENT_INVALID_CREDENTIAL'
+  | 'FIXED_CLIENT_INVALID_REQUEST'
+  | 'FIXED_CLIENT_INVALID_CURSOR'
   | 'FIXED_CLIENT_TIMEOUT'
   | 'FIXED_CLIENT_NETWORK_FAILURE'
   | 'FIXED_CLIENT_MALFORMED_RESPONSE'
@@ -35,6 +39,24 @@ export interface FixedSupabaseClientConfig {
 
 export interface FixedSupabaseClient {
   readonly listMemoryRows: () => Promise<ReadonlyArray<Readonly<Record<string, unknown>>>>;
+  readonly searchMemoryRows: (
+    input: MemorySearchInput,
+    signal?: AbortSignal,
+  ) => Promise<FixedMemorySearchResult>;
+}
+
+export interface FixedMemorySearchRow {
+  readonly id: string;
+  readonly title: string;
+  readonly content: string;
+  readonly createdAt: string;
+  readonly provenanceSummary: string;
+  readonly rank: number;
+}
+
+export interface FixedMemorySearchResult {
+  readonly rows: ReadonlyArray<FixedMemorySearchRow>;
+  readonly nextCursor?: string;
 }
 
 function invalid(): never {
@@ -148,5 +170,86 @@ export function createFixedSupabaseClient(config: FixedSupabaseClientConfig): Fi
     }
   };
 
-  return Object.freeze({ listMemoryRows });
+  const searchMemoryRows = async (
+    unsafeInput: MemorySearchInput,
+    callerSignal?: AbortSignal,
+  ): Promise<FixedMemorySearchResult> => {
+    const parsedInput = MemorySearchInputSchema.safeParse(unsafeInput);
+    if (!parsedInput.success) {
+      throw new FixedSupabaseClientError('FIXED_CLIENT_INVALID_REQUEST');
+    }
+    const controller = new AbortController();
+    const cancel = () => controller.abort();
+    callerSignal?.addEventListener('abort', cancel, { once: true });
+    if (callerSignal?.aborted) controller.abort();
+    const timer = setTimeout(cancel, timeoutMs);
+    try {
+      const upstream = await fetchImplementation(`${parsedOrigin.origin}${FIXED_SEARCH_PATH}`, {
+        method: 'POST',
+        headers: {
+          ...headers,
+          'Content-Type': 'application/json',
+          'Content-Profile': FIXED_SCHEMA,
+        },
+        body: JSON.stringify(parsedInput.data),
+        signal: controller.signal,
+      });
+      if (!upstream.ok) {
+        throw new FixedSupabaseClientError(
+          upstream.status === 400 ? 'FIXED_CLIENT_INVALID_CURSOR' : 'FIXED_CLIENT_UPSTREAM_STATUS',
+        );
+      }
+      const advertisedLength = upstream.headers.get('content-length');
+      if (advertisedLength !== null && Number(advertisedLength) > maxResponseBytes) {
+        throw new FixedSupabaseClientError('FIXED_CLIENT_RESPONSE_TOO_LARGE');
+      }
+      const body = await readBoundedBody(upstream, maxResponseBytes);
+      let value: unknown;
+      try {
+        value = JSON.parse(body);
+      } catch {
+        throw new FixedSupabaseClientError('FIXED_CLIENT_MALFORMED_RESPONSE');
+      }
+      if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+        throw new FixedSupabaseClientError('FIXED_CLIENT_MALFORMED_RESPONSE');
+      }
+      const envelope = value as Record<string, unknown>;
+      const envelopeKeys = Object.keys(envelope);
+      if (
+        !envelopeKeys.every((key) => key === 'rows' || key === 'nextCursor') ||
+        !Array.isArray(envelope.rows) ||
+        envelope.rows.length > parsedInput.data.limit ||
+        (envelope.nextCursor !== undefined && typeof envelope.nextCursor !== 'string')
+      ) {
+        throw new FixedSupabaseClientError('FIXED_CLIENT_MALFORMED_RESPONSE');
+      }
+      const allowed = ['id', 'title', 'content', 'createdAt', 'provenanceSummary', 'rank'];
+      if (
+        envelope.rows.some((candidate) => {
+          if (typeof candidate !== 'object' || candidate === null || Array.isArray(candidate))
+            return true;
+          const candidateRecord = candidate as Record<string, unknown>;
+          return (
+            Object.keys(candidateRecord).length !== allowed.length ||
+            !Object.keys(candidateRecord).every((key) => allowed.includes(key))
+          );
+        })
+      ) {
+        throw new FixedSupabaseClientError('FIXED_CLIENT_MALFORMED_RESPONSE');
+      }
+      return Object.freeze({
+        rows: envelope.rows as FixedMemorySearchRow[],
+        ...(envelope.nextCursor === undefined ? {} : { nextCursor: envelope.nextCursor as string }),
+      });
+    } catch (error) {
+      if (error instanceof FixedSupabaseClientError) throw error;
+      if (controller.signal.aborted) throw new FixedSupabaseClientError('FIXED_CLIENT_TIMEOUT');
+      throw new FixedSupabaseClientError('FIXED_CLIENT_NETWORK_FAILURE');
+    } finally {
+      clearTimeout(timer);
+      callerSignal?.removeEventListener('abort', cancel);
+    }
+  };
+
+  return Object.freeze({ listMemoryRows, searchMemoryRows });
 }

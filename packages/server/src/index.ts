@@ -4,7 +4,10 @@ export {
   type FixedSupabaseClientConfig,
   FixedSupabaseClientError,
   type FixedSupabaseClientErrorCode,
+  type FixedMemorySearchResult,
+  type FixedMemorySearchRow,
 } from './fixed-supabase-client.js';
+export { createMemorySearch, type MemorySearchOptions } from './memory-search.js';
 export {
   LocalCredentialError,
   type LocalCredentialErrorCode,
