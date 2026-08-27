@@ -3,7 +3,8 @@
 - **Status:** Active planning baseline
 - **Tracking epic:** [#19](https://github.com/jryski/Supabase_user_MCP/issues/19)
 - **Scope:** local stdio, read-only, synthetic acceptance
-- **Base coordinate:** `e3b1af371bd0e231376d32efe1623ed32c011fb3`
+- **Planning baseline coordinate:** `e3b1af371bd0e231376d32efe1623ed32c011fb3`
+- **Last reconciled main:** `63269c64bb1d259faf93e7c3e63e3e210e705afc`
 
 ## Outcome
 
@@ -59,6 +60,25 @@ M2
 ```
 
 ## Work packages
+
+### Current execution order
+
+As of 2026-08-27, issues #2, #8, #9, #10, #25, and the S1 artifact lab are merged. The
+remaining read-only pilot work should proceed in this order:
+
+1. Complete exact-head adversarial review of the governed read implementation in PR #36.
+2. Assemble the protected credential loader, fixed client, and exactly three governed read tools
+   in the executable stdio server. The server currently exposes only the M0 compatibility probe.
+3. Complete issue #17 with a real MCP client, synthetic local Auth users and JWTs, Data API calls,
+   PostgreSQL RLS, revocation cases, deliberately weakened controls, and a machine-readable receipt.
+4. Complete issue #18's synthetic client, operator guide, rollback procedure, and experimental
+   release checklist.
+5. Reconcile issue labels and close superseded stacked integration PRs only after their unique
+   changes are present on `main`.
+
+Use the upstream Auth plus `StreamTransport` test topology selected by
+[ADR-0004](decisions/0004-narrow-upstream-mcp-reuse.md). Do not import the generic PostgREST MCP
+runtime or its caller-selected request tools.
 
 ### Dependency-ready now
 
