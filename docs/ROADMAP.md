@@ -4,6 +4,12 @@
 - **Planning horizon:** M0 through v1
 - **Last reviewed:** 2026-08-17
 
+## Active execution slice
+
+The immediate build target is the local-stdio, read-only v0.1 pilot described in [IMPLEMENTATION_PLAN.md](IMPLEMENTATION_PLAN.md) and tracked by [epic #19](https://github.com/jryski/Supabase_user_MCP/issues/19).
+
+That plan turns the remaining M0, M1, and M2 work into dependency-ordered contributor packages. M3–M6 remain valid later roadmap gates but do not block evaluating the read-only pilot.
+
 ## How milestones work
 
 Milestones are evidence gates, not dates. Work may be prototyped ahead, but a milestone
