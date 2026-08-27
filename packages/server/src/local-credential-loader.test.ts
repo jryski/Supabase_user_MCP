@@ -98,4 +98,17 @@ describe('loadLocalCredentials', () => {
       loadLocalCredentials(await fixture(), { permissionInspector: () => 'unsupported' }),
     ).rejects.toMatchObject({ code: 'CREDENTIAL_PERMISSION_CHECK_UNSUPPORTED' });
   });
+
+  it('provides the opened file owner and mode to the permission inspector', async () => {
+    const inspected: Array<{ mode: number; ownerUid: number }> = [];
+    await loadLocalCredentials(await fixture(), {
+      permissionInspector: (_path, mode, ownerUid) => {
+        inspected.push({ mode, ownerUid });
+        return 'secure';
+      },
+    });
+    expect(inspected).toHaveLength(1);
+    expect(inspected[0]?.mode).toBeTypeOf('number');
+    expect(inspected[0]?.ownerUid).toBeTypeOf('number');
+  });
 });

@@ -1,6 +1,6 @@
 BEGIN;
 CREATE EXTENSION IF NOT EXISTS pgtap WITH SCHEMA extensions;
-SELECT extensions.plan(19);
+SELECT extensions.plan(23);
 
 SET LOCAL ROLE authenticated;
 SELECT set_config('request.jwt.claims', '{"sub":"00000000-0000-0000-0000-000000000001","role":"authenticated","app_metadata":{"client_id":"client-active"}}', true);
@@ -36,6 +36,27 @@ SELECT extensions.throws_ok(
 );
 SELECT extensions.throws_ok($$UPDATE policy_lab.audit_events SET metadata = '{}' WHERE event_id = 'audit-active'$$, '42501', NULL, 'anon cannot update audit rows');
 SELECT extensions.throws_ok($$DELETE FROM policy_lab.audit_events WHERE event_id = 'audit-active'$$, '42501', NULL, 'anon cannot delete audit rows');
+
+RESET ROLE;
+SELECT extensions.is(
+  (SELECT string_agg(grantee || ':' || privilege_type, ',' ORDER BY grantee, privilege_type) FROM information_schema.role_table_grants WHERE table_schema = 'policy_lab' AND table_name = 'audit_events' AND grantee IN ('anon', 'authenticated')),
+  'authenticated:SELECT',
+  'audit table API privileges are exactly authenticated SELECT'
+);
+SET LOCAL ROLE authenticated;
+SELECT extensions.throws_ok(
+  'TRUNCATE policy_lab.audit_events',
+  '42501', NULL, 'authenticated cannot truncate audit rows'
+);
+RESET ROLE;
+SELECT extensions.throws_ok(
+  $$INSERT INTO policy_lab.audit_events (event_id, recorded_at, principal_id, client_id, workspace_id, event_type, metadata) VALUES ('nested-secret-key', now(), '00000000-0000-0000-0000-000000000001', 'client-active', 'workspace-alpha', 'memory.read.denied', '{"nested":{"access_token":"synthetic"}}')$$,
+  '23514', NULL, 'nested secret-bearing metadata keys are rejected'
+);
+SELECT extensions.throws_ok(
+  $$INSERT INTO policy_lab.audit_events (event_id, recorded_at, principal_id, client_id, workspace_id, event_type, metadata) VALUES ('oversized-metadata', now(), '00000000-0000-0000-0000-000000000001', 'client-active', 'workspace-alpha', 'memory.read.denied', jsonb_build_object('detail', repeat('x', 5000)))$$,
+  '23514', NULL, 'oversized metadata is rejected'
+);
 
 RESET ROLE;
 SAVEPOINT revoke_grant;

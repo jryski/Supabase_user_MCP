@@ -15,9 +15,9 @@ This slice adds startup-only local credential loading and a single fixed Supabas
 }
 ```
 
-The values must be nonblank and distinct. The publishable key must not have JWT shape; the user token must be a three-part JWT with an integer, unexpired `exp` claim. Files that are missing, symlinked, not regular files, larger than 16 KiB, malformed, schema-invalid, expired, or permission-unsafe fail with stable `LocalCredentialError` codes. Errors contain only their code and never echo the path, body, key, token, verifier, or secret fragments.
+The values must be nonblank and distinct. The publishable key must not have JWT shape; the user token must be a three-part JWT with an integer, unexpired `exp` claim. On POSIX, the file is opened once with `O_NOFOLLOW`, metadata and permissions are checked on that file descriptor, and at most 16 KiB plus one detection byte is read from the same descriptor. This closes path replacement and unbounded-growth races. Files that are missing, symlinked, not regular files, larger than 16 KiB, malformed, schema-invalid, expired, owner-mismatched, or permission-unsafe fail with stable `LocalCredentialError` codes. Errors contain only their code and never echo the path, body, key, token, verifier, or secret fragments.
 
-On POSIX, the default permission check rejects any group/other permission bits. Node does not provide a portable proof of Windows ACL safety. Therefore the default Windows behavior is fail-closed with `CREDENTIAL_PERMISSION_CHECK_UNSUPPORTED`. The trusted controller still needs to integrate a deterministic Windows ACL inspector and pass it through the startup-only `permissionInspector` seam. That inspector must return `insecure` for broad read or write grants and must not put inspected ACL data into errors. This slice does not claim or fake a Windows ACL proof.
+On POSIX, the default permission check requires the opened file to be owned by the current process user and rejects any group/other permission bits. Node does not provide a portable proof of Windows ACL safety. Therefore the default Windows behavior is fail-closed with `CREDENTIAL_PERMISSION_CHECK_UNSUPPORTED`. The trusted controller still needs to integrate a deterministic Windows ACL inspector and pass it through the startup-only `permissionInspector` seam. That inspector receives the opened file's owner and mode, must return `insecure` for broad read or write grants, and must not put inspected ACL data into errors. This slice does not claim or fake a Windows ACL proof.
 
 ## Fixed client boundary
 
@@ -27,7 +27,7 @@ On POSIX, the default permission check rejects any group/other permission bits. 
 - fixed `/rest/v1/memories?select=id%2Ccontent&limit=100` path;
 - fixed `Accept-Profile: memory` schema profile;
 - separate `apikey: <publishable key>` and `Authorization: Bearer <user JWT>` headers;
-- a default 5-second timeout, capped at 10 seconds;
+- a default 5-second timeout, capped at 10 seconds, covering headers and streamed body;
 - a default 256 KiB response ceiling, capped at 1 MiB, enforced while streaming;
 - a JSON array-of-objects response envelope.
 

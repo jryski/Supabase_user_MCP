@@ -12,6 +12,9 @@ describe('SECURITY DEFINER pre-grant gate contract', () => {
     expect(securityModel).toMatch(/caller-supplied principal arguments must be removed/i);
     expect(securityModel).toMatch(/fixed(?:,| and)? safe `search_path`/i);
     expect(securityModel).toMatch(/REVOKE EXECUTE ON FUNCTION[^\n]*FROM PUBLIC/i);
+    expect(securityModel).toMatch(/schema-qualified routine[^\n]*exact argument types/i);
+    expect(securityModel).toMatch(/LOGIN[\s\S]{0,80}BYPASSRLS/i);
+    expect(securityModel).toMatch(/owner authority is no broader than/i);
     expect(securityModel).toMatch(/owning review/i);
     expect(securityModel).toMatch(/L08[^\n]*L09|L09[^\n]*L08/i);
     expect(securityModel).toMatch(/L09[\s\S]{0,120}(?:heuristic|human review)/i);
@@ -37,7 +40,8 @@ describe('SECURITY DEFINER pre-grant gate contract', () => {
     expect(evidence).toMatch(/L08[^\n]*L09|L09[^\n]*L08/i);
     expect(evidence).toMatch(/verified request context/i);
     expect(evidence).toMatch(/caller-supplied principal/i);
-    expect(evidence).toMatch(/REVOKE[^\n]*anon[^\n]*authenticated/i);
+    expect(evidence).toMatch(/exact routine signature[^\n]*anon[^\n]*authenticated/i);
+    expect(evidence).toMatch(/owner's effective privileges/i);
     expect(evidence).toMatch(/no SQL|does not change[^\n]*(?:SQL|database)/i);
   });
 });

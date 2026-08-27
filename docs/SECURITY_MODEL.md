@@ -147,8 +147,13 @@ inaccessible to both API roles until all items pass and the review result is rec
   `auth.uid()`.
 - The routine has a fixed safe `search_path`: empty when possible, otherwise an explicit
   allowlist containing only required trusted schemas.
-- Default access is removed with `REVOKE EXECUTE ON FUNCTION ... FROM PUBLIC` before any
-  narrower grant is considered.
+- Every revoke and grant names the schema-qualified routine with its exact argument types,
+  so overloads cannot retain or receive access accidentally. Default access is removed with
+  `REVOKE EXECUTE ON FUNCTION schema.name(argument_types) FROM PUBLIC` before any narrower
+  grant is considered.
+- The owner and its effective privileges are reviewed. Unneeded `LOGIN`, `BYPASSRLS`, role
+  memberships, and object privileges are removed; owner authority is no broader than the
+  routine requires.
 - The owning review records the routine, owner, identity derivation, `search_path`, ACL
   state, tests, reviewer, result, and date.
 
