@@ -53,11 +53,12 @@ export function createMemorySearch(client: FixedSupabaseClient, options: MemoryS
         items: result.rows.map((row) => ({ ...row, contentTrust: 'untrusted' as const })),
         ...(result.nextCursor === undefined ? {} : { nextCursor: result.nextCursor }),
       };
+      if (readToolWireResponseByteLength(null, candidate) > MAX_RESPONSE_BYTES) {
+        return error('RESPONSE_LIMIT_EXCEEDED');
+      }
       const validated = MemorySearchOutputSchema.safeParse(candidate);
       if (!validated.success) {
-        return readToolWireResponseByteLength(null, candidate) > MAX_RESPONSE_BYTES
-          ? error('RESPONSE_LIMIT_EXCEEDED')
-          : error('INTERNAL_ERROR');
+        return error('INTERNAL_ERROR');
       }
       return validated.data;
     } catch (cause) {
