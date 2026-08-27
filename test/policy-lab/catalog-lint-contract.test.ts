@@ -6,7 +6,7 @@ const read = (path: string): string => readFileSync(path, 'utf8');
 describe('RLS catalog lint contract', () => {
   it('ships the deterministic catalog-only lint and its database fixture', () => {
     const lint = read('sql/lint/rls_catalog_lint.sql');
-    const fixture = read('supabase/tests/rls_catalog_lint.test.sql');
+    const fixture = read('supabase/tests/database/rls_catalog_lint_test.sql');
     const runner = read('scripts/run-policy-lab-catalog-test.mjs');
     const packageJson = JSON.parse(read('package.json')) as {
       scripts: Record<string, string>;
@@ -17,10 +17,11 @@ describe('RLS catalog lint contract', () => {
     );
     expect(runner).toContain('copyFileSync(source, staged)');
     expect(runner).toContain('rmSync(staged, { force: true })');
-    expect(fixture).toContain('\\ir .rls_catalog_lint.generated.sql');
+    expect(runner).toContain("'--network-id', network");
+    expect(fixture).toContain('\\ir .rls_catalog_lint.generated.inc');
     expect(lint).toMatch(/select\s+sev,\s*id,\s*obj,\s*det/i);
     expect(lint).toMatch(/order by\s+severity_order,\s*id,\s*obj/i);
-    expect(lint).toMatch(/aclexplode/i);
+    expect(lint).toMatch(/has_(?:table|any_column|function|sequence)_privilege/i);
     expect(lint).toMatch(/pg_(?:class|policy|proc)/i);
     expect(lint).not.toMatch(/execute\s+format|service_role|bypassrls/i);
 
@@ -36,6 +37,7 @@ describe('RLS catalog lint contract', () => {
       'L09',
       'L10',
       'L11',
+      'L12',
     ]) {
       expect(lint).toContain(`'${id}'`);
       expect(fixture).toContain(id);

@@ -1,11 +1,13 @@
 begin;
 create extension if not exists pgtap with schema extensions;
-select plan(23);
+select plan(28);
 
 create schema catalog_lint_fixture;
 
 create table catalog_lint_fixture.l01 (id bigint);
 grant select on catalog_lint_fixture.l01 to anon;
+create table catalog_lint_fixture.l01_column (id bigint);
+grant select (id) on catalog_lint_fixture.l01_column to anon;
 
 create table catalog_lint_fixture.l02 (id bigint);
 alter table catalog_lint_fixture.l02 enable row level security;
@@ -31,12 +33,18 @@ set search_path = pg_catalog
 as 'select 1';
 revoke all on function catalog_lint_fixture.l09() from public;
 grant execute on function catalog_lint_fixture.l09() to anon;
+create function catalog_lint_fixture.l09_public() returns integer language sql security definer
+set search_path = pg_catalog
+as 'select 1';
 
 create table catalog_lint_fixture.l10 (id bigint);
 alter table catalog_lint_fixture.l10 enable row level security;
 create policy l10_select on catalog_lint_fixture.l10 for select to authenticated
 using (id > 0);
 grant truncate, trigger, references on catalog_lint_fixture.l10 to authenticated;
+
+create sequence catalog_lint_fixture.l12;
+grant usage on sequence catalog_lint_fixture.l12 to authenticated;
 
 create table catalog_lint_fixture.l11_insert (id bigint, owner_id uuid);
 alter table catalog_lint_fixture.l11_insert enable row level security;
@@ -65,10 +73,12 @@ set search_path = pg_catalog
 as 'select auth.uid()';
 revoke all on function catalog_lint_fixture.clean_function() from public;
 grant execute on function catalog_lint_fixture.clean_function() to authenticated;
+create sequence catalog_lint_fixture.clean_sequence;
 
-\ir .rls_catalog_lint.generated.sql
+\ir .rls_catalog_lint.generated.inc
 
 select is((select count(*) from pg_temp.rls_catalog_lint where id = 'L01' and obj = 'catalog_lint_fixture.l01'), 1::bigint, 'L01 positive');
+select is((select count(*) from pg_temp.rls_catalog_lint where id = 'L01' and obj = 'catalog_lint_fixture.l01_column'), 1::bigint, 'L01 column-grant positive');
 select is((select count(*) from pg_temp.rls_catalog_lint where id = 'L02' and obj = 'catalog_lint_fixture.l02'), 1::bigint, 'L02 positive');
 select is((select count(*) from pg_temp.rls_catalog_lint where id = 'L03' and obj like 'catalog_lint_fixture.policies.%'), 1::bigint, 'L03 positive');
 select is((select count(*) from pg_temp.rls_catalog_lint where id = 'L04' and obj like 'catalog_lint_fixture.policies.%'), 1::bigint, 'L04 positive');
@@ -76,10 +86,13 @@ select is((select count(*) from pg_temp.rls_catalog_lint where id = 'L05' and ob
 select is((select count(*) from pg_temp.rls_catalog_lint where id = 'L06' and obj like 'catalog_lint_fixture.policies.%'), 1::bigint, 'L06 positive');
 select is((select count(*) from pg_temp.rls_catalog_lint where id = 'L07' and obj = 'catalog_lint_fixture.l07'), 1::bigint, 'L07 positive');
 select is((select count(*) from pg_temp.rls_catalog_lint where id = 'L08' and obj like 'catalog_lint_fixture.l08%'), 1::bigint, 'L08 positive');
-select is((select count(*) from pg_temp.rls_catalog_lint where id = 'L09' and obj like 'catalog_lint_fixture.l09%'), 1::bigint, 'L09 positive');
+select is((select count(*) from pg_temp.rls_catalog_lint where id = 'L09' and obj like 'catalog_lint_fixture.l09()%'), 1::bigint, 'L09 positive');
+select is((select count(*) from pg_temp.rls_catalog_lint where id = 'L09' and obj like 'catalog_lint_fixture.l09_public%'), 1::bigint, 'L09 PUBLIC execute positive');
 select is((select count(*) from pg_temp.rls_catalog_lint where id = 'L10' and obj = 'catalog_lint_fixture.l10'), 1::bigint, 'L10 positive');
 select is((select count(*) from pg_temp.rls_catalog_lint where id = 'L11' and obj like 'catalog_lint_fixture.l11_insert%'), 1::bigint, 'L11 INSERT positive');
 select is((select count(*) from pg_temp.rls_catalog_lint where id = 'L11' and obj like 'catalog_lint_fixture.l11_update%'), 1::bigint, 'L11 UPDATE positive');
+select is((select count(*) from pg_temp.rls_catalog_lint where id = 'L12' and obj = 'catalog_lint_fixture.l12'), 1::bigint, 'L12 sequence positive');
+select is((select count(*) from pg_temp.rls_catalog_lint where id = 'L10' and obj in ('storage.objects', 'storage.buckets', 'storage.buckets_analytics')), 3::bigint, 'L10 covers known Supabase Storage grants');
 
 select is((select count(*) from pg_temp.rls_catalog_lint where id = 'L01' and obj = 'catalog_lint_fixture.clean_table'), 0::bigint, 'L01 clean');
 select is((select count(*) from pg_temp.rls_catalog_lint where id = 'L02' and obj = 'catalog_lint_fixture.clean_table'), 0::bigint, 'L02 clean');
@@ -92,6 +105,7 @@ select is((select count(*) from pg_temp.rls_catalog_lint where id = 'L08' and ob
 select is((select count(*) from pg_temp.rls_catalog_lint where id = 'L09' and obj like 'catalog_lint_fixture.clean_function%'), 0::bigint, 'L09 clean');
 select is((select count(*) from pg_temp.rls_catalog_lint where id = 'L10' and obj = 'catalog_lint_fixture.clean_table'), 0::bigint, 'L10 clean');
 select is((select count(*) from pg_temp.rls_catalog_lint where id = 'L11' and obj like 'catalog_lint_fixture.clean_table%'), 0::bigint, 'L11 clean');
+select is((select count(*) from pg_temp.rls_catalog_lint where id = 'L12' and obj = 'catalog_lint_fixture.clean_sequence'), 0::bigint, 'L12 clean');
 
 select * from finish();
 rollback;
