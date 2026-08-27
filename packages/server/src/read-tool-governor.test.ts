@@ -2,7 +2,11 @@ import { describe, expect, it, vi } from 'vitest';
 import { createReadToolError, MEMORY_SEARCH_TOOL } from '@supabase-user-mcp/contracts';
 import { createHash } from 'node:crypto';
 
-import { createReadToolExecutor, type ReadToolOperationalEvent } from './read-tool-governor.js';
+import {
+  createReadToolExecutor,
+  type ReadToolExecutionContext,
+  type ReadToolOperationalEvent,
+} from './read-tool-governor.js';
 
 const validQuery = {
   query: 'synthetic search',
@@ -28,7 +32,6 @@ describe('createReadToolExecutor', () => {
       { query: '' },
       {
         requestId: 'req_invalid',
-        scope: 'read-governor-validation',
         emitOperationalEvent: (event) => {
           events.push(event);
         },
@@ -48,7 +51,7 @@ describe('createReadToolExecutor', () => {
       {
         requestId: 'req_invalid',
         operation: 'authorized_memory_search_v1',
-        scope: 'read-governor-validation',
+        scope: 'operation:authorized_memory_search_v1',
         normalizedArgumentDigest: createHash('sha256')
           .update(JSON.stringify({ query: '' }))
           .digest('hex')
@@ -58,8 +61,6 @@ describe('createReadToolExecutor', () => {
         rowCount: 0,
         outcome: 'blocked',
         denialClass: MEMORY_SEARCH_TOOL.errorMapping.validation,
-        principalId: undefined,
-        clientId: undefined,
       },
     ]);
   });
@@ -91,7 +92,7 @@ describe('createReadToolExecutor', () => {
       }),
     );
 
-    const result = await execute(validQuery, { scope: 'read-governor-rows' });
+    const result = await execute(validQuery, { principalId: 'principal-rows' });
 
     expect(result).toEqual({
       ok: false,
@@ -124,7 +125,7 @@ describe('createReadToolExecutor', () => {
       }),
     );
 
-    const result = await execute(validQuery, { scope: 'read-governor-bytes' });
+    const result = await execute(validQuery, { principalId: 'principal-bytes' });
 
     expect(result).toEqual({
       ok: false,
@@ -152,8 +153,8 @@ describe('createReadToolExecutor', () => {
       maxConcurrentExecutions: 1,
     });
 
-    const first = execute(validQuery, { scope: 'read-governor-concurrency' });
-    const second = execute(validQuery, { scope: 'read-governor-concurrency' });
+    const first = execute(validQuery, { principalId: 'principal-concurrency' });
+    const second = execute(validQuery, { principalId: 'principal-concurrency' });
 
     expect(await second).toEqual({
       ok: false,
@@ -184,10 +185,10 @@ describe('createReadToolExecutor', () => {
     );
 
     await expect(
-      executeRate(validQuery, { scope: 'read-governor-rate', requestId: 'rate-1' }),
+      executeRate(validQuery, { principalId: 'principal-rate', requestId: 'rate-1' }),
     ).resolves.toEqual({ ok: true, items: [] });
     await expect(
-      executeRate(validQuery, { scope: 'read-governor-rate', requestId: 'rate-2' }),
+      executeRate(validQuery, { principalId: 'principal-rate', requestId: 'rate-2' }),
     ).resolves.toMatchObject({
       ok: false,
       error: {
@@ -214,7 +215,10 @@ describe('createReadToolExecutor', () => {
         }),
     );
 
-    const result = execute(validQuery, { scope: 'read-governor-timeout', requestId: 'timeout' });
+    const result = execute(validQuery, {
+      principalId: 'principal-timeout',
+      requestId: 'timeout',
+    });
     await vi.advanceTimersByTimeAsync(30);
     await expect(result).resolves.toEqual({
       ok: false,
@@ -246,7 +250,6 @@ describe('createReadToolExecutor', () => {
         { query: 'sensitive-query', filters: { tags: ['x'] } },
         {
           requestId: 'evt-ok',
-          scope: 'read-governor-events',
           principalId: 'principal-1',
           emitOperationalEvent: (event) => {
             events.push(event);
@@ -271,7 +274,7 @@ describe('createReadToolExecutor', () => {
     expect(event).toMatchObject({
       requestId: 'evt-ok',
       operation: 'authorized_memory_search_v1',
-      scope: 'read-governor-events',
+      scope: 'principal:principal-1',
       principalId: 'principal-1',
       outcome: 'success',
       rowCount: 1,
@@ -290,7 +293,7 @@ describe('createReadToolExecutor', () => {
 
     await expect(
       execute(cyclic, {
-        scope: 'read-governor-cyclic',
+        principalId: 'principal-cyclic',
         emitOperationalEvent: (event) => events.push(event),
       }),
     ).resolves.toEqual(createReadToolError('INVALID_REQUEST'));
@@ -306,7 +309,7 @@ describe('createReadToolExecutor', () => {
 
     await expect(
       execute(validQuery, {
-        scope: 'read-governor-error-output',
+        principalId: 'principal-error-output',
         emitOperationalEvent: (event) => events.push(event),
       }),
     ).resolves.toEqual(createReadToolError('RESOURCE_UNAVAILABLE'));
@@ -322,5 +325,53 @@ describe('createReadToolExecutor', () => {
         maxConcurrentExecutions: 0,
       }),
     ).toThrow('Invalid read-tool governance policy.');
+  });
+
+  it('ignores caller-reachable scope churn when applying a verified principal budget', async () => {
+    const events: ReadToolOperationalEvent[] = [];
+    const execute = createReadToolExecutor(
+      MEMORY_SEARCH_TOOL,
+      () => Promise.resolve({ ok: true as const, items: [] }),
+      { maxRequestsPerWindow: 1 },
+    );
+    const hostileContext = (scope: string) =>
+      ({
+        principalId: 'verified-principal-scope-churn',
+        scope,
+        emitOperationalEvent: (event: ReadToolOperationalEvent) => events.push(event),
+      }) as unknown as ReadToolExecutionContext;
+
+    await expect(execute(validQuery, hostileContext('attacker-scope-one'))).resolves.toEqual({
+      ok: true,
+      items: [],
+    });
+    await expect(execute(validQuery, hostileContext('attacker-scope-two'))).resolves.toMatchObject({
+      ok: false,
+      error: { code: MEMORY_SEARCH_TOOL.errorMapping.unavailable },
+    });
+    expect(events.map((event) => event.scope)).toEqual([
+      'principal:verified-principal-scope-churn',
+      'principal:verified-principal-scope-churn',
+    ]);
+  });
+
+  it('does not let a hostile scope collision consume another principal budget', async () => {
+    const execute = createReadToolExecutor(
+      MEMORY_SEARCH_TOOL,
+      () => Promise.resolve({ ok: true as const, items: [] }),
+      { maxRequestsPerWindow: 1 },
+    );
+    const hostileAttackerContext = {
+      principalId: 'verified-attacker-principal',
+      scope: 'verified-victim-principal',
+    } as unknown as ReadToolExecutionContext;
+
+    await expect(execute(validQuery, hostileAttackerContext)).resolves.toEqual({
+      ok: true,
+      items: [],
+    });
+    await expect(
+      execute(validQuery, { principalId: 'verified-victim-principal' }),
+    ).resolves.toEqual({ ok: true, items: [] });
   });
 });

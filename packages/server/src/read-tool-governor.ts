@@ -56,7 +56,6 @@ export interface ReadToolExecutionContext {
   readonly requestId?: string | number | null;
   readonly principalId?: string;
   readonly clientId?: string;
-  readonly scope?: string;
   readonly signal?: AbortSignal;
   readonly now?: () => number;
   readonly emitOperationalEvent?: (event: ReadToolOperationalEvent) => void;
@@ -69,7 +68,17 @@ const DEFAULT_RATE_LIMIT = {
 } as const;
 const MAX_TRACKED_SCOPES = 1_024;
 
+// Process-global by design: rebuilding a tool executor must not reset a warm process's budget.
 const limiterStates = new Map<string, ReadToolLimiterState>();
+
+function deriveLimiterScope(
+  descriptor: ReadToolDescriptor<z.ZodTypeAny, z.ZodTypeAny>,
+  context: ReadToolExecutionContext,
+): string {
+  if (context.principalId !== undefined) return `principal:${context.principalId}`;
+  if (context.clientId !== undefined) return `client:${context.clientId}`;
+  return `operation:${descriptor.operation}`;
+}
 
 function createDefaultState(now: number): ReadToolLimiterState {
   return {
@@ -210,7 +219,7 @@ export function createReadToolExecutor<TInput extends z.ZodTypeAny, TOutput exte
     unsafeInput: unknown,
     context: ReadToolExecutionContext = {},
   ): Promise<z.infer<TOutput>> => {
-    const scope = context.scope ?? context.principalId ?? context.clientId ?? descriptor.operation;
+    const scope = deriveLimiterScope(descriptor, context);
     const requestId = context.requestId ?? null;
     const now = context.now ?? (() => Date.now());
     const emitOperationalEvent = context.emitOperationalEvent ?? emitNoop;

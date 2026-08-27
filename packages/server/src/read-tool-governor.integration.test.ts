@@ -24,7 +24,7 @@ describe('read-tool governor integration', () => {
       execute(
         { relation: 'private.memories' },
         {
-          scope: `integration-${_name}`,
+          principalId: `integration-${_name}`,
           emitOperationalEvent: (event) => events.push(event),
         },
       ),
