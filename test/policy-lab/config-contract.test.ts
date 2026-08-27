@@ -15,7 +15,7 @@ describe('local Supabase policy lab contract', () => {
     expect(packageJson.devDependencies.supabase).toBe('2.115.0');
     expect(packageJson.scripts['policy-lab:reset']).toBe('supabase db reset --local');
     expect(packageJson.scripts['policy-lab:test']).toBe(
-      'supabase test db --local --network-id supabase-s1-loopback',
+      'node scripts/run-policy-lab-catalog-test.mjs',
     );
   });
 
