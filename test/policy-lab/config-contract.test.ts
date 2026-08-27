@@ -14,13 +14,15 @@ describe('local Supabase policy lab contract', () => {
 
     expect(packageJson.devDependencies.supabase).toBe('2.115.0');
     expect(packageJson.scripts['policy-lab:reset']).toBe('supabase db reset --local');
-    expect(packageJson.scripts['policy-lab:test']).toBe('supabase test db --local');
+    expect(packageJson.scripts['policy-lab:test']).toBe(
+      'node scripts/run-policy-lab-catalog-test.mjs',
+    );
   });
 
   it('pins the local project and required SQL files', () => {
-    expect(read('supabase/config.toml')).toContain('project_id = "supabase-user-mcp-policy-lab"');
+    expect(read('supabase/config.toml')).toContain('project_id = "supabase-user-mcp-s1"');
     expect(read('supabase/seed.sql')).toContain('policy_lab.memories');
-    expect(read('supabase/tests/policy_lab.test.sql')).toContain(
+    expect(read('supabase/tests/database/policy_lab_test.sql')).toContain(
       'CREATE EXTENSION IF NOT EXISTS pgtap',
     );
   });
