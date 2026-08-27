@@ -10,15 +10,19 @@ describe('revocation audit contract', () => {
     };
     const migration = read('supabase/migrations/20260823000200_revocation_audit.sql');
     const seed = read('supabase/seed.sql');
-    const fixture = read('supabase/tests/revocation_audit.test.sql');
+    const fixture = read('supabase/tests/database/revocation_audit_test.sql');
     const evidence = read('docs/evidence/ISSUE_12_REVOCATION_AUDIT.md');
 
     expect(packageJson.scripts['policy-lab:test:revocation-audit']).toBe(
-      'supabase test db supabase/tests/revocation_audit.test.sql --local',
+      'node scripts/run-policy-lab-catalog-test.mjs',
     );
     expect(migration).toMatch(/create table policy_lab\.audit_events/i);
     expect(migration).toMatch(/event_id text primary key/i);
     expect(migration).toMatch(/recorded_at timestamptz/i);
+    expect(migration).toMatch(/client_id text not null/i);
+    expect(migration).toMatch(/workspace_id text not null/i);
+    expect(migration).toMatch(/octet_length\(metadata::text\) <= 4096/i);
+    expect(migration).toMatch(/access\[_-\]\?token/i);
     expect(migration).toMatch(/enable row level security/i);
     expect(migration).toMatch(/force row level security/i);
     expect(migration).toMatch(/revoke all[\s\S]*anon, authenticated/i);
@@ -39,6 +43,10 @@ describe('revocation audit contract', () => {
     expect(fixture).toMatch(/set local role authenticated/i);
     expect(fixture).toMatch(/set local role anon/i);
     expect(fixture).toMatch(/throws_ok[\s\S]*(?:insert|update|delete)/i);
+    expect(fixture).toMatch(/authenticated:SELECT/i);
+    expect(fixture).toMatch(/TRUNCATE policy_lab\.audit_events/i);
+    expect(fixture).toMatch(/nested secret-bearing metadata keys are rejected/i);
+    expect(fixture).toMatch(/oversized metadata is rejected/i);
     expect(fixture).toMatch(/savepoint[\s\S]*rollback to savepoint/i);
     expect(fixture).toMatch(/alter policy[\s\S]*guard detects/i);
     expect(fixture).toMatch(/update policy_lab\.capability_grants[\s\S]*state = 'revoked'/i);

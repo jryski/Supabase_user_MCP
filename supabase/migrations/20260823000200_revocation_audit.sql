@@ -2,12 +2,13 @@ CREATE TABLE policy_lab.audit_events (
   event_id text PRIMARY KEY,
   recorded_at timestamptz NOT NULL,
   principal_id uuid NOT NULL REFERENCES policy_lab.principals,
-  client_id text REFERENCES policy_lab.clients,
-  workspace_id text,
+  client_id text NOT NULL REFERENCES policy_lab.clients,
+  workspace_id text NOT NULL,
   event_type text NOT NULL CHECK (event_type IN ('memory.read.allowed', 'memory.read.denied')),
   metadata jsonb NOT NULL DEFAULT '{}'::jsonb CHECK (
     jsonb_typeof(metadata) = 'object'
-    AND NOT metadata ?| ARRAY['secret', 'token', 'credential', 'payload']
+    AND octet_length(metadata::text) <= 4096
+    AND metadata::text !~* '"(secret|token|credential|password|authorization|cookie|payload|access[_-]?token|refresh[_-]?token)"[[:space:]]*:'
   )
 );
 

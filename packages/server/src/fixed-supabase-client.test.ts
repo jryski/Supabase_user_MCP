@@ -90,6 +90,34 @@ describe('createFixedSupabaseClient', () => {
     }
   });
 
+  it('keeps the timeout active while consuming a stalled search response body', async () => {
+    vi.useFakeTimers();
+    const fetch = vi.fn((_url: string | URL | Request, init?: RequestInit) =>
+      Promise.resolve(
+        new Response(
+          new ReadableStream({
+            start(controller) {
+              init?.signal?.addEventListener('abort', () =>
+                controller.error(new DOMException('aborted', 'AbortError')),
+              );
+            },
+          }),
+        ),
+      ),
+    );
+    const client = createFixedSupabaseClient({
+      origin,
+      credentials: { projectPublishableKey: 'key', userAccessToken: token },
+      fetch,
+      timeoutMs: 25,
+    });
+    const pending = client.searchMemoryRows({ query: 'x', mode: 'text', limit: 1 });
+    const assertion = expect(pending).rejects.toMatchObject({ code: 'FIXED_CLIENT_TIMEOUT' });
+    await vi.advanceTimersByTimeAsync(25);
+    await assertion;
+    vi.useRealTimers();
+  });
+
   it('makes only the fixed bounded identity-preserving read', async () => {
     const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(response('[{"id":"one"}]'));
     const client = createFixedSupabaseClient({
@@ -331,6 +359,34 @@ describe('createFixedSupabaseClient', () => {
             reject(new DOMException('aborted', 'AbortError')),
           ),
         ),
+    );
+    const client = createFixedSupabaseClient({
+      origin,
+      credentials: { projectPublishableKey: 'key', userAccessToken: token },
+      fetch,
+      timeoutMs: 25,
+    });
+    const pending = client.listMemoryRows();
+    const assertion = expect(pending).rejects.toMatchObject({ code: 'FIXED_CLIENT_TIMEOUT' });
+    await vi.advanceTimersByTimeAsync(25);
+    await assertion;
+    vi.useRealTimers();
+  });
+
+  it('keeps the timeout active while consuming a stalled response body', async () => {
+    vi.useFakeTimers();
+    const fetch = vi.fn((_url: string | URL | Request, init?: RequestInit) =>
+      Promise.resolve(
+        new Response(
+          new ReadableStream({
+            start(controller) {
+              init?.signal?.addEventListener('abort', () =>
+                controller.error(new DOMException('aborted', 'AbortError')),
+              );
+            },
+          }),
+        ),
+      ),
     );
     const client = createFixedSupabaseClient({
       origin,

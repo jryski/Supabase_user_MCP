@@ -142,7 +142,7 @@ async function readBoundedBody(response: Response, maximum: number): Promise<str
     }
   } catch (error) {
     if (error instanceof FixedSupabaseClientError) throw error;
-    throw new FixedSupabaseClientError('FIXED_CLIENT_NETWORK_FAILURE');
+    throw error;
   }
   return Buffer.concat(chunks, length).toString('utf8');
 }
@@ -310,38 +310,38 @@ export function createFixedSupabaseClient(config: FixedSupabaseClientConfig): Fi
   const listMemoryRows = async (): Promise<ReadonlyArray<Readonly<Record<string, unknown>>>> => {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeoutMs);
-    let upstream: Response;
     try {
-      upstream = await fetchImplementation(`${parsedOrigin.origin}${FIXED_PATH}`, {
+      const upstream = await fetchImplementation(`${parsedOrigin.origin}${FIXED_PATH}`, {
         method: 'GET',
         headers: listHeaders,
         signal: controller.signal,
       });
-    } catch {
+      if (!upstream.ok) throw new FixedSupabaseClientError('FIXED_CLIENT_UPSTREAM_STATUS');
+      const advertisedLength = upstream.headers.get('content-length');
+      if (advertisedLength !== null && Number(advertisedLength) > maxResponseBytes) {
+        throw new FixedSupabaseClientError('FIXED_CLIENT_RESPONSE_TOO_LARGE');
+      }
+      const body = await readBoundedBody(upstream, maxResponseBytes);
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(body);
+      } catch {
+        throw new FixedSupabaseClientError('FIXED_CLIENT_MALFORMED_RESPONSE');
+      }
+      if (
+        !Array.isArray(parsed) ||
+        parsed.some((row) => typeof row !== 'object' || row === null || Array.isArray(row))
+      ) {
+        throw new FixedSupabaseClientError('FIXED_CLIENT_MALFORMED_RESPONSE');
+      }
+      return parsed as ReadonlyArray<Readonly<Record<string, unknown>>>;
+    } catch (error) {
+      if (error instanceof FixedSupabaseClientError) throw error;
       if (controller.signal.aborted) throw new FixedSupabaseClientError('FIXED_CLIENT_TIMEOUT');
       throw new FixedSupabaseClientError('FIXED_CLIENT_NETWORK_FAILURE');
     } finally {
       clearTimeout(timer);
     }
-    if (!upstream.ok) throw new FixedSupabaseClientError('FIXED_CLIENT_UPSTREAM_STATUS');
-    const advertisedLength = upstream.headers.get('content-length');
-    if (advertisedLength !== null && Number(advertisedLength) > maxResponseBytes) {
-      throw new FixedSupabaseClientError('FIXED_CLIENT_RESPONSE_TOO_LARGE');
-    }
-    const body = await readBoundedBody(upstream, maxResponseBytes);
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(body);
-    } catch {
-      throw new FixedSupabaseClientError('FIXED_CLIENT_MALFORMED_RESPONSE');
-    }
-    if (
-      !Array.isArray(parsed) ||
-      parsed.some((row) => typeof row !== 'object' || row === null || Array.isArray(row))
-    ) {
-      throw new FixedSupabaseClientError('FIXED_CLIENT_MALFORMED_RESPONSE');
-    }
-    return parsed as ReadonlyArray<Readonly<Record<string, unknown>>>;
   };
 
   const requestMemoryRpc = async <TInput>(
@@ -355,35 +355,37 @@ export function createFixedSupabaseClient(config: FixedSupabaseClientConfig): Fi
     callerSignal?.addEventListener('abort', cancel, { once: true });
     if (callerSignal?.aborted) controller.abort();
     const timer = setTimeout(cancel, timeoutMs);
-    let upstream: Response;
     try {
-      upstream = await fetchImplementation(`${parsedOrigin.origin}${path}`, {
+      const upstream = await fetchImplementation(`${parsedOrigin.origin}${path}`, {
         method: 'POST',
         headers: postHeaders,
         body: JSON.stringify(parsedInput),
         signal: controller.signal,
       });
-    } catch {
+      if (!upstream.ok) {
+        throw new FixedSupabaseClientError(
+          upstream.status === 400 ? 'FIXED_CLIENT_INVALID_CURSOR' : 'FIXED_CLIENT_UPSTREAM_STATUS',
+        );
+      }
+      const advertisedLength = upstream.headers.get('content-length');
+      if (advertisedLength !== null && Number(advertisedLength) > maxResponseBytes) {
+        throw new FixedSupabaseClientError('FIXED_CLIENT_RESPONSE_TOO_LARGE');
+      }
+      const body = await readBoundedBody(upstream, maxResponseBytes);
+      let value: unknown;
+      try {
+        value = JSON.parse(body);
+      } catch {
+        throw new FixedSupabaseClientError('FIXED_CLIENT_MALFORMED_RESPONSE');
+      }
+      return value;
+    } catch (error) {
+      if (error instanceof FixedSupabaseClientError) throw error;
       if (controller.signal.aborted) throw new FixedSupabaseClientError('FIXED_CLIENT_TIMEOUT');
       throw new FixedSupabaseClientError('FIXED_CLIENT_NETWORK_FAILURE');
     } finally {
       clearTimeout(timer);
       callerSignal?.removeEventListener('abort', cancel);
-    }
-    if (!upstream.ok) {
-      throw new FixedSupabaseClientError(
-        upstream.status === 400 ? 'FIXED_CLIENT_INVALID_CURSOR' : 'FIXED_CLIENT_UPSTREAM_STATUS',
-      );
-    }
-    const advertisedLength = upstream.headers.get('content-length');
-    if (advertisedLength !== null && Number(advertisedLength) > maxResponseBytes) {
-      throw new FixedSupabaseClientError('FIXED_CLIENT_RESPONSE_TOO_LARGE');
-    }
-    const body = await readBoundedBody(upstream, maxResponseBytes);
-    try {
-      return JSON.parse(body);
-    } catch {
-      throw new FixedSupabaseClientError('FIXED_CLIENT_MALFORMED_RESPONSE');
     }
   };
 
