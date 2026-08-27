@@ -30,6 +30,7 @@
   "devDependencies": {
     "@biomejs/biome": "2.5.8",
     "@modelcontextprotocol/client": "2.0.0",
+    "@supabase/mcp-utils": "0.7.0",
     "@types/node": "22.20.1",
     "tsx": "4.23.12",
     "typescript": "7.0.2",
