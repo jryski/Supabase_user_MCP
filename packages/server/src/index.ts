@@ -9,6 +9,12 @@ export {
 } from './fixed-supabase-client.js';
 export { createMemorySearch, type MemorySearchOptions } from './memory-search.js';
 export {
+  createReadToolExecutor,
+  type ReadToolExecutionContext,
+  type ReadToolGovernancePolicy,
+  type ReadToolOperationalEvent,
+} from './read-tool-governor.js';
+export {
   LocalCredentialError,
   type LocalCredentialErrorCode,
   type LocalCredentialLoaderOptions,

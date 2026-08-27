@@ -1,0 +1,284 @@
+import { describe, expect, it, vi } from 'vitest';
+import { MEMORY_SEARCH_TOOL } from '@supabase-user-mcp/contracts';
+import { createHash } from 'node:crypto';
+
+import { createReadToolExecutor, type ReadToolOperationalEvent } from './read-tool-governor.js';
+
+const validQuery = {
+  query: 'synthetic search',
+  limit: 2,
+};
+
+const sampleRow = {
+  id: `mem_${'A'.repeat(23)}`,
+  title: 'Synthetic title',
+  content: 'Synthetic content',
+  contentTrust: 'untrusted' as const,
+  createdAt: '2026-08-20T00:00:00.000Z',
+  provenanceSummary: 'synthetic fixture',
+};
+
+describe('createReadToolExecutor', () => {
+  it('validates read arguments before execution and emits a redacted denied event', async () => {
+    const events: ReadToolOperationalEvent[] = [];
+    const handler = vi.fn();
+    const execute = createReadToolExecutor(MEMORY_SEARCH_TOOL, handler);
+
+    const result = await execute(
+      { query: '' },
+      {
+        requestId: 'req_invalid',
+        scope: 'read-governor-validation',
+        emitOperationalEvent: (event) => {
+          events.push(event);
+        },
+      },
+    );
+
+    expect(result).toEqual({
+      ok: false,
+      error: {
+        code: MEMORY_SEARCH_TOOL.errorMapping.validation,
+        message: 'Request is invalid.',
+        retryable: false,
+      },
+    });
+    expect(handler).not.toHaveBeenCalled();
+    expect(events).toEqual([
+      {
+        requestId: 'req_invalid',
+        operation: 'authorized_memory_search_v1',
+        scope: 'read-governor-validation',
+        normalizedArgumentDigest: createHash('sha256')
+          .update(JSON.stringify({ query: '' }))
+          .digest('hex')
+          .slice(0, 24),
+        timestamp: expect.any(String),
+        durationMs: expect.any(Number),
+        rowCount: 0,
+        outcome: 'blocked',
+        denialClass: MEMORY_SEARCH_TOOL.errorMapping.validation,
+        principalId: undefined,
+        clientId: undefined,
+      },
+    ]);
+  });
+
+  it('enforces row ceilings before returning oversized success responses', async () => {
+    const tool = {
+      ...MEMORY_SEARCH_TOOL,
+      limits: {
+        ...MEMORY_SEARCH_TOOL.limits,
+        maxRows: 1,
+      },
+    };
+    const execute = createReadToolExecutor(tool, () =>
+      Promise.resolve({
+        ok: true as const,
+        items: [
+          {
+            ...sampleRow,
+            rank: 0.91,
+            content: 'first',
+          },
+          {
+            ...sampleRow,
+            id: `mem_${'B'.repeat(23)}`,
+            rank: 0.82,
+            content: 'second',
+          },
+        ],
+      }),
+    );
+
+    const result = await execute(validQuery, { scope: 'read-governor-rows' });
+
+    expect(result).toEqual({
+      ok: false,
+      error: {
+        code: MEMORY_SEARCH_TOOL.errorMapping.responseLimit,
+        message: 'Response limit exceeded.',
+        retryable: false,
+      },
+    });
+  });
+
+  it('enforces wire byte ceilings after output validation', async () => {
+    const tool = {
+      ...MEMORY_SEARCH_TOOL,
+      limits: {
+        ...MEMORY_SEARCH_TOOL.limits,
+        maxResponseBytes: 96,
+      },
+    };
+    const execute = createReadToolExecutor(tool, () =>
+      Promise.resolve({
+        ok: true as const,
+        items: [
+          {
+            ...sampleRow,
+            rank: 0.5,
+            content: 'x'.repeat(256),
+          },
+        ],
+      }),
+    );
+
+    const result = await execute(validQuery, { scope: 'read-governor-bytes' });
+
+    expect(result).toEqual({
+      ok: false,
+      error: {
+        code: MEMORY_SEARCH_TOOL.errorMapping.responseLimit,
+        message: 'Response limit exceeded.',
+        retryable: false,
+      },
+    });
+  });
+
+  it('rejects excess concurrency and excess rate with non-enumerating denial events', async () => {
+    const concurrencyTool = {
+      ...MEMORY_SEARCH_TOOL,
+      limits: {
+        ...MEMORY_SEARCH_TOOL.limits,
+        maxExecutionMs: 30,
+      },
+    };
+    let release: () => void = () => undefined;
+    const blocked = new Promise<unknown>((resolve) => {
+      release = () => resolve({ ok: true as const, items: [] });
+    });
+    const execute = createReadToolExecutor(concurrencyTool, () => blocked, {
+      maxConcurrentExecutions: 1,
+    });
+
+    const first = execute(validQuery, { scope: 'read-governor-concurrency' });
+    const second = execute(validQuery, { scope: 'read-governor-concurrency' });
+
+    expect(await second).toEqual({
+      ok: false,
+      error: {
+        code: MEMORY_SEARCH_TOOL.errorMapping.unavailable,
+        message: 'Record is unavailable.',
+        retryable: false,
+      },
+    });
+    release();
+    expect(await first).toEqual({ ok: true, items: [] });
+
+    const rateTool = {
+      ...MEMORY_SEARCH_TOOL,
+      limits: {
+        ...MEMORY_SEARCH_TOOL.limits,
+        maxExecutionMs: 1,
+      },
+    };
+    const executeRate = createReadToolExecutor(
+      rateTool,
+      () => Promise.resolve({ ok: true as const, items: [] }),
+      {
+        maxRequestsPerWindow: 1,
+        requestWindowMs: 60_000,
+        maxConcurrentExecutions: 4,
+      },
+    );
+
+    await expect(
+      executeRate(validQuery, { scope: 'read-governor-rate', requestId: 'rate-1' }),
+    ).resolves.toEqual({ ok: true, items: [] });
+    await expect(
+      executeRate(validQuery, { scope: 'read-governor-rate', requestId: 'rate-2' }),
+    ).resolves.toMatchObject({
+      ok: false,
+      error: {
+        code: MEMORY_SEARCH_TOOL.errorMapping.unavailable,
+      },
+    });
+  });
+
+  it('maps caller or internal cancellation to deadline errors', async () => {
+    vi.useFakeTimers();
+    const execute = createReadToolExecutor(
+      {
+        ...MEMORY_SEARCH_TOOL,
+        limits: {
+          ...MEMORY_SEARCH_TOOL.limits,
+          maxExecutionMs: 25,
+        },
+      },
+      (_input, signal) =>
+        new Promise((_resolve, reject) => {
+          signal.addEventListener('abort', () => {
+            reject(new Error('cancelled'));
+          });
+        }),
+    );
+
+    const result = execute(validQuery, { scope: 'read-governor-timeout', requestId: 'timeout' });
+    await vi.advanceTimersByTimeAsync(30);
+    await expect(result).resolves.toEqual({
+      ok: false,
+      error: {
+        code: MEMORY_SEARCH_TOOL.errorMapping.timeout,
+        message: 'Request deadline exceeded.',
+        retryable: false,
+      },
+    });
+    vi.useRealTimers();
+  });
+
+  it('emits redacted, structured operational events for successful calls', async () => {
+    const events: ReadToolOperationalEvent[] = [];
+    const execute = createReadToolExecutor(MEMORY_SEARCH_TOOL, () =>
+      Promise.resolve({
+        ok: true as const,
+        items: [
+          {
+            ...sampleRow,
+            rank: 0.75,
+          },
+        ],
+      }),
+    );
+
+    await expect(
+      execute(
+        { query: 'sensitive-query', filters: { tags: ['x'] } },
+        {
+          requestId: 'evt-ok',
+          scope: 'read-governor-events',
+          principalId: 'principal-1',
+          emitOperationalEvent: (event) => {
+            events.push(event);
+          },
+        },
+      ),
+    ).resolves.toEqual({
+      ok: true,
+      items: [
+        {
+          ...sampleRow,
+          rank: 0.75,
+        },
+      ],
+    });
+
+    expect(events).toHaveLength(1);
+    const event = events[0];
+    if (event === undefined) {
+      throw new Error('Expected one operational event.');
+    }
+    expect(event).toMatchObject({
+      requestId: 'evt-ok',
+      operation: 'authorized_memory_search_v1',
+      scope: 'read-governor-events',
+      principalId: 'principal-1',
+      outcome: 'success',
+      rowCount: 1,
+      timestamp: expect.any(String),
+      durationMs: expect.any(Number),
+    });
+    expect(event.normalizedArgumentDigest).not.toContain('sensitive-query');
+    expect(event.normalizedArgumentDigest).toHaveLength(24);
+  });
+});
