@@ -22,10 +22,11 @@
     "format:check": "biome format .",
     "lint": "biome lint .",
     "policy-lab:reset": "supabase db reset --local",
-    "policy-lab:test": "supabase test db --local",
+    "policy-lab:test": "supabase test db --local --network-id supabase-s1-loopback",
     "start": "node packages/server/dist/cli.js",
     "test": "npm run build && vitest run",
     "test:compatibility": "npm run build && vitest run test/compatibility",
+    "test:s1": "bash supabase/tests/run-s1-lab.sh",
     "typecheck": "tsc -b --pretty false && tsc -p tsconfig.test.json --noEmit --pretty false"
   },
   "devDependencies": {
