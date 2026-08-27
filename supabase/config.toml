@@ -1,0 +1,50 @@
+# Local Supabase project configuration for S1 Governed Artifact Inspection lab.
+# This project is synthetic-only and must not be pointed at production.
+
+project_id = "supabase-user-mcp-s1"
+
+[api]
+enabled = true
+# Use non-standard ports to avoid colliding with unrelated local listeners.
+port = 62421
+schemas = ["public", "storage", "extensions"]
+extra_search_path = ["public", "extensions"]
+max_rows = 200
+
+[db]
+port = 62422
+shadow_port = 62420
+major_version = 17
+health_timeout = "2m"
+
+[db.seed]
+enabled = true
+sql_paths = ["./seed.sql"]
+
+[db.migrations]
+enabled = true
+schema_paths = ["./migrations"]
+
+[db.network_restrictions]
+enabled = true
+allowed_cidrs = ["127.0.0.1/32"]
+allowed_cidrs_v6 = ["::1/128"]
+
+[auth]
+enabled = true
+site_url = "http://127.0.0.1:3000"
+additional_redirect_urls = ["https://127.0.0.1:3000"]
+enable_signup = true
+jwt_expiry = 3600
+minimum_password_length = 8
+password_requirements = "lower_upper_letters_digits"
+
+[storage]
+enabled = true
+file_size_limit = "8MiB"
+
+[realtime]
+enabled = false
+
+[studio]
+enabled = false
