@@ -1,6 +1,7 @@
 import {
   MAX_RESPONSE_BYTES,
   MAX_TOOL_EXECUTION_MS,
+  MEMORY_GET_TOOL,
   MemoryGetInputSchema,
   MemoryGetOutputSchema,
   publicMemoryGetUnavailable,
@@ -12,6 +13,12 @@ import {
   type FixedSupabaseClient,
   type FixedMemoryGetRow,
 } from './fixed-supabase-client.js';
+import {
+  createReadToolExecutor,
+  normalizeReadToolExecutionContext,
+  type ReadToolGovernancePolicy,
+  type ReadToolInvocationContext,
+} from './read-tool-governor.js';
 
 function error(
   code: 'INVALID_REQUEST' | 'RESPONSE_LIMIT_EXCEEDED' | 'DEADLINE_EXCEEDED' | 'INTERNAL_ERROR',
@@ -65,18 +72,19 @@ function normalizeError(cause: unknown, aborted: boolean): MemoryGetOutput {
 
 export interface MemoryGetOptions {
   readonly timeoutMs?: number;
+  readonly governance?: ReadToolGovernancePolicy;
 }
 
-export function createMemoryGet(
-  client: FixedSupabaseClient,
-  options: MemoryGetOptions = {},
-): (unsafeInput: unknown, callerSignal?: AbortSignal) => Promise<MemoryGetOutput> {
+export function createMemoryGet(client: FixedSupabaseClient, options: MemoryGetOptions = {}) {
   const timeoutMs = options.timeoutMs ?? MAX_TOOL_EXECUTION_MS;
   if (!Number.isSafeInteger(timeoutMs) || timeoutMs <= 0 || timeoutMs > MAX_TOOL_EXECUTION_MS) {
     throw new TypeError('Invalid memory_get timeout.');
   }
 
-  return async (unsafeInput: unknown, callerSignal?: AbortSignal): Promise<MemoryGetOutput> => {
+  const executeRaw = async (
+    unsafeInput: unknown,
+    callerSignal?: AbortSignal,
+  ): Promise<MemoryGetOutput> => {
     const input = MemoryGetInputSchema.safeParse(unsafeInput);
     if (!input.success) return error('INVALID_REQUEST');
 
@@ -107,4 +115,11 @@ export function createMemoryGet(
       callerSignal?.removeEventListener('abort', cancel);
     }
   };
+  const execute = createReadToolExecutor(
+    MEMORY_GET_TOOL,
+    (input, signal) => executeRaw(input, signal),
+    options.governance,
+  );
+  return (unsafeInput: unknown, context?: ReadToolInvocationContext) =>
+    execute(unsafeInput, normalizeReadToolExecutionContext(context));
 }

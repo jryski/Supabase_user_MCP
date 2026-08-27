@@ -19,17 +19,18 @@ function clientWith(result: {
 }): FixedSupabaseClient {
   return {
     listMemoryRows: vi.fn(),
+    searchMemoryRows: vi.fn(),
     getMemoryRow: vi.fn(),
     listRecentMemoryRows: vi.fn().mockResolvedValue(result),
   };
 }
 
 describe('createMemoryListRecent', () => {
-  it('validates input and maps bounded ordered records with allowlisted fields', async () => {
+  it('validates input and maps bounded server-ordered records with allowlisted fields', async () => {
     const client = clientWith({
       rows: [
-        row({ createdAt: '2026-08-24T11:00:00.000Z', id: `mem_${'B'.repeat(22)}` }),
         row({ createdAt: '2026-08-24T12:00:00.000Z', id: `mem_${'A'.repeat(22)}` }),
+        row({ createdAt: '2026-08-24T11:00:00.000Z', id: `mem_${'B'.repeat(22)}` }),
       ],
       nextCursor: `cur_${'A'.repeat(16)}`,
     });
@@ -62,6 +63,20 @@ describe('createMemoryListRecent', () => {
       },
       expect.any(AbortSignal),
     );
+  });
+
+  it('fails closed when upstream rows do not match cursor ordering', async () => {
+    const client = clientWith({
+      rows: [
+        row({ createdAt: '2026-08-24T11:00:00.000Z', id: `mem_${'B'.repeat(22)}` }),
+        row({ createdAt: '2026-08-24T12:00:00.000Z', id: `mem_${'A'.repeat(22)}` }),
+      ],
+      nextCursor: `cur_${'A'.repeat(16)}`,
+    });
+    await expect(createMemoryListRecent(client)({ limit: 2 })).resolves.toMatchObject({
+      ok: false,
+      error: { code: 'INTERNAL_ERROR' },
+    });
   });
 
   it('rejects malformed input before any client access', async () => {
@@ -101,6 +116,7 @@ describe('createMemoryListRecent', () => {
     vi.useFakeTimers();
     const client: FixedSupabaseClient = {
       listMemoryRows: vi.fn(),
+      searchMemoryRows: vi.fn(),
       getMemoryRow: vi.fn(),
       listRecentMemoryRows: vi.fn(
         (_input, signal) =>

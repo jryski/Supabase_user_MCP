@@ -231,6 +231,15 @@ describe('createFixedSupabaseClient', () => {
     });
     await expect(client.getMemoryRow({ id: 'mem_ABCDEFGHIJKLMNOPQRSTUV' })).resolves.toBeNull();
 
+    const missingRecord = createFixedSupabaseClient({
+      origin,
+      credentials: { projectPublishableKey: 'key', userAccessToken: token },
+      fetch: vi.fn<typeof globalThis.fetch>().mockResolvedValue(response('{}')),
+    });
+    await expect(
+      missingRecord.getMemoryRow({ id: 'mem_ABCDEFGHIJKLMNOPQRSTUV' }),
+    ).rejects.toMatchObject({ code: 'FIXED_CLIENT_MALFORMED_RESPONSE' });
+
     const missingColumn = vi.fn<typeof globalThis.fetch>().mockResolvedValue(
       response(
         JSON.stringify({

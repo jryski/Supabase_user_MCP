@@ -1,12 +1,19 @@
 import {
   MAX_RESPONSE_BYTES,
   MAX_TOOL_EXECUTION_MS,
+  MEMORY_SEARCH_TOOL,
   MemorySearchInputSchema,
   MemorySearchOutputSchema,
   readToolWireResponseByteLength,
   type MemorySearchOutput,
 } from '@supabase-user-mcp/contracts';
 import { FixedSupabaseClientError, type FixedSupabaseClient } from './fixed-supabase-client.js';
+import {
+  createReadToolExecutor,
+  normalizeReadToolExecutionContext,
+  type ReadToolGovernancePolicy,
+  type ReadToolInvocationContext,
+} from './read-tool-governor.js';
 
 function error(
   code: 'INVALID_REQUEST' | 'RESPONSE_LIMIT_EXCEEDED' | 'DEADLINE_EXCEEDED' | 'INTERNAL_ERROR',
@@ -31,6 +38,7 @@ function error(
 
 export interface MemorySearchOptions {
   readonly timeoutMs?: number;
+  readonly governance?: ReadToolGovernancePolicy;
 }
 
 export function createMemorySearch(client: FixedSupabaseClient, options: MemorySearchOptions = {}) {
@@ -38,7 +46,10 @@ export function createMemorySearch(client: FixedSupabaseClient, options: MemoryS
   if (!Number.isSafeInteger(timeoutMs) || timeoutMs <= 0 || timeoutMs > MAX_TOOL_EXECUTION_MS) {
     throw new TypeError('Invalid memory search timeout.');
   }
-  return async (unsafeInput: unknown, callerSignal?: AbortSignal): Promise<MemorySearchOutput> => {
+  const executeRaw = async (
+    unsafeInput: unknown,
+    callerSignal?: AbortSignal,
+  ): Promise<MemorySearchOutput> => {
     const input = MemorySearchInputSchema.safeParse(unsafeInput);
     if (!input.success) return error('INVALID_REQUEST');
     const controller = new AbortController();
@@ -78,4 +89,11 @@ export function createMemorySearch(client: FixedSupabaseClient, options: MemoryS
       callerSignal?.removeEventListener('abort', cancel);
     }
   };
+  const execute = createReadToolExecutor(
+    MEMORY_SEARCH_TOOL,
+    (input, signal) => executeRaw(input, signal),
+    options.governance,
+  );
+  return (unsafeInput: unknown, context?: ReadToolInvocationContext) =>
+    execute(unsafeInput, normalizeReadToolExecutionContext(context));
 }

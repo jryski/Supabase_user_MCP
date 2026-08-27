@@ -20,6 +20,7 @@ const row = (overrides: Partial<FixedMemoryGetRow> = {}): FixedMemoryGetRow => (
 function clientWith(result: FixedMemoryGetRow | null): FixedSupabaseClient {
   return {
     listMemoryRows: vi.fn(),
+    searchMemoryRows: vi.fn(),
     getMemoryRow: vi.fn().mockResolvedValue(result),
     listRecentMemoryRows: vi.fn(),
   };
@@ -88,6 +89,7 @@ describe('createMemoryGet', () => {
     vi.useFakeTimers();
     const client: FixedSupabaseClient = {
       listMemoryRows: vi.fn(),
+      searchMemoryRows: vi.fn(),
       listRecentMemoryRows: vi.fn(),
       getMemoryRow: vi.fn(
         (_input, signal) =>

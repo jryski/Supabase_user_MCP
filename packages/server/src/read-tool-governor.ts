@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 
-import * as z from 'zod/v4';
+import type * as z from 'zod/v4';
 
 import {
   createReadToolError,
@@ -11,6 +11,7 @@ import {
 interface ReadToolLimiterState {
   active: number;
   requestTimestamps: number[];
+  lastTouchedAt: number;
 }
 
 interface ReadToolDescriptor<TInput extends z.ZodTypeAny, TOutput extends z.ZodTypeAny> {
@@ -66,32 +67,62 @@ const DEFAULT_RATE_LIMIT = {
   maxRequestsPerWindow: 30,
   requestWindowMs: 60_000,
 } as const;
+const MAX_TRACKED_SCOPES = 1_024;
 
 const limiterStates = new Map<string, ReadToolLimiterState>();
 
-function createDefaultState(): ReadToolLimiterState {
+function createDefaultState(now: number): ReadToolLimiterState {
   return {
     active: 0,
     requestTimestamps: [],
+    lastTouchedAt: now,
   };
 }
 
-function getLimiterState(scope: string): ReadToolLimiterState {
+function getLimiterState(scope: string, now: number): ReadToolLimiterState | undefined {
   const existing = limiterStates.get(scope);
   if (existing !== undefined) {
+    existing.lastTouchedAt = now;
     return existing;
   }
-  const state = createDefaultState();
+  if (limiterStates.size >= MAX_TRACKED_SCOPES) {
+    const evictable = [...limiterStates.entries()]
+      .filter(([, state]) => state.active === 0)
+      .toSorted((left, right) => left[1].lastTouchedAt - right[1].lastTouchedAt)[0];
+    if (evictable === undefined) return undefined;
+    limiterStates.delete(evictable[0]);
+  }
+  const state = createDefaultState(now);
   limiterStates.set(scope, state);
   return state;
 }
 
-function normalizeValueForDigest(value: unknown): string {
-  return JSON.stringify(value ?? null);
+function normalizeValueForDigest(value: unknown, seen = new WeakSet<object>()): unknown {
+  if (value === null || typeof value === 'string' || typeof value === 'boolean') return value;
+  if (typeof value === 'number') return Number.isFinite(value) ? value : String(value);
+  if (typeof value === 'bigint' || typeof value === 'symbol' || typeof value === 'function') {
+    return `[${typeof value}]`;
+  }
+  if (value === undefined) return '[undefined]';
+  if (typeof value !== 'object') return '[unknown]';
+  if (seen.has(value)) return '[circular]';
+  seen.add(value);
+  if (Array.isArray(value)) {
+    return value.map((entry) => normalizeValueForDigest(entry, seen));
+  }
+  const normalized: Record<string, unknown> = {};
+  for (const key of Object.keys(value).sort()) {
+    try {
+      normalized[key] = normalizeValueForDigest((value as Record<string, unknown>)[key], seen);
+    } catch {
+      normalized[key] = '[unreadable]';
+    }
+  }
+  return normalized;
 }
 
 function hashedArgumentDigest(value: unknown): string {
-  const stableValue = normalizeValueForDigest(value);
+  const stableValue = JSON.stringify(normalizeValueForDigest(value));
   return createHash('sha256').update(stableValue).digest('hex').slice(0, 24);
 }
 
@@ -135,11 +166,15 @@ function causeToFailureCode(error: unknown): ReadToolErrorCode | undefined {
   return undefined;
 }
 
-function enforceWindow(scope: string, now: number, policy: ReadToolGovernancePolicy): boolean {
-  const state = getLimiterState(scope);
-  const windowStart = now - policy.requestWindowMs!;
+function enforceWindow(
+  state: ReadToolLimiterState,
+  now: number,
+  policy: Required<ReadToolGovernancePolicy>,
+): boolean {
+  state.lastTouchedAt = now;
+  const windowStart = now - policy.requestWindowMs;
   state.requestTimestamps = state.requestTimestamps.filter((timestamp) => timestamp > windowStart);
-  if (state.requestTimestamps.length >= policy.maxRequestsPerWindow!) {
+  if (state.requestTimestamps.length >= policy.maxRequestsPerWindow) {
     return false;
   }
 
@@ -147,8 +182,7 @@ function enforceWindow(scope: string, now: number, policy: ReadToolGovernancePol
   return true;
 }
 
-function releaseConcurrency(scope: string): void {
-  const state = getLimiterState(scope);
+function releaseConcurrency(state: ReadToolLimiterState): void {
   if (state.active > 0) {
     state.active -= 1;
   }
@@ -159,7 +193,17 @@ export function createReadToolExecutor<TInput extends z.ZodTypeAny, TOutput exte
   execute: (input: z.infer<TInput>, signal: AbortSignal) => Promise<unknown>,
   policy: ReadToolGovernancePolicy = {},
 ) {
-  const fullPolicy = { ...DEFAULT_RATE_LIMIT, ...policy };
+  const fullPolicy: Required<ReadToolGovernancePolicy> = { ...DEFAULT_RATE_LIMIT, ...policy };
+  if (
+    !Number.isSafeInteger(fullPolicy.maxConcurrentExecutions) ||
+    fullPolicy.maxConcurrentExecutions <= 0 ||
+    !Number.isSafeInteger(fullPolicy.maxRequestsPerWindow) ||
+    fullPolicy.maxRequestsPerWindow <= 0 ||
+    !Number.isSafeInteger(fullPolicy.requestWindowMs) ||
+    fullPolicy.requestWindowMs <= 0
+  ) {
+    throw new TypeError('Invalid read-tool governance policy.');
+  }
   const emitNoop = () => undefined;
 
   return async (
@@ -172,7 +216,7 @@ export function createReadToolExecutor<TInput extends z.ZodTypeAny, TOutput exte
     const emitOperationalEvent = context.emitOperationalEvent ?? emitNoop;
     const eventTimestamp = new Date(stableNow(now)).toISOString();
     const startedAt = stableNow(now);
-    const state = getLimiterState(scope);
+    let state: ReadToolLimiterState | undefined;
     let releaseConcurrencySlot = false;
     let rowCount = 0;
     let outcome: 'success' | 'blocked' = 'blocked';
@@ -219,7 +263,8 @@ export function createReadToolExecutor<TInput extends z.ZodTypeAny, TOutput exte
       );
     }
 
-    if (!enforceWindow(scope, now(), fullPolicy)) {
+    state = getLimiterState(scope, stableNow(now));
+    if (state === undefined || !enforceWindow(state, stableNow(now), fullPolicy)) {
       denialClass = descriptor.errorMapping.unavailable;
       emit();
       return Promise.resolve(
@@ -227,7 +272,7 @@ export function createReadToolExecutor<TInput extends z.ZodTypeAny, TOutput exte
       );
     }
 
-    if (state.active >= fullPolicy.maxConcurrentExecutions!) {
+    if (state.active >= fullPolicy.maxConcurrentExecutions) {
       denialClass = descriptor.errorMapping.unavailable;
       emit();
       return Promise.resolve(
@@ -253,6 +298,20 @@ export function createReadToolExecutor<TInput extends z.ZodTypeAny, TOutput exte
       if (!parsedResult.success) {
         denialClass = descriptor.errorMapping.unexpected;
         return createReadToolError(denialClass) as z.infer<TOutput>;
+      }
+
+      if (
+        typeof parsedResult.data === 'object' &&
+        parsedResult.data !== null &&
+        'ok' in parsedResult.data &&
+        parsedResult.data.ok === false &&
+        'error' in parsedResult.data &&
+        typeof parsedResult.data.error === 'object' &&
+        parsedResult.data.error !== null &&
+        'code' in parsedResult.data.error
+      ) {
+        denialClass = parsedResult.data.error.code as ReadToolErrorCode;
+        return parsedResult.data;
       }
 
       rowCount = countRows(parsedResult.data);
@@ -285,9 +344,17 @@ export function createReadToolExecutor<TInput extends z.ZodTypeAny, TOutput exte
       clearTimeout(timeout);
       context.signal?.removeEventListener('abort', onCallerAbort);
       if (releaseConcurrencySlot) {
-        releaseConcurrency(scope);
+        releaseConcurrency(state);
       }
       emit();
     }
   };
+}
+
+export type ReadToolInvocationContext = ReadToolExecutionContext | AbortSignal;
+
+export function normalizeReadToolExecutionContext(
+  context: ReadToolInvocationContext | undefined,
+): ReadToolExecutionContext {
+  return context instanceof AbortSignal ? { signal: context } : (context ?? {});
 }

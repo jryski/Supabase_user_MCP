@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { MEMORY_SEARCH_TOOL } from '@supabase-user-mcp/contracts';
+import { createReadToolError, MEMORY_SEARCH_TOOL } from '@supabase-user-mcp/contracts';
 import { createHash } from 'node:crypto';
 
 import { createReadToolExecutor, type ReadToolOperationalEvent } from './read-tool-governor.js';
@@ -280,5 +280,47 @@ describe('createReadToolExecutor', () => {
     });
     expect(event.normalizedArgumentDigest).not.toContain('sensitive-query');
     expect(event.normalizedArgumentDigest).toHaveLength(24);
+  });
+
+  it('normalizes cyclic invalid input instead of throwing during digest creation', async () => {
+    const events: ReadToolOperationalEvent[] = [];
+    const cyclic: Record<string, unknown> = { query: '' };
+    cyclic.self = cyclic;
+    const execute = createReadToolExecutor(MEMORY_SEARCH_TOOL, vi.fn());
+
+    await expect(
+      execute(cyclic, {
+        scope: 'read-governor-cyclic',
+        emitOperationalEvent: (event) => events.push(event),
+      }),
+    ).resolves.toEqual(createReadToolError('INVALID_REQUEST'));
+    expect(events).toHaveLength(1);
+    expect(events[0]?.outcome).toBe('blocked');
+  });
+
+  it('records valid error outputs as blocked operational events', async () => {
+    const events: ReadToolOperationalEvent[] = [];
+    const execute = createReadToolExecutor(MEMORY_SEARCH_TOOL, () =>
+      Promise.resolve(createReadToolError('RESOURCE_UNAVAILABLE')),
+    );
+
+    await expect(
+      execute(validQuery, {
+        scope: 'read-governor-error-output',
+        emitOperationalEvent: (event) => events.push(event),
+      }),
+    ).resolves.toEqual(createReadToolError('RESOURCE_UNAVAILABLE'));
+    expect(events[0]).toMatchObject({
+      outcome: 'blocked',
+      denialClass: 'RESOURCE_UNAVAILABLE',
+    });
+  });
+
+  it('rejects invalid limiter policies at construction time', () => {
+    expect(() =>
+      createReadToolExecutor(MEMORY_SEARCH_TOOL, vi.fn(), {
+        maxConcurrentExecutions: 0,
+      }),
+    ).toThrow('Invalid read-tool governance policy.');
   });
 });

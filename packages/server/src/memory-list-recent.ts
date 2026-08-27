@@ -1,6 +1,7 @@
 import {
   MAX_RESPONSE_BYTES,
   MAX_TOOL_EXECUTION_MS,
+  MEMORY_LIST_RECENT_TOOL,
   MemoryListRecentInputSchema,
   MemoryListRecentOutputSchema,
   readToolWireResponseByteLength,
@@ -11,6 +12,12 @@ import {
   type FixedMemoryGetRow,
   type FixedSupabaseClient,
 } from './fixed-supabase-client.js';
+import {
+  createReadToolExecutor,
+  normalizeReadToolExecutionContext,
+  type ReadToolGovernancePolicy,
+  type ReadToolInvocationContext,
+} from './read-tool-governor.js';
 
 function error(
   code: 'INVALID_REQUEST' | 'RESPONSE_LIMIT_EXCEEDED' | 'DEADLINE_EXCEEDED' | 'INTERNAL_ERROR',
@@ -64,18 +71,19 @@ function normalizeError(cause: unknown, aborted: boolean): MemoryListRecentOutpu
 
 export interface MemoryListRecentOptions {
   readonly timeoutMs?: number;
+  readonly governance?: ReadToolGovernancePolicy;
 }
 
 export function createMemoryListRecent(
   client: FixedSupabaseClient,
   options: MemoryListRecentOptions = {},
-): (unsafeInput: unknown, callerSignal?: AbortSignal) => Promise<MemoryListRecentOutput> {
+) {
   const timeoutMs = options.timeoutMs ?? MAX_TOOL_EXECUTION_MS;
   if (!Number.isSafeInteger(timeoutMs) || timeoutMs <= 0 || timeoutMs > MAX_TOOL_EXECUTION_MS) {
     throw new TypeError('Invalid memory_list_recent timeout.');
   }
 
-  return async (
+  const executeRaw = async (
     unsafeInput: unknown,
     callerSignal?: AbortSignal,
   ): Promise<MemoryListRecentOutput> => {
@@ -90,14 +98,19 @@ export function createMemoryListRecent(
 
     try {
       const result = await client.listRecentMemoryRows(input.data, controller.signal);
-      const ordered = result.rows.toSorted((left, right) => {
-        const createdDelta = right.createdAt.localeCompare(left.createdAt);
-        if (createdDelta !== 0) return createdDelta;
-        return right.id.localeCompare(left.id);
+      const isOrdered = result.rows.every((current, index, rows) => {
+        if (index === 0) return true;
+        const previous = rows[index - 1];
+        if (previous === undefined) return false;
+        return (
+          previous.createdAt > current.createdAt ||
+          (previous.createdAt === current.createdAt && previous.id >= current.id)
+        );
       });
+      if (!isOrdered) return error('INTERNAL_ERROR');
       const candidate = {
         ok: true as const,
-        items: mapRows(ordered),
+        items: mapRows(result.rows),
         ...(result.nextCursor === undefined ? {} : { nextCursor: result.nextCursor }),
       };
       const validated = MemoryListRecentOutputSchema.safeParse(candidate);
@@ -114,4 +127,11 @@ export function createMemoryListRecent(
       callerSignal?.removeEventListener('abort', cancel);
     }
   };
+  const execute = createReadToolExecutor(
+    MEMORY_LIST_RECENT_TOOL,
+    (input, signal) => executeRaw(input, signal),
+    options.governance,
+  );
+  return (unsafeInput: unknown, context?: ReadToolInvocationContext) =>
+    execute(unsafeInput, normalizeReadToolExecutionContext(context));
 }
