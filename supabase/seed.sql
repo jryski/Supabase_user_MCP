@@ -3,6 +3,18 @@
 
 begin;
 
+-- Local-lab fixture setup only. Keeping this policy in seed.sql prevents it
+-- from entering a hosted project through the production migration path.
+drop policy if exists artifact_storage_fixture_upload on storage.objects;
+create policy artifact_storage_fixture_upload
+  on storage.objects
+  for insert
+  to authenticated
+  with check (
+    bucket_id in ('artifact-lab', 'artifact-outside')
+    and auth.jwt() #>> '{app_metadata,s1_fixture_loader}' = 'true'
+  );
+
 insert into public.approved_inspector_clients (client_id, active, notes)
 values
   ('smp-lab-inspector', true, 'Primary synthetic inspector client'),

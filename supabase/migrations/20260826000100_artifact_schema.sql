@@ -62,7 +62,7 @@ alter table public.artifact_derivations enable row level security;
 alter table public.derivation_inputs enable row level security;
 alter table public.approved_inspector_clients enable row level security;
 
-revoke all on public.approved_inspector_clients from anon, authenticated;
+revoke all on public.approved_inspector_clients from anon, authenticated, service_role;
 grant select on public.approved_inspector_clients to authenticated;
 
 create policy approved_inspector_clients_select_current
@@ -129,8 +129,14 @@ create policy derivation_inputs_select_authenticated
     )
   );
 
--- Append-only: no UPDATE/DELETE for non-owner roles.
-revoke update, delete on public.artifact_registry from anon, authenticated, service_role;
-revoke update, delete on public.artifact_chunks from anon, authenticated, service_role;
-revoke update, delete on public.artifact_derivations from anon, authenticated, service_role;
-revoke update, delete on public.derivation_inputs from anon, authenticated, service_role;
+-- Exact allowlist: authenticated may read metadata; no API role may mutate,
+-- truncate, attach triggers, or exercise any other table privilege.
+revoke all on public.artifact_registry from anon, authenticated, service_role;
+revoke all on public.artifact_chunks from anon, authenticated, service_role;
+revoke all on public.artifact_derivations from anon, authenticated, service_role;
+revoke all on public.derivation_inputs from anon, authenticated, service_role;
+
+grant select on public.artifact_registry to authenticated;
+grant select on public.artifact_chunks to authenticated;
+grant select on public.artifact_derivations to authenticated;
+grant select on public.derivation_inputs to authenticated;

@@ -185,6 +185,14 @@ assert_success "authorized read succeeds" "$AUTHORIZED_STATUS"
   || fail "authorized read returns exact bytes"
 pass "authorized read returns exact bytes"
 
+STORAGE_FIXTURE_COUNT="$(psql 'postgresql://postgres:postgres@127.0.0.1:62422/postgres' -X -Atc "
+  select count(*)
+  from storage.objects
+  where bucket_id in ('artifact-lab', 'artifact-outside');
+")"
+[[ "$STORAGE_FIXTURE_COUNT" == "6" ]] || fail "Storage fixtures exist before list non-enumeration probe"
+pass "Storage fixtures exist before list non-enumeration probe"
+
 WRONG_PRINCIPAL_STATUS="$(storage_get "$ALICE_TOKEN" 'artifact-lab' 'wrong-principal.txt' "$TMP_DIR/wrong-principal.body")"
 assert_denied "wrong principal denied" "$WRONG_PRINCIPAL_STATUS"
 
@@ -254,33 +262,47 @@ rm "$TMP_DIR/mutated.body"
 [[ ! -e "$TMP_DIR/mutated.body" ]] || fail "mutated payload withheld"
 pass "object mutated after registration fails hash verification closed"
 
-PRIVILEGE_DEFECTS="$(psql 'postgresql://postgres:postgres@127.0.0.1:62422/postgres' -X -Atc "
-  select count(*)
+ACTUAL_API_GRANTS="$(psql 'postgresql://postgres:postgres@127.0.0.1:62422/postgres' -X -Atc "
+  select coalesce(
+    string_agg(
+      grantee || ':' || table_name || ':' || privilege_type,
+      E'\\n' order by grantee, table_name, privilege_type
+    ),
+    ''
+  )
   from information_schema.role_table_grants
   where table_schema = 'public'
-    and table_name in ('artifact_registry', 'artifact_chunks', 'artifact_derivations', 'derivation_inputs')
-    and grantee in ('anon', 'authenticated', 'service_role')
-    and privilege_type in ('UPDATE', 'DELETE');
+    and table_name in (
+      'approved_inspector_clients',
+      'artifact_registry',
+      'artifact_chunks',
+      'artifact_derivations',
+      'derivation_inputs'
+    )
+    and grantee in ('anon', 'authenticated', 'service_role');
 ")"
-[[ "$PRIVILEGE_DEFECTS" == "0" ]] || fail "artifact metadata is append-only for non-owner roles"
-pass "artifact metadata is append-only for non-owner roles"
+EXPECTED_API_GRANTS=$'authenticated:approved_inspector_clients:SELECT\nauthenticated:artifact_chunks:SELECT\nauthenticated:artifact_derivations:SELECT\nauthenticated:artifact_registry:SELECT\nauthenticated:derivation_inputs:SELECT'
+[[ "$ACTUAL_API_GRANTS" == "$EXPECTED_API_GRANTS" ]] \
+  || fail "API-role table privileges match the exact SELECT-only allowlist"
+pass "API-role table privileges match the exact SELECT-only allowlist"
 
-CLIENT_TABLE_DEFECTS="$(psql 'postgresql://postgres:postgres@127.0.0.1:62422/postgres' -X -Atc "
-  select
-    (not c.relrowsecurity)::int
-    + count(*) filter (
-        where g.grantee in ('anon', 'authenticated')
-          and g.privilege_type in ('INSERT', 'UPDATE', 'DELETE', 'TRUNCATE')
-      )
-  from pg_class c
-  left join information_schema.role_table_grants g
-    on g.table_schema = 'public'
-   and g.table_name = 'approved_inspector_clients'
-  where c.oid = 'public.approved_inspector_clients'::regclass
-  group by c.relrowsecurity;
+if psql 'postgresql://postgres:postgres@127.0.0.1:62422/postgres' \
+  -X -v ON_ERROR_STOP=1 \
+  -c "begin; set local role authenticated; truncate table public.artifact_registry cascade; rollback;" \
+  >"$TMP_DIR/truncate-probe.log" 2>&1
+then
+  fail "authenticated TRUNCATE is denied"
+else
+  pass "authenticated TRUNCATE is denied"
+fi
+
+CLIENT_TABLE_RLS="$(psql 'postgresql://postgres:postgres@127.0.0.1:62422/postgres' -X -Atc "
+  select relrowsecurity::int
+  from pg_class
+  where oid = 'public.approved_inspector_clients'::regclass;
 ")"
-[[ "$CLIENT_TABLE_DEFECTS" == "0" ]] || fail "approved inspector clients table is RLS-protected and non-writable"
-pass "approved inspector clients table is RLS-protected and non-writable"
+[[ "$CLIENT_TABLE_RLS" == "1" ]] || fail "approved inspector clients table has RLS enabled"
+pass "approved inspector clients table has RLS enabled"
 
 if supabase db advisors \
   --workdir "$PROJECT_ROOT" \

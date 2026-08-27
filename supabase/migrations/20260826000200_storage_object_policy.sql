@@ -49,13 +49,3 @@ create policy artifact_storage_get_only
       and public.has_approved_inspector_client()
       and public.visible_artifact_object(bucket_id, name)
   );
-
--- Lab-only fixture loading. The claim is set only on a synthetic local Auth user.
-create policy artifact_storage_fixture_upload
-  on storage.objects
-  for insert
-  to authenticated
-  with check (
-    bucket_id in ('artifact-lab', 'artifact-outside')
-    and auth.jwt() #>> '{app_metadata,s1_fixture_loader}' = 'true'
-  );

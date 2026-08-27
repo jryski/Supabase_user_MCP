@@ -72,8 +72,9 @@ After the passing run, no process was listening on `62420`, `62421`,
 - Storage GET requires the exact authenticated-object operation, the fixed
   `artifact-lab` bucket, a visible registry row, and an approved
   `app_metadata.client_id` claim.
-- A lab-only uploader claim permits synthetic fixture creation through the
-  real Storage API. It does not grant read access.
+- A seed-only lab uploader claim permits synthetic fixture creation through
+  the real Storage API. It does not grant read access and is absent from the
+  production migration path.
 - Seed data creates five synthetic Auth users, email identities, two private
   buckets, deterministic hashes, six adversarial object scenarios, and a
   two-input derivation.
@@ -91,7 +92,8 @@ runs the matrix, and stops/removes the local stack.
 
 ## Passing test record
 
-`npm run test:s1` exited `0` with 26 named assertions:
+`npm run test:s1` exits nonzero if any matrix, grant, or advisor assertion
+fails. The repaired exact-head run records 28 named assertions:
 
 1. local services bind only to `127.0.0.1`
 2. real Supabase Auth sessions minted for synthetic users
@@ -103,22 +105,24 @@ runs the matrix, and stops/removes the local stack.
 8. fixture upload: outside-bucket
 9. authorized read succeeds
 10. authorized read returns exact bytes
-11. wrong principal denied
-12. expired row denied
-13. object with no registry row denied
-14. object outside fixed bucket denied
-15. list enumeration exposes no objects while GET succeeds
-16. wrong client capability claim denied
-17. absent client capability claim denied
-18. direct Storage access with a valid non-inspector user JWT denied
-19. missing and unauthorized errors are byte-identical
-20. second approved principal reads only its own object
-21. many-source derivation supports two inputs
-22. mutated object reaches the verifier under authorized RLS
-23. object mutated after registration fails hash verification closed
-24. artifact metadata is append-only for non-owner roles
-25. approved inspector clients table is RLS-protected and non-writable
-26. Supabase security advisor reports no warnings or errors
+11. Storage fixtures exist before list non-enumeration probe
+12. wrong principal denied
+13. expired row denied
+14. object with no registry row denied
+15. object outside fixed bucket denied
+16. list enumeration exposes no objects while GET succeeds
+17. wrong client capability claim denied
+18. absent client capability claim denied
+19. direct Storage access with a valid non-inspector user JWT denied
+20. missing and unauthorized errors are byte-identical
+21. second approved principal reads only its own object
+22. many-source derivation supports two inputs
+23. mutated object reaches the verifier under authorized RLS
+24. object mutated after registration fails hash verification closed
+25. API-role table privileges match the exact SELECT-only allowlist
+26. authenticated TRUNCATE is denied
+27. approved inspector clients table has RLS enabled
+28. Supabase security advisor reports no warnings or errors
 
 ## Claim limits
 
@@ -130,6 +134,11 @@ The mutation verifier is a regression-harness boundary in S1. The production
 bounded streaming, chunk inclusion proof, receipt generation, and Edge
 execution boundary belong to later prompts. This lab does not claim hosted,
 deployed, or production readiness.
+
+S1 proves read isolation and contains no ordinary-principal authorized-write
+surface, so it is not evidence for the C1 authorized-write containment
+invariant. Receipt audience and receipt RLS must be decided before Prompt 2
+introduces the first authorized-write surface.
 
 ## Blockers
 
