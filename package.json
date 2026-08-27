@@ -23,6 +23,7 @@
     "lint": "biome lint .",
     "policy-lab:reset": "supabase db reset --local",
     "policy-lab:test:catalog": "node scripts/run-policy-lab-catalog-test.mjs",
+    "policy-lab:test:revocation-audit": "node scripts/run-policy-lab-catalog-test.mjs",
     "policy-lab:test": "node scripts/run-policy-lab-catalog-test.mjs",
     "start": "node packages/server/dist/cli.js",
     "test": "npm run build && vitest run",
