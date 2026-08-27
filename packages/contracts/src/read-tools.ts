@@ -71,7 +71,14 @@ const SearchResultSchema = z
   })
   .strict();
 
-const ReadToolErrorSchema = z.discriminatedUnion('code', [
+export type ReadToolErrorCode =
+  | 'INVALID_REQUEST'
+  | 'RESOURCE_UNAVAILABLE'
+  | 'RESPONSE_LIMIT_EXCEEDED'
+  | 'DEADLINE_EXCEEDED'
+  | 'INTERNAL_ERROR';
+
+export const ReadToolErrorSchema = z.discriminatedUnion('code', [
   z
     .object({
       code: z.literal('INVALID_REQUEST'),
@@ -109,6 +116,43 @@ const ReadToolErrorSchema = z.discriminatedUnion('code', [
     .strict(),
 ]);
 
+export const READ_TOOL_ERROR_MESSAGES: Record<ReadToolErrorCode, string> = Object.freeze({
+  INVALID_REQUEST: 'Request is invalid.',
+  RESOURCE_UNAVAILABLE: 'Record is unavailable.',
+  RESPONSE_LIMIT_EXCEEDED: 'Response limit exceeded.',
+  DEADLINE_EXCEEDED: 'Request deadline exceeded.',
+  INTERNAL_ERROR: 'Request could not be completed.',
+} satisfies Record<ReadToolErrorCode, string>);
+
+export type ReadToolError = {
+  code: ReadToolErrorCode;
+  message: string;
+  retryable: boolean;
+};
+
+export const ReadToolErrorOutputSchema = z
+  .object({
+    ok: z.literal(false),
+    error: ReadToolErrorSchema,
+  })
+  .strict();
+
+export interface ReadToolErrorOutput {
+  ok: false;
+  error: ReadToolError;
+}
+
+export function createReadToolError(code: ReadToolErrorCode): ReadToolErrorOutput {
+  return Object.freeze({
+    ok: false as const,
+    error: {
+      code,
+      message: READ_TOOL_ERROR_MESSAGES[code],
+      retryable: false as const,
+    },
+  });
+}
+
 const PUBLIC_MEMORY_GET_UNAVAILABLE = Object.freeze({
   ok: false as const,
   error: Object.freeze({
@@ -126,13 +170,6 @@ export function publicMemoryGetUnavailable(
   void reason;
   return PUBLIC_MEMORY_GET_UNAVAILABLE;
 }
-
-const ReadToolErrorOutputSchema = z
-  .object({
-    ok: z.literal(false),
-    error: ReadToolErrorSchema,
-  })
-  .strict();
 
 export type ReadToolRequestId = string | number | null;
 

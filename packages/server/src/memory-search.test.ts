@@ -17,6 +17,8 @@ function clientWith(result: ReadonlyArray<FixedMemorySearchRow>): FixedSupabaseC
   return {
     listMemoryRows: vi.fn(),
     searchMemoryRows: vi.fn().mockResolvedValue({ rows: result }),
+    getMemoryRow: vi.fn(),
+    listRecentMemoryRows: vi.fn(),
   };
 }
 
@@ -102,6 +104,8 @@ describe('createMemorySearch', () => {
             );
           }),
       ),
+      getMemoryRow: vi.fn(),
+      listRecentMemoryRows: vi.fn(),
     };
     const pending = createMemorySearch(client, { timeoutMs: 25 })({ query: 'x' });
     await vi.advanceTimersByTimeAsync(25);
