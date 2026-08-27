@@ -1,4 +1,5 @@
-import { lstat, readFile } from 'node:fs/promises';
+import { constants } from 'node:fs';
+import { open } from 'node:fs/promises';
 
 const MAX_CREDENTIAL_BYTES = 16_384;
 
@@ -36,6 +37,7 @@ export type PermissionInspection = 'secure' | 'insecure' | 'unsupported';
 export type PermissionInspector = (
   path: string,
   mode: number,
+  ownerUid: number,
 ) => PermissionInspection | Promise<PermissionInspection>;
 
 export interface LocalCredentialLoaderOptions {
@@ -48,9 +50,11 @@ function fail(code: LocalCredentialErrorCode): never {
   throw new LocalCredentialError(code);
 }
 
-const defaultPermissionInspector: PermissionInspector = (_path, mode) => {
+const defaultPermissionInspector: PermissionInspector = (_path, mode, ownerUid) => {
   if (process.platform === 'win32') return 'unsupported';
-  return (mode & 0o077) === 0 ? 'secure' : 'insecure';
+  const currentUid = process.getuid?.();
+  if (currentUid === undefined) return 'unsupported';
+  return ownerUid === currentUid && (mode & 0o077) === 0 ? 'secure' : 'insecure';
 };
 
 function parseTokenExpiry(token: string): number {
@@ -80,36 +84,51 @@ export async function loadLocalCredentials(
   startupPath: string,
   options: LocalCredentialLoaderOptions = {},
 ): Promise<LocalCredentials> {
-  let metadata: Awaited<ReturnType<typeof lstat>>;
+  let handle: Awaited<ReturnType<typeof open>>;
   try {
-    metadata = await lstat(startupPath);
+    const noFollow = process.platform === 'win32' ? 0 : constants.O_NOFOLLOW;
+    handle = await open(startupPath, constants.O_RDONLY | noFollow);
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === 'ENOENT') fail('CREDENTIAL_FILE_MISSING');
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === 'ENOENT') fail('CREDENTIAL_FILE_MISSING');
+    if (code === 'ELOOP') fail('CREDENTIAL_SYMLINK');
     fail('CREDENTIAL_READ_FAILED');
   }
-  if (metadata.isSymbolicLink()) fail('CREDENTIAL_SYMLINK');
-  if (!metadata.isFile()) fail('CREDENTIAL_NOT_FILE');
-  if (metadata.size > MAX_CREDENTIAL_BYTES) fail('CREDENTIAL_FILE_TOO_LARGE');
-
-  let permission: PermissionInspection;
-  try {
-    permission = await (options.permissionInspector ?? defaultPermissionInspector)(
-      startupPath,
-      metadata.mode,
-    );
-  } catch {
-    fail('CREDENTIAL_PERMISSION_CHECK_UNSUPPORTED');
-  }
-  if (permission === 'unsupported') fail('CREDENTIAL_PERMISSION_CHECK_UNSUPPORTED');
-  if (permission !== 'secure') fail('CREDENTIAL_INSECURE_PERMISSIONS');
 
   let body: string;
   try {
-    body = await readFile(startupPath, { encoding: 'utf8' });
-  } catch {
+    const metadata = await handle.stat();
+    if (!metadata.isFile()) fail('CREDENTIAL_NOT_FILE');
+    if (metadata.size > MAX_CREDENTIAL_BYTES) fail('CREDENTIAL_FILE_TOO_LARGE');
+
+    let permission: PermissionInspection;
+    try {
+      permission = await (options.permissionInspector ?? defaultPermissionInspector)(
+        startupPath,
+        metadata.mode,
+        metadata.uid,
+      );
+    } catch {
+      fail('CREDENTIAL_PERMISSION_CHECK_UNSUPPORTED');
+    }
+    if (permission === 'unsupported') fail('CREDENTIAL_PERMISSION_CHECK_UNSUPPORTED');
+    if (permission !== 'secure') fail('CREDENTIAL_INSECURE_PERMISSIONS');
+
+    const bytes = Buffer.allocUnsafe(MAX_CREDENTIAL_BYTES + 1);
+    let length = 0;
+    while (length < bytes.byteLength) {
+      const result = await handle.read(bytes, length, bytes.byteLength - length, null);
+      if (result.bytesRead === 0) break;
+      length += result.bytesRead;
+    }
+    if (length > MAX_CREDENTIAL_BYTES) fail('CREDENTIAL_FILE_TOO_LARGE');
+    body = bytes.subarray(0, length).toString('utf8');
+  } catch (error) {
+    if (error instanceof LocalCredentialError) throw error;
     fail('CREDENTIAL_READ_FAILED');
+  } finally {
+    await handle.close().catch(() => undefined);
   }
-  if (Buffer.byteLength(body) > MAX_CREDENTIAL_BYTES) fail('CREDENTIAL_FILE_TOO_LARGE');
 
   let parsed: unknown;
   try {
