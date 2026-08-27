@@ -15,9 +15,11 @@ The query reads only PostgreSQL system catalogs and emits exactly `(sev, id, obj
 | L07 | HIGH | API-reachable view lacks `security_invoker=true` |
 | L08 | HIGH | API-executable SECURITY DEFINER routine lacks a fixed `search_path` |
 | L09 | CRITICAL | API-executable SECURITY DEFINER routine lacks an `auth.uid`, `auth.jwt`, or `request.jwt` source-text marker |
+| L10 | CRITICAL | API role has a `TRUNCATE`, `TRIGGER`, or `REFERENCES` table grant |
+| L11 | HIGH | API role has an `INSERT` or `UPDATE` table grant without an applicable RLS policy |
 
 L09 is deliberately a heuristic requiring human review, not a verdict. A marker can be present without sufficient authorization, and a safe routine can delegate identity enforcement elsewhere.
 
-The pgTAP test creates only synthetic objects inside a transaction, covers positive L01-L09 findings and clean controls, and rolls the entire fixture back. The generic runtime policy-matrix helper is outside this slice.
+The pgTAP test creates only synthetic objects inside a transaction, covers positive L01-L11 findings and clean controls, and rolls the entire fixture back. L11 matches policies for the granted API role, including policies that explicitly apply to PUBLIC. The generic runtime policy-matrix helper is outside this slice.
 
 Run the static TypeScript contract with `npx vitest run test/policy-lab/catalog-lint-contract.test.ts`. The controller can run the database fixture with `npm run policy-lab:test:catalog` after starting its disposable local Supabase lifecycle.

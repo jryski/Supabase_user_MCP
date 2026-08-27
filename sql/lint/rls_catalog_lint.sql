@@ -19,6 +19,47 @@ api_routines as (
   join api_roles as role on role.oid = acl.grantee
   where acl.privilege_type = 'EXECUTE'
 ),
+dangerous_relation_grants as (
+  select
+    c.oid,
+    string_agg(
+      format('%s:%s', role.rolname, acl.privilege_type),
+      ', ' order by role.rolname, acl.privilege_type
+    ) as grants
+  from pg_class as c
+  cross join lateral aclexplode(c.relacl) as acl
+  join pg_roles as role on role.oid = acl.grantee
+  where role.rolname in ('anon', 'authenticated')
+    and acl.privilege_type in ('TRUNCATE', 'TRIGGER', 'REFERENCES')
+  group by c.oid
+),
+unprotected_write_grants as (
+  select
+    c.oid,
+    role.oid as role_oid,
+    role.rolname,
+    acl.privilege_type
+  from pg_class as c
+  cross join lateral aclexplode(c.relacl) as acl
+  join pg_roles as role on role.oid = acl.grantee
+  where role.rolname in ('anon', 'authenticated')
+    and acl.privilege_type in ('INSERT', 'UPDATE')
+    and not exists (
+      select 1
+      from pg_policy as p
+      where p.polrelid = c.oid
+        and p.polcmd in (
+          '*',
+          case acl.privilege_type when 'INSERT' then 'a' when 'UPDATE' then 'w' end
+        )
+        and (
+          p.polroles is null
+          or cardinality(p.polroles) = 0
+          or 0 = any(p.polroles)
+          or role.oid = any(p.polroles)
+        )
+    )
+),
 findings(severity_order, sev, id, obj, det) as (
   select 1, 'CRITICAL', 'L01', format('%I.%I', n.nspname, c.relname),
     'API-reachable table has RLS disabled'
@@ -101,6 +142,29 @@ findings(severity_order, sev, id, obj, det) as (
   join api_routines as api on api.oid = p.oid
   where p.prosecdef
     and p.prosrc !~* '(auth[.](uid|jwt)\s*[(]|request[.]jwt)'
+
+  union all
+  select 1, 'CRITICAL', 'L10', format('%I.%I', n.nspname, c.relname),
+    format('API role has dangerous table privilege: %s', dangerous.grants)
+  from dangerous_relation_grants as dangerous
+  join pg_class as c on c.oid = dangerous.oid
+  join pg_namespace as n on n.oid = c.relnamespace
+  where c.relkind in ('r', 'p')
+
+  union all
+  select 2, 'HIGH', 'L11',
+    format(
+      '%I.%I [%s %s]',
+      n.nspname,
+      c.relname,
+      write_grant.rolname,
+      write_grant.privilege_type
+    ),
+    'API write grant has no applicable RLS policy'
+  from unprotected_write_grants as write_grant
+  join pg_class as c on c.oid = write_grant.oid
+  join pg_namespace as n on n.oid = c.relnamespace
+  where c.relkind in ('r', 'p')
 )
 select severity_order, sev, id, obj, det
 from findings;

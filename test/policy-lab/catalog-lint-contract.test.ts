@@ -24,7 +24,19 @@ describe('RLS catalog lint contract', () => {
     expect(lint).toMatch(/pg_(?:class|policy|proc)/i);
     expect(lint).not.toMatch(/execute\s+format|service_role|bypassrls/i);
 
-    for (const id of ['L01', 'L02', 'L03', 'L04', 'L05', 'L06', 'L07', 'L08', 'L09']) {
+    for (const id of [
+      'L01',
+      'L02',
+      'L03',
+      'L04',
+      'L05',
+      'L06',
+      'L07',
+      'L08',
+      'L09',
+      'L10',
+      'L11',
+    ]) {
       expect(lint).toContain(`'${id}'`);
       expect(fixture).toContain(id);
     }
