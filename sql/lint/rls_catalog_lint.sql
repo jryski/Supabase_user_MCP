@@ -1,23 +1,98 @@
 create or replace view pg_temp.rls_catalog_lint as
 with
-api_roles as (
+target_schemas as (
   select oid
+  from pg_namespace
+  where nspname in ('public', 'storage', 'catalog_lint_fixture')
+),
+api_roles as (
+  select oid, rolname
   from pg_roles
   where rolname in ('anon', 'authenticated')
 ),
 api_relations as (
   select distinct c.oid
   from pg_class as c
-  cross join lateral aclexplode(c.relacl) as acl
-  join api_roles as role on role.oid = acl.grantee
-  where acl.privilege_type in ('SELECT', 'INSERT', 'UPDATE', 'DELETE')
+  join target_schemas as target on target.oid = c.relnamespace
+  cross join api_roles as role
+  where c.relkind in ('r', 'p', 'v', 'm', 'f')
+    and (
+      has_table_privilege(role.oid, c.oid, 'SELECT')
+      or has_table_privilege(role.oid, c.oid, 'INSERT')
+      or has_table_privilege(role.oid, c.oid, 'UPDATE')
+      or has_table_privilege(role.oid, c.oid, 'DELETE')
+      or has_any_column_privilege(role.oid, c.oid, 'SELECT')
+      or has_any_column_privilege(role.oid, c.oid, 'INSERT')
+      or has_any_column_privilege(role.oid, c.oid, 'UPDATE')
+    )
 ),
 api_routines as (
   select distinct p.oid
   from pg_proc as p
-  cross join lateral aclexplode(p.proacl) as acl
-  join api_roles as role on role.oid = acl.grantee
-  where acl.privilege_type = 'EXECUTE'
+  join target_schemas as target on target.oid = p.pronamespace
+  cross join api_roles as role
+  where has_function_privilege(role.oid, p.oid, 'EXECUTE')
+),
+dangerous_relation_grants as (
+  select
+    c.oid,
+    string_agg(
+      format('%s:%s', role.rolname, required_privilege.name),
+      ', ' order by role.rolname, required_privilege.name
+    ) as grants
+  from pg_class as c
+  join target_schemas as target on target.oid = c.relnamespace
+  cross join api_roles as role
+  cross join (values ('TRUNCATE'), ('TRIGGER'), ('REFERENCES')) as required_privilege(name)
+  where c.relkind in ('r', 'p')
+    and has_table_privilege(role.oid, c.oid, required_privilege.name)
+  group by c.oid
+),
+dangerous_sequence_grants as (
+  select
+    c.oid,
+    string_agg(
+      format('%s:%s', role.rolname, required_privilege.name),
+      ', ' order by role.rolname, required_privilege.name
+    ) as grants
+  from pg_class as c
+  join target_schemas as target on target.oid = c.relnamespace
+  cross join api_roles as role
+  cross join (values ('USAGE'), ('SELECT'), ('UPDATE')) as required_privilege(name)
+  where c.relkind = 'S'
+    and has_sequence_privilege(role.oid, c.oid, required_privilege.name)
+  group by c.oid
+),
+unprotected_write_grants as (
+  select
+    c.oid,
+    role.oid as role_oid,
+    role.rolname,
+    required_privilege.privilege_type
+  from pg_class as c
+  join target_schemas as target on target.oid = c.relnamespace
+  cross join api_roles as role
+  cross join (values ('INSERT', 'a'), ('UPDATE', 'w')) as required_privilege(privilege_type, policy_command)
+  where c.relkind in ('r', 'p')
+    and (
+      has_table_privilege(role.oid, c.oid, required_privilege.privilege_type)
+      or has_any_column_privilege(role.oid, c.oid, required_privilege.privilege_type)
+    )
+    and not exists (
+      select 1
+      from pg_policy as p
+      where p.polrelid = c.oid
+        and p.polcmd in (
+          '*',
+          required_privilege.policy_command
+        )
+        and (
+          p.polroles is null
+          or cardinality(p.polroles) = 0
+          or 0 = any(p.polroles)
+          or role.oid = any(p.polroles)
+        )
+    )
 ),
 findings(severity_order, sev, id, obj, det) as (
   select 1, 'CRITICAL', 'L01', format('%I.%I', n.nspname, c.relname),
@@ -32,6 +107,7 @@ findings(severity_order, sev, id, obj, det) as (
     'RLS is enabled but the table has zero policies'
   from pg_class as c
   join pg_namespace as n on n.oid = c.relnamespace
+  join target_schemas as target on target.oid = n.oid
   where c.relkind in ('r', 'p')
     and c.relrowsecurity
     and not exists (select 1 from pg_policy as p where p.polrelid = c.oid)
@@ -43,6 +119,7 @@ findings(severity_order, sev, id, obj, det) as (
   from pg_policy as p
   join pg_class as c on c.oid = p.polrelid
   join pg_namespace as n on n.oid = c.relnamespace
+  join target_schemas as target on target.oid = n.oid
   where p.polroles is null or cardinality(p.polroles) = 0 or 0 = any(p.polroles)
 
   union all
@@ -52,6 +129,7 @@ findings(severity_order, sev, id, obj, det) as (
   from pg_policy as p
   join pg_class as c on c.oid = p.polrelid
   join pg_namespace as n on n.oid = c.relnamespace
+  join target_schemas as target on target.oid = n.oid
   where concat_ws(' ', pg_get_expr(p.polqual, p.polrelid), pg_get_expr(p.polwithcheck, p.polrelid))
     ~* 'auth[.]role\s*[(]'
 
@@ -62,6 +140,7 @@ findings(severity_order, sev, id, obj, det) as (
   from pg_policy as p
   join pg_class as c on c.oid = p.polrelid
   join pg_namespace as n on n.oid = c.relnamespace
+  join target_schemas as target on target.oid = n.oid
   where p.polcmd in ('r', 'w', 'd', '*')
     and (p.polqual is null or lower(btrim(pg_get_expr(p.polqual, p.polrelid), '() ')) = 'true')
 
@@ -72,6 +151,7 @@ findings(severity_order, sev, id, obj, det) as (
   from pg_policy as p
   join pg_class as c on c.oid = p.polrelid
   join pg_namespace as n on n.oid = c.relnamespace
+  join target_schemas as target on target.oid = n.oid
   where p.polcmd in ('w', '*') and p.polwithcheck is null
 
   union all
@@ -101,6 +181,36 @@ findings(severity_order, sev, id, obj, det) as (
   join api_routines as api on api.oid = p.oid
   where p.prosecdef
     and p.prosrc !~* '(auth[.](uid|jwt)\s*[(]|request[.]jwt)'
+
+  union all
+  select 1, 'CRITICAL', 'L10', format('%I.%I', n.nspname, c.relname),
+    format('API role has dangerous table privilege: %s', dangerous.grants)
+  from dangerous_relation_grants as dangerous
+  join pg_class as c on c.oid = dangerous.oid
+  join pg_namespace as n on n.oid = c.relnamespace
+  where c.relkind in ('r', 'p')
+
+  union all
+  select 2, 'HIGH', 'L11',
+    format(
+      '%I.%I [%s %s]',
+      n.nspname,
+      c.relname,
+      write_grant.rolname,
+      write_grant.privilege_type
+    ),
+    'API write grant has no applicable RLS policy'
+  from unprotected_write_grants as write_grant
+  join pg_class as c on c.oid = write_grant.oid
+  join pg_namespace as n on n.oid = c.relnamespace
+  where c.relkind in ('r', 'p')
+
+  union all
+  select 1, 'CRITICAL', 'L12', format('%I.%I', n.nspname, c.relname),
+    format('API role has sequence privilege: %s', dangerous.grants)
+  from dangerous_sequence_grants as dangerous
+  join pg_class as c on c.oid = dangerous.oid
+  join pg_namespace as n on n.oid = c.relnamespace
 )
 select severity_order, sev, id, obj, det
 from findings;
