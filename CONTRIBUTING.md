@@ -13,6 +13,20 @@ is early enough that careful disagreement is more valuable than volume.
    exploit details, credentials, or production data in a public issue.
 4. Read [GOVERNANCE.md](GOVERNANCE.md) for decision rights and architecture gates.
 
+## Active implementation plan
+
+The current contributor execution map is [the v0.1 read-only implementation plan](docs/IMPLEMENTATION_PLAN.md), tracked by [epic #19](https://github.com/jryski/Supabase_user_MCP/issues/19).
+
+To take a work package:
+
+1. choose an issue labeled `status:ready`;
+2. comment that you are taking it and name the intended files;
+3. open a bounded draft PR early and link the issue;
+4. attach exact verification output before requesting review; and
+5. release the claim if you cannot continue so another contributor is not blocked.
+
+Blocked issues name their dependencies. Do not start around a security or identity gate by implementing a broader shortcut.
+
 ## Good first contributions
 
 - Add a denied case to the policy access matrix.
