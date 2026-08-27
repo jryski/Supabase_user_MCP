@@ -19,7 +19,11 @@ marker neither proves authorization nor captures every safe delegated design.
 - Does the routine derive identity from verified request context, with caller-supplied
   principal arguments removed rather than compared to `auth.uid()`?
 - Is the `search_path` fixed to an empty or minimal trusted-schema allowlist?
-- Was default access removed with `REVOKE EXECUTE ON FUNCTION ... FROM PUBLIC`?
+- Do every revoke and grant name the schema-qualified routine and exact argument types?
+- Was default access removed with
+  `REVOKE EXECUTE ON FUNCTION schema.name(argument_types) FROM PUBLIC`?
+- Were the owner's effective privileges reviewed and unnecessary `LOGIN`, `BYPASSRLS`, role
+  memberships, and object privileges removed?
 - Do negative and cross-identity tests show that the routine fails closed?
 - Does the owning review identify the routine and owner and record the identity source,
   ACL, `search_path`, tests, reviewer, result, and date before any API-role grant?
@@ -31,9 +35,10 @@ operation is not evidence of safety.
 
 ## Rollback
 
-If a review is incomplete, contradicted, or invalidated, `REVOKE EXECUTE ... FROM anon, authenticated`
-immediately, confirm effective ACLs deny both roles, and return the routine to the review queue.
-Rollback restores inaccessibility; it does not certify the routine as safe.
+If a review is incomplete, contradicted, or invalidated, immediately revoke the
+schema-qualified exact routine signature from `anon` and `authenticated`, confirm effective
+ACLs deny both roles, and return the routine to the review queue. Rollback restores
+inaccessibility; it does not certify the routine as safe.
 
 ## Scope limits
 
