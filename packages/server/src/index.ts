@@ -32,4 +32,11 @@ export {
   type PermissionInspection,
   type PermissionInspector,
 } from './local-credential-loader.js';
-export { createServer, SERVER_NAME, SERVER_VERSION, TARGET_PROTOCOL_VERSION } from './server.js';
+export {
+  createReadOnlyServer,
+  type ReadOnlyServerOptions,
+  createServer,
+  SERVER_NAME,
+  SERVER_VERSION,
+  TARGET_PROTOCOL_VERSION,
+} from './server.js';

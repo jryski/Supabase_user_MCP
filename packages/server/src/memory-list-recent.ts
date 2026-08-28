@@ -2,7 +2,6 @@ import {
   MAX_RESPONSE_BYTES,
   MAX_TOOL_EXECUTION_MS,
   MEMORY_LIST_RECENT_TOOL,
-  MemoryListRecentInputSchema,
   MemoryListRecentOutputSchema,
   readToolWireResponseByteLength,
   type MemoryListRecentOutput,
@@ -87,7 +86,7 @@ export function createMemoryListRecent(
     unsafeInput: unknown,
     callerSignal?: AbortSignal,
   ): Promise<MemoryListRecentOutput> => {
-    const input = MemoryListRecentInputSchema.safeParse(unsafeInput);
+    const input = MEMORY_LIST_RECENT_TOOL.inputSchema.safeParse(unsafeInput);
     if (!input.success) return error('INVALID_REQUEST');
 
     const controller = new AbortController();

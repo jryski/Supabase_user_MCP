@@ -2,7 +2,6 @@ import {
   MAX_RESPONSE_BYTES,
   MAX_TOOL_EXECUTION_MS,
   MEMORY_SEARCH_TOOL,
-  MemorySearchInputSchema,
   MemorySearchOutputSchema,
   readToolWireResponseByteLength,
   type MemorySearchOutput,
@@ -50,7 +49,7 @@ export function createMemorySearch(client: FixedSupabaseClient, options: MemoryS
     unsafeInput: unknown,
     callerSignal?: AbortSignal,
   ): Promise<MemorySearchOutput> => {
-    const input = MemorySearchInputSchema.safeParse(unsafeInput);
+    const input = MEMORY_SEARCH_TOOL.inputSchema.safeParse(unsafeInput);
     if (!input.success) return error('INVALID_REQUEST');
     const controller = new AbortController();
     const cancel = () => controller.abort();
