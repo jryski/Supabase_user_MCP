@@ -1,4 +1,4 @@
-# Local Supabase project configuration for S1 Governed Artifact Inspection lab.
+# Local Supabase project configuration for S1/M2 security labs.
 # This project is synthetic-only and must not be pointed at production.
 
 project_id = "supabase-user-mcp-s1"
@@ -7,7 +7,7 @@ project_id = "supabase-user-mcp-s1"
 enabled = true
 # Use non-standard ports to avoid colliding with unrelated local listeners.
 port = 62421
-schemas = ["public", "storage", "extensions"]
+schemas = ["public", "memory", "storage", "extensions"]
 extra_search_path = ["public", "extensions"]
 max_rows = 200
 
@@ -19,7 +19,7 @@ health_timeout = "2m"
 
 [db.seed]
 enabled = true
-sql_paths = ["./seed.sql"]
+sql_paths = ["./seed.sql", "./seed-m2.sql"]
 
 [db.migrations]
 enabled = true
