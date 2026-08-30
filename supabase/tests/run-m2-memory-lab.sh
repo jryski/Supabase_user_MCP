@@ -98,11 +98,19 @@ HEAD_SHA="$(git rev-parse HEAD)"
 if [[ -n "${M2_EXPECTED_HEAD_SHA:-}" && "$HEAD_SHA" != "$M2_EXPECTED_HEAD_SHA" ]]; then
   fail "repository head does not match the requested acceptance head"
 fi
+BASE_SHA="${M2_EXPECTED_BASE_SHA:-}"
+if [[ -n "$BASE_SHA" && ! "$BASE_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+  fail "requested acceptance base is not a full Git SHA"
+fi
+BASE_JSON="null"
+if [[ -n "$BASE_SHA" ]]; then
+  BASE_JSON="\"${BASE_SHA}\""
+fi
 NODE_VERSION="$(node --version)"
 NPM_VERSION="$(npm --version)"
 SUPABASE_VERSION="$(supabase --version)"
-printf '{"schema":"supabase-user-mcp.m2-acceptance.v1","repositorySha":"%s","node":"%s","npm":"%s","supabase":"%s","cases":["db-rls-matrix","rpc-acl-census","principal-positive","cross-principal-denial","revoked-client-denial","missing-client-denial","expired-credential-denial","malformed-credential-file-denial","hostile-content-boundary","malformed-bearer-denial"],"result":"pass"}\n' \
-  "$HEAD_SHA" "$NODE_VERSION" "$NPM_VERSION" "$SUPABASE_VERSION" \
+printf '{"schema":"supabase-user-mcp.m2-acceptance.v1","repositorySha":"%s","baseSha":%s,"node":"%s","npm":"%s","supabase":"%s","cases":["db-rls-matrix","rpc-acl-census","principal-positive","cross-principal-denial","revoked-client-denial","missing-client-denial","expired-credential-denial","malformed-credential-file-denial","hostile-content-boundary","malformed-bearer-denial"],"result":"pass"}\n' \
+  "$HEAD_SHA" "$BASE_JSON" "$NODE_VERSION" "$NPM_VERSION" "$SUPABASE_VERSION" \
   > "$TMP_DIR/m2-acceptance-receipt.json"
 cat "$TMP_DIR/m2-acceptance-receipt.json"
 log "PASS: M2 synthetic acceptance complete."

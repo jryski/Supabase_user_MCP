@@ -143,7 +143,6 @@ localDescribe('M2 real local Auth -> MCP -> Data API -> RLS acceptance', () => {
       const searchItems = (search.structuredContent as { items: Array<{ id: string }> }).items;
       expect(searchItems.map((item) => item.id).toSorted()).toEqual([
         'mem_01JTESTALPHA000000000001',
-        'mem_01JTESTALPHA000000000003',
       ]);
 
       const recent = await client.callTool({ name: 'memory_list_recent', arguments: {} });

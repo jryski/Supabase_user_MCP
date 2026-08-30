@@ -1,6 +1,6 @@
 BEGIN;
 CREATE EXTENSION IF NOT EXISTS pgtap WITH SCHEMA extensions;
-SELECT extensions.plan(22);
+SELECT extensions.plan(23);
 
 SELECT extensions.ok(
   not (select prosecdef from pg_proc p join pg_namespace n on n.oid = p.pronamespace
@@ -55,8 +55,13 @@ SELECT extensions.is(
 );
 SELECT extensions.is(
   memory.authorized_memory_get_v1('mem_01JTESTBETA0000000000001')->'record',
-  null::jsonb,
+  'null'::jsonb,
   'cross-principal get is non-enumerating'
+);
+SELECT extensions.is(
+  memory.authorized_memory_get_v1('mem_01JTESTBETA0000000000001'),
+  memory.authorized_memory_get_v1('mem_01JTESTDOESNOTEXIST000000'),
+  'cross-principal denial is identical to a not-found response'
 );
 SELECT extensions.is(
   jsonb_array_length(memory.authorized_memory_list_recent_v1(null, 25, null)->'rows'),
@@ -70,8 +75,8 @@ SELECT extensions.is(
 );
 SELECT extensions.is(
   jsonb_array_length(memory.authorized_memory_search_v1('network', 'text', null, 20, null)->'rows'),
-  2,
-  'search returns only matching authorized rows'
+  1,
+  'lexical search returns only authorized title/content matches'
 );
 SELECT extensions.is(
   jsonb_array_length(memory.authorized_memory_search_v1('private', 'text', null, 20, null)->'rows'),
@@ -118,7 +123,7 @@ SELECT extensions.is(
 );
 SELECT extensions.is(
   memory.authorized_memory_get_v1('mem_01JTESTALPHA000000000001')->'record',
-  null::jsonb,
+  'null'::jsonb,
   'second principal cannot read first principal record'
 );
 
@@ -129,7 +134,7 @@ SELECT set_config(
 );
 SELECT extensions.is(
   memory.authorized_memory_get_v1('mem_01JTESTREVOKED0000000001')->'record',
-  null::jsonb,
+  'null'::jsonb,
   'revoked client fails closed'
 );
 

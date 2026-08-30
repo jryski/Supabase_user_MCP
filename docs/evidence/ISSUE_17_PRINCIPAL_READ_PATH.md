@@ -36,7 +36,24 @@ The underlying synthetic records remain in `policy_lab.memories`; the `memory` s
 - invalid-cursor denial; and
 - anonymous execute denial.
 
+Cross-principal denial is checked against the complete response for a well-formed nonexistent record. Both return the same `{"record": null}` JSON object so authorization cannot reveal whether a record exists outside the caller's workspace.
+
+## Searchable-field contract
+
+The `query` argument performs deterministic case-insensitive substring matching over memory `title` and `content` only. Tags are not free-text query material; callers constrain tags through the closed `filters.tags` field. The synthetic `semantic` mode deliberately uses this same title/content lexical behavior so the authorization path can be exercised without claiming semantic-search quality.
+
 The existing policy-lab suite continues to cover expired/revoked memberships and grants plus deliberate rollback-only policy weakening.
+
+## Repair rationale at Ariadne takeover
+
+PR #40's first exact-head M2 run reached PostgreSQL and failed four pgTAP expectations rather than implementation behavior:
+
+1. Tests 8, 19, and 20 expected SQL `NULL`, but `jsonb_build_object('record', <empty scalar subquery>)` intentionally serializes a present JSON key with the JSONB value `null`. The corrected expected literal is `'null'::jsonb`; the RPC remains unchanged.
+2. The cross-principal assertion now also compares the complete denied response with the complete response for a well-formed nonexistent record. This proves non-enumeration instead of checking only the `record` member.
+3. Test 11 expected two lexical `network` matches. Only `mem_01JTESTALPHA000000000001` contains `network` in title/content; `mem_01JTESTALPHA000000000003` carries it only as a tag. Under the documented title/content query contract the correct count is one, and the TypeScript end-to-end expectation is corrected to the same single ID.
+4. Because PR #40 is stacked on unmerged PR #38, exact-head CI now passes and records the pull-request base SHA as well as the head SHA. This binds acceptance to the reviewed stack coordinate.
+
+No migration, seed, RLS policy, ACL, RPC, MCP server, credential, or production source behavior is changed by this repair.
 
 ## Real local Auth path
 
@@ -58,11 +75,16 @@ The end-to-end cases prove:
 A successful M2 harness emits one secret-free JSON receipt binding:
 
 - repository SHA;
+- stacked pull-request base SHA when supplied by exact-head CI;
 - pinned Node, npm, and Supabase CLI versions;
 - named acceptance case IDs; and
 - overall pass status.
 
 The receipt deliberately excludes JWTs, publishable keys, credential-file paths, stored content, host identifiers, and private payloads. It proves only the synthetic test execution at that SHA.
+
+## Producer provenance
+
+The original PR #40 commits are authored under Jesse's GitHub identity, but the implementation agent/model attribution was not durably captured before Ariadne took over SAOS-0013; that prior producer model remains unknown. Ariadne's expectation/evidence repair was coordinated with GPT-5.6 Sol. A bounded Locutus Qwen3.8 read-only diagnosis completed at the runtime level but returned no final analysis and contributed no accepted code or conclusion.
 
 ## Claim limits
 
