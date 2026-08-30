@@ -15,6 +15,7 @@ must satisfy.
 | [Threat model](THREAT_MODEL.md) | What can go wrong, and what contains it? |
 | [Roadmap](ROADMAP.md) | In what order will the project prove its claims? |
 | [Development guide](DEVELOPMENT.md) | How will the repository be built and verified? |
+| [Program context](PROGRAM_CONTEXT.md) | Which program plane owns which contracts and claims? |
 | [M0 compatibility evidence](evidence/M0_COMPATIBILITY_SPIKE.md) | What does the executable protocol spike prove? |
 | [Architecture decisions](decisions/README.md) | Why were consequential choices made? |
 

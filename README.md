@@ -39,7 +39,10 @@ The dependency direction is one way: this project may implement SMP-compatible s
 
 A related proposed protocol lane is the **Agent Access Integrity Boundary**: establish a forward evidence boundary before agents are introduced to existing systems in situ. This repository can eventually provide one identity/capability mechanism for such deployments, but it does not itself establish the protocol claim.
 
-## Security thesis
+## Target security thesis
+
+This is the required end-state boundary. It is not a claim that every hop is accepted on
+`main` today.
 
 ```text
 MCP client
@@ -78,10 +81,23 @@ Current `main` contains the reviewed local foundation through the governed read-
 - revocation/audit policy evidence;
 - protected local credential loader and fixed Supabase client seam;
 - bounded `memory_search`, `memory_get`, and `memory_list_recent` factories;
-- shared timeout/byte/concurrency/rate governor derived from verified principal/client context;
+- shared timeout, row, byte, concurrency, and process-local request governors whose
+  identity scope still depends on verified principal/client context being wired by the
+  active server profile;
 - a real local Storage/RLS artifact lab used by the Governed Artifact Inspection design work.
 
-The critical read-only milestone is **not closed**. Issue #17 still requires the real local path:
+The critical read-only milestone is **not closed**. Draft PRs
+[#38](https://github.com/jryski/Supabase_user_MCP/pull/38) and
+[#40](https://github.com/jryski/Supabase_user_MCP/pull/40) add strict tool registration and
+a synthetic local client-to-RLS acceptance path, but they are unmerged candidate evidence,
+not behavior available from `main`.
+
+Current PR #40 review has two open implementation findings: the registered server does not
+yet supply verified principal/client identity to the governor, and its duplicated text plus
+`structuredContent` result can exceed the nominal 65,536-byte response ceiling. Issue #17
+remains open until those findings and independent review are resolved.
+
+The intended local path is:
 
 ```text
 local Auth/JWT
@@ -91,7 +107,8 @@ local Auth/JWT
   -> authorized intersection
 ```
 
-The strict three-tool registration slice has independent review, but the authorized `authorized_memory_*_v1` database functions and full client-to-RLS acceptance remain separate work.
+Passing CI on a draft head is reproducible test evidence for that coordinate. It is not
+merge, deployment, production-readiness, or security acceptance.
 
 ## Planned product surface
 
@@ -102,6 +119,18 @@ Initial read capabilities:
 - `memory_list_recent`
 
 Later governed write capabilities are planned separately, including append-only observations and proposal/approval workflows. See [feature catalog](docs/FEATURES.md).
+
+### Current scope limits
+
+- The first profile is local stdio with one protected Supabase user access token. Remote
+  HTTP/OAuth remains blocked on a standards-compliant downstream-token and audience design.
+- The v0.1 tools expose one fixed allowlisted field projection. They do not provide
+  per-principal column entitlements; RLS remains a row boundary.
+- The current database search candidate is lexical. `semantic` mode does not establish an
+  approximate-nearest-neighbor implementation or semantic quality, recall, latency, or
+  multitenant isolation.
+- Production data, deployment credentials, and project-wide privileged keys remain outside
+  this repository's accepted test profile.
 
 ### Governed Artifact Inspection
 
@@ -122,7 +151,7 @@ This is proposed work. Hosted adoption remains gated by a verified non-service u
 | --- | --- | --- |
 | M0 | Protocol/policy/repository foundation | Foundation landed |
 | M1 | Local Auth/RLS policy laboratory | Core policy-lab evidence landed; issue #11 remains open for true MCP/PostgREST acceptance semantics |
-| M2 | Read-only stdio reference server | **Active critical path** — issue #17 E2E acceptance incomplete |
+| M2 | Read-only stdio reference server | **Active critical path** — draft #40 is green but has unresolved review findings; issue #17 remains open |
 | M3 | Idempotent writes and canonical approval | Future |
 | M4 | Remote HTTP/OAuth profile | Future; downstream-token/audience proof required |
 | M5 | Operations/adversarial hardening | Future |
@@ -140,7 +169,8 @@ npm run check
 npm run build
 ```
 
-Local Supabase policy tests use synthetic fixtures only. Do not point the harness at HOUSE, VAULT, a customer project, or another production database.
+Local Supabase policy tests use synthetic fixtures only. Do not point the harness at a
+private household, restricted, customer, or production project.
 
 ## Documentation
 
@@ -153,6 +183,7 @@ Local Supabase policy tests use synthetic fixtures only. Do not point the harnes
 - [Implementation plan](docs/IMPLEMENTATION_PLAN.md)
 - [Development guide](docs/DEVELOPMENT.md)
 - [Architecture decisions](docs/decisions/README.md)
+- [Program context and plane ownership](docs/PROGRAM_CONTEXT.md)
 - [Evidence](docs/evidence/)
 
 ## Contributing
