@@ -95,6 +95,9 @@ malformed_status="$(curl -sS -o "$TMP_DIR/malformed.json" -w '%{http_code}' \
 [[ ! "$malformed_status" =~ ^2 ]] || fail "malformed bearer unexpectedly reached the RPC"
 
 HEAD_SHA="$(git rev-parse HEAD)"
+if [[ -n "${M2_EXPECTED_HEAD_SHA:-}" && "$HEAD_SHA" != "$M2_EXPECTED_HEAD_SHA" ]]; then
+  fail "repository head does not match the requested acceptance head"
+fi
 NODE_VERSION="$(node --version)"
 NPM_VERSION="$(npm --version)"
 SUPABASE_VERSION="$(supabase --version)"
