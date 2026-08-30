@@ -53,7 +53,9 @@ async function credentialsFor(label: string, token: string): Promise<LocalCreden
 
 function loopbackFetch(actualOrigin: string): typeof globalThis.fetch {
   return async (input, init) => {
-    const requested = new URL(typeof input === 'string' || input instanceof URL ? input : input.url);
+    const requested = new URL(
+      typeof input === 'string' || input instanceof URL ? input : input.url,
+    );
     const target = new URL(`${requested.pathname}${requested.search}`, actualOrigin);
     return globalThis.fetch(target, init);
   };
@@ -113,12 +115,19 @@ localDescribe('M2 real local Auth -> MCP -> Data API -> RLS acceptance', () => {
       });
       expect(cross.structuredContent).toEqual({
         ok: false,
-        error: { code: 'RESOURCE_UNAVAILABLE', message: 'Record is unavailable.', retryable: false },
+        error: {
+          code: 'RESOURCE_UNAVAILABLE',
+          message: 'Record is unavailable.',
+          retryable: false,
+        },
       });
 
       const forged = await client.callTool({
         name: 'memory_get',
-        arguments: { id: 'mem_01JTESTALPHA000000000001', principalId: '22222222-2222-4222-9222-222222222222' },
+        arguments: {
+          id: 'mem_01JTESTALPHA000000000001',
+          principalId: '22222222-2222-4222-9222-222222222222',
+        },
       });
       expect(forged.isError).toBe(true);
     });
@@ -173,7 +182,10 @@ localDescribe('M2 real local Auth -> MCP -> Data API -> RLS acceptance', () => {
         name: 'memory_get',
         arguments: { id: 'mem_01JTESTALPHA000000000001' },
       });
-      expect(cross.structuredContent).toMatchObject({ ok: false, error: { code: 'RESOURCE_UNAVAILABLE' } });
+      expect(cross.structuredContent).toMatchObject({
+        ok: false,
+        error: { code: 'RESOURCE_UNAVAILABLE' },
+      });
     });
 
     for (const [label, token] of [
