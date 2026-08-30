@@ -95,9 +95,14 @@ not behavior available from `main`.
 Current PR #40 review has two open implementation findings: the registered server does not
 yet supply verified principal/client identity to the governor, and its byte-budget model
 does not cover the complete outbound JSON-RPC frame when both text content and
-`structuredContent` are emitted. Emitting both representations is expected MCP compatibility
-behavior; the defect is the incomplete budget boundary. Issue #17 remains open until those
-findings and independent review are resolved.
+`structuredContent` are emitted. The
+[MCP tools specification](https://modelcontextprotocol.io/specification/2026-07-28/server/tools)
+says structured results **SHOULD** also provide serialized JSON text for compatibility; it is
+not a MUST. The current candidate chooses the full dual representation. A semantically
+equivalent text summary is an alternative design with degraded results for clients that
+ignore `structuredContent`. The current defect is the incomplete budget boundary for the
+selected representation. Issue #17 remains open until those findings and independent review
+are resolved.
 
 The intended local path is:
 
@@ -132,7 +137,7 @@ Later governed write capabilities are planned separately, including append-only 
   approximate-nearest-neighbor implementation or semantic quality, recall, latency, or
   multitenant isolation.
 - The 65,536-byte response ceiling is a project-defined safety budget, not an MCP protocol
-  limit. It must cover the complete serialized outbound frame, including required
+  limit. It must cover the complete serialized outbound frame, including the selected
   compatibility representations and protocol overhead.
 - Production data, deployment credentials, and project-wide privileged keys remain outside
   this repository's accepted test profile.
