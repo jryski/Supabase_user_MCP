@@ -38,7 +38,7 @@ log "Resetting migrations and synthetic fixtures."
 supabase db reset --workdir "$PROJECT_ROOT" --yes --network-id "$NETWORK_NAME" >/dev/null
 
 log "Running database authorization, ACL, mutation, and catalog matrices."
-node scripts/run-policy-lab-catalog-test.mjs
+S1_DOCKER_NETWORK="$NETWORK_NAME" node scripts/run-policy-lab-catalog-test.mjs
 
 STATUS_PROJECTION="$(
   supabase status --workdir "$PROJECT_ROOT" -o json \
