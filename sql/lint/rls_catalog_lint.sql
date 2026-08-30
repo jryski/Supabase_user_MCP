@@ -3,7 +3,7 @@ with
 target_schemas as (
   select oid
   from pg_namespace
-  where nspname in ('public', 'storage', 'catalog_lint_fixture')
+  where nspname in ('public', 'storage', 'memory', 'catalog_lint_fixture')
 ),
 api_roles as (
   select oid, rolname
