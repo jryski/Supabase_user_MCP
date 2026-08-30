@@ -52,6 +52,7 @@ PR #40's first exact-head M2 run reached PostgreSQL and failed four pgTAP expect
 2. The cross-principal assertion now also compares the complete denied response with the complete response for a well-formed nonexistent record. This proves non-enumeration instead of checking only the `record` member.
 3. Test 11 expected two lexical `network` matches. Only `mem_01JTESTALPHA000000000001` contains `network` in title/content; `mem_01JTESTALPHA000000000003` carries it only as a tag. Under the documented title/content query contract the correct count is one, and the TypeScript end-to-end expectation is corrected to the same single ID.
 4. Because PR #40 is stacked on unmerged PR #38, exact-head CI now passes and records the pull-request base SHA as well as the head SHA. This binds acceptance to the reviewed stack coordinate.
+5. The first repaired CI run advanced past 91 database tests and exposed a fresh-checkout harness gap: the focused M2 Vitest command could not resolve workspace package exports before compiled output existed. The M2 harness now runs the existing workspace build before focused Vitest; package exports and application behavior remain unchanged.
 
 No migration, seed, RLS policy, ACL, RPC, MCP server, credential, or production source behavior is changed by this repair.
 

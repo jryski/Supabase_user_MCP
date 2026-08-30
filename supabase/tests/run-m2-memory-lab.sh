@@ -40,6 +40,9 @@ supabase db reset --workdir "$PROJECT_ROOT" --yes --network-id "$NETWORK_NAME" >
 log "Running database authorization, ACL, mutation, and catalog matrices."
 S1_DOCKER_NETWORK="$NETWORK_NAME" node scripts/run-policy-lab-catalog-test.mjs
 
+log "Building workspace packages for focused M2 imports."
+npm run build
+
 log "Verifying protected startup credentials reject malformed and expired tokens."
 npx vitest run packages/server/src/local-credential-loader.test.ts
 
