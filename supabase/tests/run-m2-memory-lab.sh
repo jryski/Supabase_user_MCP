@@ -40,6 +40,9 @@ supabase db reset --workdir "$PROJECT_ROOT" --yes --network-id "$NETWORK_NAME" >
 log "Running database authorization, ACL, mutation, and catalog matrices."
 S1_DOCKER_NETWORK="$NETWORK_NAME" node scripts/run-policy-lab-catalog-test.mjs
 
+log "Verifying protected startup credentials reject malformed and expired tokens."
+npx vitest run packages/server/src/local-credential-loader.test.ts
+
 STATUS_PROJECTION="$(
   supabase status --workdir "$PROJECT_ROOT" -o json \
     | node -e '
@@ -95,7 +98,7 @@ HEAD_SHA="$(git rev-parse HEAD)"
 NODE_VERSION="$(node --version)"
 NPM_VERSION="$(npm --version)"
 SUPABASE_VERSION="$(supabase --version)"
-printf '{"schema":"supabase-user-mcp.m2-acceptance.v1","repositorySha":"%s","node":"%s","npm":"%s","supabase":"%s","cases":["db-rls-matrix","rpc-acl-census","principal-positive","cross-principal-denial","revoked-client-denial","missing-client-denial","hostile-content-boundary","malformed-bearer-denial"],"result":"pass"}\n' \
+printf '{"schema":"supabase-user-mcp.m2-acceptance.v1","repositorySha":"%s","node":"%s","npm":"%s","supabase":"%s","cases":["db-rls-matrix","rpc-acl-census","principal-positive","cross-principal-denial","revoked-client-denial","missing-client-denial","expired-credential-denial","malformed-credential-file-denial","hostile-content-boundary","malformed-bearer-denial"],"result":"pass"}\n' \
   "$HEAD_SHA" "$NODE_VERSION" "$NPM_VERSION" "$SUPABASE_VERSION" \
   > "$TMP_DIR/m2-acceptance-receipt.json"
 cat "$TMP_DIR/m2-acceptance-receipt.json"
