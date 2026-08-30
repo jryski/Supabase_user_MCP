@@ -77,10 +77,17 @@ mint_token() {
   ' "$response_file"
 }
 
-export M2_ALICE_TOKEN="$(mint_token 'alice.fixture@example.test' 'alice')"
-export M2_BOB_TOKEN="$(mint_token 'bob.fixture@example.test' 'bob')"
-export M2_CHARLIE_TOKEN="$(mint_token 'charlie.fixture@example.test' 'charlie')"
-export M2_DANA_TOKEN="$(mint_token 'dana.fixture@example.test' 'dana')"
+M2_ALICE_TOKEN="$(mint_token 'alice.fixture@example.test' 'alice')"
+export M2_ALICE_TOKEN
+M2_BOB_TOKEN="$(mint_token 'bob.fixture@example.test' 'bob')"
+export M2_BOB_TOKEN
+M2_CHARLIE_TOKEN="$(mint_token 'charlie.fixture@example.test' 'charlie')"
+export M2_CHARLIE_TOKEN
+M2_DANA_TOKEN="$(mint_token 'dana.fixture@example.test' 'dana')"
+export M2_DANA_TOKEN
+for token_name in M2_ALICE_TOKEN M2_BOB_TOKEN M2_CHARLIE_TOKEN M2_DANA_TOKEN; do
+  [[ -n "${!token_name:-}" ]] || fail "required local Auth token was not minted"
+done
 log "Minted real local Auth sessions without printing bearer material."
 
 log "Running MCP client -> fixed Data API -> SECURITY INVOKER RPC -> PostgreSQL RLS tests."
@@ -107,6 +114,9 @@ if [[ -n "$BASE_SHA" && ! "$BASE_SHA" =~ ^[0-9a-f]{40}$ ]]; then
 fi
 BASE_JSON="null"
 if [[ -n "$BASE_SHA" ]]; then
+  git cat-file -e "${BASE_SHA}^{commit}" 2>/dev/null || fail "acceptance base commit is unavailable"
+  git merge-base --is-ancestor "$BASE_SHA" "$HEAD_SHA" \
+    || fail "acceptance base is not an ancestor of the acceptance head"
   BASE_JSON="\"${BASE_SHA}\""
 fi
 NODE_VERSION="$(node --version)"
