@@ -1,7 +1,7 @@
 # Security Model
 
-- **Status:** Proposed
-- **Last reviewed:** 2026-08-17
+- **Status:** Mixed — accepted invariants, merged M0–M2 controls, and proposed later controls
+- **Last reviewed:** 2026-08-30
 
 ## Objective
 
@@ -10,8 +10,9 @@ client, a workspace, a named capability, an allowed record state, and a database
 Compromise of a model or one agent should not become compromise of the Supabase project
 or another identity.
 
-This document defines intended controls. It is not a claim that those controls are
-implemented.
+The invariants are accepted design requirements. Only controls linked from the
+[evidence index](evidence/README.md) are implemented on `main`; later capabilities and
+deployment-specific controls remain proposed until their named gates pass.
 
 ## Security invariants
 

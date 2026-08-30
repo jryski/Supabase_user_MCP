@@ -1,8 +1,8 @@
 # Development Roadmap
 
-- **Status:** Proposed
+- **Status:** Active — merged foundations and future evidence gates are distinguished below
 - **Planning horizon:** M0 through v1
-- **Last reviewed:** 2026-08-17
+- **Last reviewed:** 2026-08-30
 
 ## Active execution slice
 

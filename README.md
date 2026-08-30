@@ -33,7 +33,7 @@ This repository owns **authenticated application data-plane capability**, not th
 - **Sovereign Memory Protocol (SMP)** defines implementation-neutral provenance, custody, authority, verification, portability, and claim semantics.
 - **Sovereign Memory Core** is the PostgreSQL reference runtime for SMP semantics.
 - **Supabase User MCP** provides a bounded user/agent capability seam into Supabase-backed application data while preserving caller identity into RLS.
-- **Deployments such as Household OS** decide which principals, clients, tools, and data surfaces are actually enabled.
+- **Deployments** decide which principals, clients, tools, and data surfaces are actually enabled.
 
 The dependency direction is one way: this project may implement SMP-compatible semantics, but it must not redefine SMP through Supabase-specific mechanisms.
 
@@ -102,7 +102,8 @@ not a MUST. The current candidate chooses the full dual representation. A semant
 equivalent text summary is an alternative design with degraded results for clients that
 ignore `structuredContent`. The current defect is the incomplete budget boundary for the
 selected representation. Issue #17 remains open until those findings and independent review
-are resolved.
+are resolved. The exact mechanisms and acceptance criteria are in the
+[public PR #40 finding record](https://github.com/jryski/Supabase_user_MCP/pull/40#issuecomment-5471637122).
 
 The intended local path is:
 
@@ -180,7 +181,7 @@ npm run build
 ```
 
 Local Supabase policy tests use synthetic fixtures only. Do not point the harness at a
-private household, restricted, customer, or production project.
+private, restricted, customer, or production project.
 
 ## Documentation
 
@@ -194,7 +195,7 @@ private household, restricted, customer, or production project.
 - [Development guide](docs/DEVELOPMENT.md)
 - [Architecture decisions](docs/decisions/README.md)
 - [Program context and plane ownership](docs/PROGRAM_CONTEXT.md)
-- [Evidence](docs/evidence/)
+- [Evidence index](docs/evidence/README.md)
 
 ## Contributing
 

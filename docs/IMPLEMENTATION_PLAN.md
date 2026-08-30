@@ -3,8 +3,9 @@
 - **Status:** Active planning baseline
 - **Tracking epic:** [#19](https://github.com/jryski/Supabase_user_MCP/issues/19)
 - **Scope:** local stdio, read-only, synthetic acceptance
-- **Planning baseline coordinate:** `e3b1af371bd0e231376d32efe1623ed32c011fb3`
-- **Last reconciled main:** `63269c64bb1d259faf93e7c3e63e3e210e705afc`
+- **Historical planning baseline:** `e3b1af371bd0e231376d32efe1623ed32c011fb3`
+- **Last reconciled main:** `f691b1a49cabfc6bcf86f6011509db10a7496f90`
+- **Last reviewed:** 2026-08-30
 
 ## Outcome
 
@@ -23,7 +24,7 @@ The v0.1 pilot does not include:
 - remote HTTP or OAuth;
 - service-agent production identity;
 - writes, proposals, approvals, or canonical mutation;
-- production or private Balance EQ data;
+- production or private deployment data;
 - `service_role`, project access tokens, or `BYPASSRLS` roles in the public request path;
 - arbitrary SQL or caller-selected origins, schemas, tables, views, RPCs, URLs, or HTTP methods.
 
@@ -63,50 +64,57 @@ M2
 
 ### Current execution order
 
-As of 2026-08-27, issues #2, #8, #9, #10, #25, and the S1 artifact lab are merged. The
-remaining read-only pilot work should proceed in this order:
+As of 2026-08-30, the contract, policy-lab, credential/client, read-factory, and
+process-local governor foundations are merged. Strict registration and the full synthetic
+client-to-RLS path remain draft candidates. Work should proceed in this order:
 
-1. Complete exact-head adversarial review of the governed read implementation in PR #36.
-2. Assemble the protected credential loader, fixed client, and exactly three governed read tools
-   in the executable stdio server. The server currently exposes only the M0 compatibility probe.
-3. Complete issue #17 with a real MCP client, synthetic local Auth users and JWTs, Data API calls,
-   PostgreSQL RLS, revocation cases, deliberately weakened controls, and a machine-readable receipt.
+1. Finish issue #11's remaining tracker/acceptance semantics without reimplementing its merged
+   policy-lab foundation.
+2. Repair the two public PR #40 findings: verified principal/client governor context and the
+   complete outbound-frame byte budget.
+3. Rerun issue #17's exact-head client-to-RLS acceptance and independent review on the repaired
+   stacked coordinate.
 4. Complete issue #18's synthetic client, operator guide, rollback procedure, and experimental
-   release checklist.
-5. Reconcile issue labels and close superseded stacked integration PRs only after their unique
-   changes are present on `main`.
+   release checklist only after #17 is accepted.
+5. Reconcile issue labels and draft PR disposition without treating green draft CI as merged or
+   accepted behavior.
 
 Use the upstream Auth plus `StreamTransport` test topology selected by
 [ADR-0004](decisions/0004-narrow-upstream-mcp-reuse.md). Do not import the generic PostgREST MCP
 runtime or its caller-selected request tools.
 
-### Dependency-ready now
+### Merged foundations on `main`
 
-| Issue | Work package | Primary area |
+| Issue | Merged scope | Main commit |
 | --- | --- | --- |
-| [#2](https://github.com/jryski/Supabase_user_MCP/issues/2) | Add a control that proves the T03 containment test can reject a broken implementation | Security/testing |
-| [#8](https://github.com/jryski/Supabase_user_MCP/issues/8) | Decide local credential loading, refresh, and protocol-version policy | Identity/MCP |
-| [#9](https://github.com/jryski/Supabase_user_MCP/issues/9) | Freeze principal, client, capability, and revocation vocabulary | Identity/security |
-| [#10](https://github.com/jryski/Supabase_user_MCP/issues/10) | Freeze read-tool schemas, limits, and non-enumerating errors | MCP/security/testing |
+| [#2](https://github.com/jryski/Supabase_user_MCP/issues/2) | Authorized-write containment contract | `c162d548e7cf9ece5ed22475f4330854a44f46dc` |
+| [#8](https://github.com/jryski/Supabase_user_MCP/issues/8) | Local credential and protocol policy | `c08195fcf8d9064e591b55ec5e6be8c7afb66007` |
+| [#9](https://github.com/jryski/Supabase_user_MCP/issues/9) | Authorization vocabulary and access matrix | `0b48b72127e3ac222195eab32f197a7665ba10f6` |
+| [#10](https://github.com/jryski/Supabase_user_MCP/issues/10) | Bounded read-tool contracts | `7c930af9ca4c991eabcf0f111dafe3f7dc0fc444` |
+| [#25](https://github.com/jryski/Supabase_user_MCP/issues/25) | Pinned upstream StreamTransport seam | `63269c64bb1d259faf93e7c3e63e3e210e705afc` |
+| [#11](https://github.com/jryski/Supabase_user_MCP/issues/11) | Core local policy-lab implementation; tracker remains open | `83a72f52cf387c10589ea580e5c4738bf3ce497b` |
+| [#3](https://github.com/jryski/Supabase_user_MCP/issues/3) | RLS catalog lint | `7ed3cfb955456dc29bf5ba34ca0d18cea4ca2e89` |
+| [#4](https://github.com/jryski/Supabase_user_MCP/issues/4) | SECURITY DEFINER pre-grant evidence contract | `80fcfe32c7378cca2ff81f85d990a89fcad2d1f8` |
+| [#12](https://github.com/jryski/Supabase_user_MCP/issues/12) | Revocation and append-only audit boundary proof | `f7374c7477252f8443b65499188cac01026aadfb` |
+| [#13](https://github.com/jryski/Supabase_user_MCP/issues/13) | Protected credential loader and fixed client | `efba54ef64479b9c056514266efdda1327febe40` |
+| [#14](https://github.com/jryski/Supabase_user_MCP/issues/14) | Bounded memory-search application seam | `3b7121fb0a3cc0b19db6463c17264a00fab706e6` |
+| [#15](https://github.com/jryski/Supabase_user_MCP/issues/15) | Governed memory get and recent-list factories | `963b342c789a183331a31c7a144cd7cfeaecd25b` |
+| [#16](https://github.com/jryski/Supabase_user_MCP/issues/16) | Process-local governors, errors, and operational events | `963b342c789a183331a31c7a144cd7cfeaecd25b` |
 
-### Begins when dependencies clear
+### Active and blocked work
 
-| Issue | Work package | Depends on |
+| Issue/PR | Current state | Next gate |
 | --- | --- | --- |
-| [#11](https://github.com/jryski/Supabase_user_MCP/issues/11) | Pinned local Supabase policy lab and synthetic identities | #9, #10 |
-| [#3](https://github.com/jryski/Supabase_user_MCP/issues/3) | Executable policy tester and catalog lint | M0 contracts/policy lab shape |
-| [#4](https://github.com/jryski/Supabase_user_MCP/issues/4) | Pre-grant gate for SECURITY DEFINER routines | M1 schema/catalog shape |
-| [#12](https://github.com/jryski/Supabase_user_MCP/issues/12) | Revocation and append-only audit boundary proof | #11, #3, #4 |
-| [#13](https://github.com/jryski/Supabase_user_MCP/issues/13) | Protected credential loader and fixed Supabase client | #8, #11, #12 |
-| [#14](https://github.com/jryski/Supabase_user_MCP/issues/14) | Bounded `memory_search` | #10, #13 |
-| [#15](https://github.com/jryski/Supabase_user_MCP/issues/15) | `memory_get` and `memory_list_recent` | #10, #13 |
-| [#16](https://github.com/jryski/Supabase_user_MCP/issues/16) | Shared governors, normalized errors, redacted operational events | #13 |
-| [#17](https://github.com/jryski/Supabase_user_MCP/issues/17) | End-to-end identity/RLS/adversarial acceptance matrix | #14, #15, #16 |
-| [#18](https://github.com/jryski/Supabase_user_MCP/issues/18) | Synthetic client, operator guide, experimental release checklist | #17 |
+| [#11](https://github.com/jryski/Supabase_user_MCP/issues/11) | Open after core policy-lab merge | Reconcile remaining acceptance/tracker scope |
+| [PR #38](https://github.com/jryski/Supabase_user_MCP/pull/38) | Draft strict three-tool registration candidate | Stacked disposition with #17/#40 |
+| [#17](https://github.com/jryski/Supabase_user_MCP/issues/17) / [PR #40](https://github.com/jryski/Supabase_user_MCP/pull/40) | Draft client-to-RLS candidate with two public open findings | Repair, exact-head acceptance, independent review |
+| [#18](https://github.com/jryski/Supabase_user_MCP/issues/18) | Blocked on #17 | Operator/release documentation after acceptance |
 
 ## Parallel work lanes
 
-Contributors can start #2, #8, #9, and #10 independently. The first implementation lane opens after #9 and #10 settle the policy-lab contract. The tool implementations #14 and #15 may proceed in parallel once #13 lands. #16 should remain shared infrastructure rather than being reimplemented inside each tool.
+The remaining critical path is narrow. Avoid reopening merged work packages or starting
+remote/write surfaces around #11, #17, or #18. Small independent documentation, denial-test,
+and evidence-index fixes may proceed when they do not change the active authority boundary.
 
 ## Contributor workflow
 
@@ -137,7 +145,9 @@ npm ci
 npm run check
 ```
 
-At the planning base, `npm run check` passes with two test files and three tests after exact lockfile installation. Contributors must not treat that compatibility probe as data-plane coverage.
+At reconciled main `f691b1a…`, `npm run check` passes 18 test files and 168 tests after exact
+lockfile installation. That merged suite does not include draft PR #38/#40 behavior or prove
+the open issue #17 acceptance boundary.
 
 ## Pull-request acceptance
 

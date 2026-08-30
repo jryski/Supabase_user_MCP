@@ -1,7 +1,10 @@
 # Architecture
 
-- **Status:** Proposed
-- **Last reviewed:** 2026-08-17
+- **Status:** Mixed — local foundation implemented; remote and write profiles proposed or blocked
+- **Last reviewed:** 2026-08-30
+
+Implemented behavior is linked through the [evidence index](evidence/README.md). Target
+components and profiles remain design requirements until their named acceptance gates pass.
 
 ## Context
 
@@ -154,11 +157,17 @@ Purpose: serve multiple MCP clients with OAuth 2.1, explicit consent, revocation
 horizontal scaling.
 
 - Current MCP Streamable HTTP contract.
+- Stateless request authorization required by MCP `2026-07-28`; no protocol-level session.
+- Required `server/discover` support for protocol versions, capabilities, and identity.
 - OAuth Protected Resource Metadata and audience validation.
 - HTTPS-only public endpoints.
-- Stateless request authorization where the protocol permits.
 - Per-principal and per-client rate limits.
 - A standards-compliant downstream credential strategy.
+
+The client-registration strategy is unresolved. MCP `2026-07-28` deprecates RFC 7591 Dynamic
+Client Registration in favor of Client ID Metadata Documents while retaining backwards
+compatibility. Public Supabase MCP guidance still presents dynamic registration as an option.
+ADR-0002 records this as a K3 decision driver rather than silently choosing either path.
 
 This profile is blocked until the accepted architecture demonstrates that the credential
 used with Supabase APIs is valid for that resource and is not an impermissible transit of
@@ -188,12 +197,12 @@ the MCP resource token. See [ADR-0002](decisions/0002-remote-identity-chain.md).
   available.
 - Unknown schema, tool, capability, tenant, or record state fails closed.
 
-## Planned implementation stack
+## Reference implementation stack
 
-The reference implementation will use TypeScript and the official MCP TypeScript SDK,
-subject to the compatibility spike in M0. Runtime and dependency versions will be pinned
-when the first executable package is introduced. Postgres migrations and policy tests
-will run against Supabase local development.
+The merged reference workspace uses strict TypeScript with pinned MCP packages. `package.json`
+requires Node `>=22.20.0 <23` and npm `>=11.19.0 <12`; the lockfile pins exact dependencies.
+Postgres migrations and policy tests run through pinned Supabase local development. Draft
+profiles may add code ahead of `main`, but only merged paths count as implemented here.
 
 See [ADR-0001](decisions/0001-reference-implementation-language.md) and the
 [development guide](DEVELOPMENT.md).
@@ -204,3 +213,4 @@ See [ADR-0001](decisions/0001-reference-implementation-language.md) and the
 - [Supabase token security and RLS](https://supabase.com/docs/guides/auth/oauth-server/token-security)
 - [Supabase Row Level Security](https://supabase.com/docs/guides/database/postgres/row-level-security)
 - [MCP 2026-07-28 authorization](https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization)
+- [MCP 2026-07-28 changelog](https://modelcontextprotocol.io/specification/2026-07-28/changelog)

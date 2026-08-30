@@ -38,8 +38,8 @@ It is the bridge from today's privileged build process to household and business
 
 ## Downstream consumers
 
-- Household OS and private HOUSE deployments;
-- Sovereign Vault and other multi-user business deployments;
+- private household deployments;
+- multi-user business deployments;
 - bounded agent runtimes such as Hermes;
 - planning, review, knowledge, and action applications.
 
