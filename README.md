@@ -93,9 +93,11 @@ a synthetic local client-to-RLS acceptance path, but they are unmerged candidate
 not behavior available from `main`.
 
 Current PR #40 review has two open implementation findings: the registered server does not
-yet supply verified principal/client identity to the governor, and its duplicated text plus
-`structuredContent` result can exceed the nominal 65,536-byte response ceiling. Issue #17
-remains open until those findings and independent review are resolved.
+yet supply verified principal/client identity to the governor, and its byte-budget model
+does not cover the complete outbound JSON-RPC frame when both text content and
+`structuredContent` are emitted. Emitting both representations is expected MCP compatibility
+behavior; the defect is the incomplete budget boundary. Issue #17 remains open until those
+findings and independent review are resolved.
 
 The intended local path is:
 
@@ -129,6 +131,9 @@ Later governed write capabilities are planned separately, including append-only 
 - The current database search candidate is lexical. `semantic` mode does not establish an
   approximate-nearest-neighbor implementation or semantic quality, recall, latency, or
   multitenant isolation.
+- The 65,536-byte response ceiling is a project-defined safety budget, not an MCP protocol
+  limit. It must cover the complete serialized outbound frame, including required
+  compatibility representations and protocol overhead.
 - Production data, deployment credentials, and project-wide privileged keys remain outside
   this repository's accepted test profile.
 
