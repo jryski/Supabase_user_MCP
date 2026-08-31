@@ -135,7 +135,7 @@ A planning deployment will likely require policy inputs for:
 - external-action approval requirements;
 - administrative override and emergency recovery.
 
-The exact tables and claims belong to the deployment profile. The User MCP must not hard-code Household OS or Sovereign Vault schemas into its core identity machinery.
+The exact tables and claims belong to the deployment profile. The User MCP must not hard-code deployment-specific schemas into its core identity machinery.
 
 ## Minimum adversarial acceptance matrix
 

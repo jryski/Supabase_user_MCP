@@ -1,10 +1,11 @@
 # Feature Catalog
 
-- **Status:** Proposed
-- **Last reviewed:** 2026-08-17
+- **Status:** Mixed — merged local contracts and factories; later capabilities proposed
+- **Last reviewed:** 2026-08-30
 
-This catalog defines the intended product surface. A feature is not available until its
-roadmap milestone is complete and its acceptance criteria are backed by tests.
+This catalog defines both merged foundations and the intended product surface. Each section's
+status governs its named scope. `Implemented` or `Partially implemented` does not mean that a
+larger milestone, deployment profile, or production security gate is complete.
 
 ## Status legend
 
@@ -14,6 +15,8 @@ roadmap milestone is complete and its acceptance criteria are backed by tests.
 | Specified | Contract and acceptance criteria are reviewable |
 | Planned | Approved for a named milestone |
 | In progress | Implementation work has begun |
+| Partially implemented | Some named layers are merged; remaining layers or acceptance are explicit |
+| Implemented | Code and tests on `main` demonstrate only the named scope |
 | Experimental | Usable only in controlled development environments |
 | Stable | Covered by the stable compatibility and security policy |
 
@@ -38,11 +41,15 @@ origins, schemas, relations, RPCs, URLs, raw SQL, and PostgREST operators. Memor
 an opaque `mem_` token and pagination cursors use an opaque `cur_` token; callers must not
 construct or decode either token.
 
-All three tools have a 65,536-byte wire-response ceiling and a 2,000 ms execution
-ceiling. The byte unit is the UTF-8 encoding of the complete serialized JSON-RPC response,
-including the request ID, MCP result/content envelope, JSON escaping, and structured tool
-output. Output schemas reserve the minimum envelope; `serializeReadToolWireResponse` is the
-executable final-boundary check because the request ID also consumes the budget.
+All three tools intend to enforce a project-defined 65,536-byte wire-response ceiling and a
+2,000 ms execution ceiling. The intended byte unit is the UTF-8 encoding of the complete
+serialized outbound JSON-RPC frame, including the request ID, result/content envelope, JSON
+escaping, protocol overhead, and every selected compatibility representation. The contract
+package currently sizes a single modeled representation. A registered result that emits both
+text content and `structuredContent` can therefore exceed the project ceiling. This is an
+[open PR #38 base finding](https://github.com/jryski/Supabase_user_MCP/pull/38#issuecomment-5472417281):
+`serializeReadToolWireResponse` is the intended final-boundary check, not yet a proven one for
+the registered server's complete outbound frame.
 `memory_search` accepts at most 512 query characters, five allowlisted filters (tag and
 creation-time filters combined), and 20 rows. When both creation bounds are present,
 `createdAfter` must be earlier than or equal to `createdBefore`. `memory_list_recent` accepts
@@ -57,8 +64,8 @@ read behavior, no approval requirement, and `read_access` audit classification. 
 unavailable records, response overflow, timeout, and unexpected failures map respectively
 to `INVALID_REQUEST`, `RESOURCE_UNAVAILABLE`, `RESPONSE_LIMIT_EXCEEDED`,
 `DEADLINE_EXCEEDED`, and `INTERNAL_ERROR`; reaching 2,000 ms is the timeout condition. These
-are contract declarations only: this milestone adds no database access, network access, or
-server handler.
+describe merged contracts and application factories on `main`. Strict MCP registration and
+the synthetic Data API/RLS path remain unmerged candidates in draft PRs #38 and #40.
 
 The only serialized record fields are `id`, `title`, `content`, `contentTrust`, `createdAt`,
 and `provenanceSummary`; search results additionally include `rank`. Stored `content` is
@@ -73,11 +80,13 @@ authorization denials both pass their distinct internal reasons through
 ### `memory_search`
 
 - **Milestone:** M2
-- **Status:** Specified
+- **Status:** Partially implemented
 - **Capability:** `memory:search`
 - **Risk:** Read
 
-Runs bounded full-text or semantic search over records visible to the caller.
+The contract reserves bounded text and semantic modes over records visible to the caller.
+The current database candidate is lexical; semantic ANN quality, recall, latency, and
+multitenant behavior are not implemented or accepted.
 
 Initial contract:
 
@@ -99,7 +108,7 @@ Acceptance highlights:
 ### `memory_get`
 
 - **Milestone:** M2
-- **Status:** Specified
+- **Status:** Partially implemented
 - **Capability:** `memory:read`
 - **Risk:** Read
 
@@ -114,7 +123,7 @@ Acceptance highlights:
 ### `memory_list_recent`
 
 - **Milestone:** M2
-- **Status:** Specified
+- **Status:** Partially implemented
 - **Capability:** `memory:read`
 - **Risk:** Read
 
@@ -198,7 +207,7 @@ The exact user experience is deliberately open; the database state machine is no
 ### Stdio user-token profile
 
 - **Milestone:** M2
-- **Status:** Planned
+- **Status:** Partially implemented
 
 - Protected local credential source.
 - Fixed Supabase origin.
@@ -236,7 +245,7 @@ Blocked by [ADR-0002](decisions/0002-remote-identity-chain.md).
 ### Access-matrix test harness
 
 - **Milestone:** M1
-- **Status:** Planned
+- **Status:** Implemented
 
 Loads representative principals, clients, workspaces, capabilities, records, and states,
 then tests every intended allow and deny cell through the same API boundary used by the
@@ -245,7 +254,7 @@ server.
 ### Policy catalog checks
 
 - **Milestone:** M1
-- **Status:** Planned
+- **Status:** Implemented
 
 Checks for exposed tables without RLS, incomplete update policies, unsafe views, public
 definer functions, missing grants, and unindexed policy predicates. Supabase security and
@@ -254,7 +263,7 @@ performance advisors remain required after schema changes.
 ### Reference policy pack
 
 - **Milestone:** M1–M3
-- **Status:** Planned
+- **Status:** Partially implemented
 
 Provides migrations and tests for the reference sovereign-memory schema. It is an example
 integration, not a universal policy generator.
@@ -264,7 +273,7 @@ integration, not a universal policy generator.
 ### Result and cost governor
 
 - **Milestone:** M2
-- **Status:** Planned
+- **Status:** Partially implemented
 
 Central enforcement for input length, filters, rows, bytes, duration, rate, concurrency,
 and retry budget. Tools may lower but not exceed global ceilings.
@@ -272,7 +281,7 @@ and retry budget. Tools may lower but not exceed global ceilings.
 ### Dual-layer audit
 
 - **Milestone:** M3
-- **Status:** Planned
+- **Status:** Partially implemented
 
 Correlates redacted MCP operational events with trusted database mutation events. Supports
 authorized incident review without storing tokens or default record bodies.
@@ -291,7 +300,7 @@ authorized incident review without storing tokens or default record bodies.
 ### Adversarial corpus
 
 - **Milestone:** M2–M5
-- **Status:** Planned
+- **Status:** Partially implemented
 
 Versioned synthetic records and requests covering stored prompt injection, cross-tenant
 references, filter manipulation, oversized context, credential confusion, approval

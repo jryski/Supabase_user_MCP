@@ -16,6 +16,7 @@ must satisfy.
 | [Roadmap](ROADMAP.md) | In what order will the project prove its claims? |
 | [Development guide](DEVELOPMENT.md) | How will the repository be built and verified? |
 | [Program context](PROGRAM_CONTEXT.md) | Which program plane owns which contracts and claims? |
+| [Evidence index](evidence/README.md) | Which merged and draft artifacts support each claim? |
 | [M0 compatibility evidence](evidence/M0_COMPATIBILITY_SPIKE.md) | What does the executable protocol spike prove? |
 | [Architecture decisions](decisions/README.md) | Why were consequential choices made? |
 
@@ -24,6 +25,7 @@ must satisfy.
 - **Proposed** — a reviewable direction, not an implementation commitment.
 - **Accepted** — the current project decision.
 - **Blocked** — cannot proceed until a named uncertainty is resolved.
+- **Mixed** — implemented and proposed sections coexist; section evidence governs.
 - **Implemented** — code and tests demonstrate the described contract.
 - **Superseded** — retained for decision history but no longer current.
 
@@ -34,7 +36,7 @@ without linking to the evidence and acceptance gate that supports it.
 
 When documents disagree, use this precedence order:
 
-1. security invariants and accepted ADRs;
+1. security invariants, accepted ADRs, and accepted blocking decisions in unresolved ADRs;
 2. milestone exit criteria;
 3. feature contracts;
 4. architecture descriptions; and

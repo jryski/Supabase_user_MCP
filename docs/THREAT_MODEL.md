@@ -1,8 +1,8 @@
 # Threat Model
 
-- **Status:** Proposed
+- **Status:** Active — implemented and proposed controls are evidence-qualified
 - **Method:** asset and abuse-case analysis informed by STRIDE
-- **Last reviewed:** 2026-08-20
+- **Last reviewed:** 2026-08-30
 
 ## Scope
 
