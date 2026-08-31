@@ -28,12 +28,19 @@ Draft candidates are listed separately and must not be described as merged or ac
 
 | Candidate | Exact coordinate | What it may support | Open limits |
 | --- | --- | --- | --- |
-| [PR #38](https://github.com/jryski/Supabase_user_MCP/pull/38) strict registration | `ef7cd25428fa28451cfcc1f2b9d880a5cfa70476` | Exactly three registered read tools and invocation closure | Draft and unmerged; no claim that `main` exposes the tools |
-| [PR #40](https://github.com/jryski/Supabase_user_MCP/pull/40) client-to-RLS path | `c33adb4b8be284c114dcc307e3084b9635e60e43` over PR #38 | Synthetic local Auth, fixed Data API/RPC, RLS, and exact-head receipt evidence | Draft and unmerged; verified limiter identity and complete-frame byte budget remain [open findings](https://github.com/jryski/Supabase_user_MCP/pull/40#issuecomment-5471637122) |
+| [PR #38](https://github.com/jryski/Supabase_user_MCP/pull/38) strict registration | `ef7cd25428fa28451cfcc1f2b9d880a5cfa70476` | Exactly three registered read tools and invocation closure | Draft and unmerged; verified limiter/audit identity and complete-frame byte budget remain [open base findings](https://github.com/jryski/Supabase_user_MCP/pull/38#issuecomment-5472417281) |
+| [PR #40](https://github.com/jryski/Supabase_user_MCP/pull/40) client-to-RLS path | `c33adb4b8be284c114dcc307e3084b9635e60e43` over PR #38 | Synthetic local Auth, fixed Data API/RPC, RLS, and exact-head receipt evidence | Draft and unmerged; D1/D2 are repaired in its diff, but the candidate inherits PR #38 K1/K2 and must be refreshed after the base repair |
 
 Green CI on a draft coordinate proves only that the named workflow passed for that source.
 It does not merge the code, satisfy independent review, authorize deployment, or establish
 production readiness.
+
+## External review context
+
+- [Phase 1 external AI-assisted documentation review](EXTERNAL_PHASE1_DOCUMENTATION_REVIEW.md)
+  records the stale-cache correction, disclosure boundary, K2 normative correction, Section F
+  findings, and maintainer responses. It is a public-safe attributed summary, not an official
+  Supabase review or a verbatim private transcript.
 
 ## Reproduction entry points
 

@@ -70,7 +70,7 @@ client-to-RLS path remain draft candidates. Work should proceed in this order:
 
 1. Finish issue #11's remaining tracker/acceptance semantics without reimplementing its merged
    policy-lab foundation.
-2. Repair the two public PR #40 findings: verified principal/client governor context and the
+2. Repair the two public PR #38 base findings: verified principal/client governor context and the
    complete outbound-frame byte budget.
 3. Rerun issue #17's exact-head client-to-RLS acceptance and independent review on the repaired
    stacked coordinate.
@@ -106,8 +106,8 @@ runtime or its caller-selected request tools.
 | Issue/PR | Current state | Next gate |
 | --- | --- | --- |
 | [#11](https://github.com/jryski/Supabase_user_MCP/issues/11) | Open after core policy-lab merge | Reconcile remaining acceptance/tracker scope |
-| [PR #38](https://github.com/jryski/Supabase_user_MCP/pull/38) | Draft strict three-tool registration candidate | Stacked disposition with #17/#40 |
-| [#17](https://github.com/jryski/Supabase_user_MCP/issues/17) / [PR #40](https://github.com/jryski/Supabase_user_MCP/pull/40) | Draft client-to-RLS candidate with two public open findings | Repair, exact-head acceptance, independent review |
+| [PR #38](https://github.com/jryski/Supabase_user_MCP/pull/38) | Draft strict registration base with two public K1/K2 findings | Repair base, then refresh stacked #40 |
+| [#17](https://github.com/jryski/Supabase_user_MCP/issues/17) / [PR #40](https://github.com/jryski/Supabase_user_MCP/pull/40) | Draft client-to-RLS candidate; D1/D2 repaired, K1/K2 inherited from #38 | Refresh on repaired base, rerun exact-head acceptance and review |
 | [#18](https://github.com/jryski/Supabase_user_MCP/issues/18) | Blocked on #17 | Operator/release documentation after acceptance |
 
 ## Parallel work lanes

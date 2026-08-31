@@ -92,8 +92,8 @@ The critical read-only milestone is **not closed**. Draft PRs
 a synthetic local client-to-RLS acceptance path, but they are unmerged candidate evidence,
 not behavior available from `main`.
 
-Current PR #40 review has two open implementation findings: the registered server does not
-yet supply verified principal/client identity to the governor, and its byte-budget model
+The stacked read-path review has two open base findings in PR #38: the registered server does
+not yet supply verified principal/client identity to the governor, and its byte-budget model
 does not cover the complete outbound JSON-RPC frame when both text content and
 `structuredContent` are emitted. The
 [MCP tools specification](https://modelcontextprotocol.io/specification/2026-07-28/server/tools)
@@ -101,9 +101,11 @@ says structured results **SHOULD** also provide serialized JSON text for compati
 not a MUST. The current candidate chooses the full dual representation. A semantically
 equivalent text summary is an alternative design with degraded results for clients that
 ignore `structuredContent`. The current defect is the incomplete budget boundary for the
-selected representation. Issue #17 remains open until those findings and independent review
-are resolved. The exact mechanisms and acceptance criteria are in the
-[public PR #40 finding record](https://github.com/jryski/Supabase_user_MCP/pull/40#issuecomment-5471637122).
+selected representation. PR #40 inherits these findings but did not introduce them; its
+separate base-binding and E2E-skip repairs remain valid in scope. Issue #17 remains open until
+the base is repaired, the stack is refreshed, and independent review passes. The exact K1/K2
+mechanisms and acceptance criteria are in the
+[public PR #38 finding record](https://github.com/jryski/Supabase_user_MCP/pull/38#issuecomment-5472417281).
 
 The intended local path is:
 

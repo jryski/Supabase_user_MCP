@@ -47,7 +47,7 @@ serialized outbound JSON-RPC frame, including the request ID, result/content env
 escaping, protocol overhead, and every selected compatibility representation. The contract
 package currently sizes a single modeled representation. A registered result that emits both
 text content and `structuredContent` can therefore exceed the project ceiling. This is an
-[open PR #40 finding](https://github.com/jryski/Supabase_user_MCP/pull/40#issuecomment-5471637122):
+[open PR #38 base finding](https://github.com/jryski/Supabase_user_MCP/pull/38#issuecomment-5472417281):
 `serializeReadToolWireResponse` is the intended final-boundary check, not yet a proven one for
 the registered server's complete outbound frame.
 `memory_search` accepts at most 512 query characters, five allowlisted filters (tag and
