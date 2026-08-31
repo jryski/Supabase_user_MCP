@@ -6,10 +6,10 @@
 
 ## Provenance and limits
 
-A project maintainer relayed this repository to an external AI-assisted reviewer through a
-Supabase engineer contact. This was not an official Supabase review, statement, endorsement,
-or support response. The reviewer was asked to rely on public repository content, public MCP
-specifications, and public Supabase documentation.
+A project maintainer relayed this repository to an external AI-assisted reviewer through an
+external contact. This was not an official third-party review, statement, endorsement, or
+support response. The reviewer was asked to rely on public repository content, public MCP
+specifications, and public platform documentation.
 
 This document is a maintainer-authored public-safe summary of the interaction, not a verbatim
 private-chat transcript. One production-workload anecdote in the first review was explicitly
@@ -109,3 +109,8 @@ External review findings are attributed evidence. They may identify defects, sta
 questions, but they do not authorize merge, deployment, credentials, hosted-project changes,
 production data access, or security acceptance. Repository tests, exact-head review, and the
 maintainer's explicit decision remain separate gates.
+
+Public candidate reviews use the exact base and head Git object IDs as the authoritative
+coordinate. A secondary diff digest is omitted unless its complete serialization command and
+format are versioned with the value; format-sensitive hashes without a published recipe are not
+treated as independent verification.
