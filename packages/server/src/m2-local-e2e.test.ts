@@ -8,6 +8,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
 import { createFixedSupabaseClient } from './fixed-supabase-client.js';
 import { loadLocalCredentials, type LocalCredentials } from './local-credential-loader.js';
+import type { ReadToolOperationalEvent } from './read-tool-governor.js';
 import { createReadOnlyServer } from './server.js';
 
 const requiredEnvironment = [
@@ -57,14 +58,20 @@ function loopbackFetch(actualOrigin: string): typeof globalThis.fetch {
       typeof input === 'string' || input instanceof URL ? input : input.url,
     );
     const target = new URL(`${requested.pathname}${requested.search}`, actualOrigin);
-    return globalThis.fetch(target, init);
+    const response = await globalThis.fetch(target, init);
+    // Preserve the fixed virtual origin as response provenance across this trusted test-only adapter.
+    Object.defineProperties(response, {
+      redirected: { value: false },
+      url: { value: requested.href },
+    });
+    return response;
   };
 }
 
 async function withPrincipal(
   label: string,
   token: string,
-  run: (client: Client) => Promise<void>,
+  run: (client: Client, events: ReadToolOperationalEvent[]) => Promise<void>,
 ): Promise<void> {
   const credentials = await credentialsFor(label, token);
   const fixedClient = createFixedSupabaseClient({
@@ -72,7 +79,11 @@ async function withPrincipal(
     credentials,
     fetch: loopbackFetch(env('M2_SUPABASE_URL')),
   });
-  const server = createReadOnlyServer({ client: fixedClient });
+  const events: ReadToolOperationalEvent[] = [];
+  const server = await createReadOnlyServer({
+    client: fixedClient,
+    emitOperationalEvent: (event) => events.push(event),
+  });
   const clientTransport = new StreamTransport();
   const serverTransport = new StreamTransport();
   const pipes = [
@@ -83,7 +94,7 @@ async function withPrincipal(
   try {
     await server.connect(serverTransport);
     await client.connect(clientTransport);
-    await run(client);
+    await run(client, events);
   } finally {
     await Promise.allSettled([client.close(), server.close()]);
     await Promise.all(pipes);
@@ -92,7 +103,7 @@ async function withPrincipal(
 
 localDescribe('M2 real local Auth -> MCP -> Data API -> RLS acceptance', () => {
   it('binds Alice identity from the protected credential file and never accepts identity arguments', async () => {
-    await withPrincipal('alice', env('M2_ALICE_TOKEN'), async (client) => {
+    await withPrincipal('alice', env('M2_ALICE_TOKEN'), async (client, events) => {
       const listing = await client.listTools();
       expect(listing.tools.map((tool) => tool.name).toSorted()).toEqual([
         'memory_get',
@@ -130,6 +141,14 @@ localDescribe('M2 real local Auth -> MCP -> Data API -> RLS acceptance', () => {
         },
       });
       expect(forged.isError).toBe(true);
+      expect(events.length).toBeGreaterThan(0);
+      expect(
+        events.every(
+          (event) =>
+            event.principalId === '11111111-1111-4111-9111-111111111111' &&
+            event.scope === 'principal:11111111-1111-4111-9111-111111111111',
+        ),
+      ).toBe(true);
     });
   });
 

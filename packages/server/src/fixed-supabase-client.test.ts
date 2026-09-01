@@ -9,6 +9,72 @@ function response(body: string, status = 200): Response {
 }
 
 describe('createFixedSupabaseClient', () => {
+  it('verifies and returns the authenticated user identity through the fixed Auth endpoint', async () => {
+    const fetch = vi
+      .fn<typeof globalThis.fetch>()
+      .mockResolvedValue(
+        response('{"id":"11111111-1111-4111-9111-111111111111","aud":"authenticated"}'),
+      );
+    const client = createFixedSupabaseClient({
+      origin,
+      credentials: { projectPublishableKey: 'sb_publishable_key', userAccessToken: token },
+      fetch,
+    }) as unknown as {
+      verifyUserIdentity: (signal?: AbortSignal) => Promise<{ readonly principalId: string }>;
+    };
+
+    await expect(client.verifyUserIdentity()).resolves.toEqual({
+      principalId: '11111111-1111-4111-9111-111111111111',
+    });
+    expect(fetch).toHaveBeenCalledWith(`${origin}/auth/v1/user`, {
+      method: 'GET',
+      redirect: 'error',
+      headers: {
+        Accept: 'application/json',
+        Authorization: ['Bearer', token].join(' '),
+        apikey: 'sb_publishable_key',
+      },
+      signal: expect.any(AbortSignal),
+    });
+  });
+
+  it('fails closed when Auth rejects or returns a malformed principal', async () => {
+    for (const [body, status, code] of [
+      ['{}', 401, 'FIXED_CLIENT_INVALID_CREDENTIAL'],
+      ['{"id":"not-a-uuid","aud":"authenticated"}', 200, 'FIXED_CLIENT_MALFORMED_RESPONSE'],
+      [
+        '{"id":"11111111-1111-4111-9111-111111111111","aud":"unexpected"}',
+        200,
+        'FIXED_CLIENT_MALFORMED_RESPONSE',
+      ],
+    ] as const) {
+      const client = createFixedSupabaseClient({
+        origin,
+        credentials: { projectPublishableKey: 'sb_publishable_key', userAccessToken: token },
+        fetch: vi.fn<typeof globalThis.fetch>().mockResolvedValue(response(body, status)),
+      });
+      await expect(client.verifyUserIdentity()).rejects.toMatchObject({ code });
+    }
+  });
+
+  it('rejects redirected Auth identity responses even from a custom fetch', async () => {
+    const redirected = response(
+      '{"id":"11111111-1111-4111-9111-111111111111","aud":"authenticated"}',
+    );
+    Object.defineProperties(redirected, {
+      redirected: { value: true },
+      url: { value: 'https://evil.invalid/auth/v1/user' },
+    });
+    const client = createFixedSupabaseClient({
+      origin,
+      credentials: { projectPublishableKey: 'sb_publishable_key', userAccessToken: token },
+      fetch: vi.fn<typeof globalThis.fetch>().mockResolvedValue(redirected),
+    });
+    await expect(client.verifyUserIdentity()).rejects.toMatchObject({
+      code: 'FIXED_CLIENT_INVALID_CREDENTIAL',
+    });
+  });
+
   it('makes only the fixed search RPC with JWT, schema, fields, and bounded arguments', async () => {
     const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(response('{"rows":[]}'));
     const client = createFixedSupabaseClient({
@@ -150,6 +216,7 @@ describe('createFixedSupabaseClient', () => {
       fetch,
     });
     expect(Object.keys(client)).toEqual([
+      'verifyUserIdentity',
       'listMemoryRows',
       'searchMemoryRows',
       'getMemoryRow',

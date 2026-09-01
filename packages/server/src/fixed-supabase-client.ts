@@ -13,11 +13,13 @@ const FIXED_SCHEMA = 'memory';
 const FIXED_SEARCH_PATH = '/rest/v1/rpc/authorized_memory_search_v1';
 const FIXED_GET_PATH = '/rest/v1/rpc/authorized_memory_get_v1';
 const FIXED_LIST_RECENT_PATH = '/rest/v1/rpc/authorized_memory_list_recent_v1';
+const FIXED_USER_PATH = '/auth/v1/user';
 const DEFAULT_TIMEOUT_MS = 5_000;
 const MAX_TIMEOUT_MS = 10_000;
 const DEFAULT_MAX_RESPONSE_BYTES = 256 * 1024;
 const MAX_RESPONSE_BYTES = 1024 * 1024;
 const OPAQUE_CURSOR = /^cur_[A-Za-z0-9_-]{16,1020}$/;
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 const ALLOWED_MEMORY_ROW_FIELDS = Object.freeze([
   'id',
@@ -84,6 +86,14 @@ export interface FixedSupabaseClient {
     input: MemoryListRecentInput,
     signal?: AbortSignal,
   ) => Promise<FixedMemoryListRecentResult>;
+}
+
+export interface VerifiedUserIdentity {
+  readonly principalId: string;
+}
+
+export interface VerifiedFixedSupabaseClient extends FixedSupabaseClient {
+  readonly verifyUserIdentity: (signal?: AbortSignal) => Promise<VerifiedUserIdentity>;
 }
 
 export interface FixedMemorySearchRow extends FixedMemoryGetRow {
@@ -259,7 +269,9 @@ function parseMemorySearchPayload(value: unknown, limit: number): FixedMemorySea
   });
 }
 
-export function createFixedSupabaseClient(config: FixedSupabaseClientConfig): FixedSupabaseClient {
+export function createFixedSupabaseClient(
+  config: FixedSupabaseClientConfig,
+): VerifiedFixedSupabaseClient {
   let parsedOrigin: URL;
   try {
     parsedOrigin = new URL(config.origin);
@@ -306,6 +318,69 @@ export function createFixedSupabaseClient(config: FixedSupabaseClientConfig): Fi
     'Content-Type': 'application/json',
     'Content-Profile': FIXED_SCHEMA,
   });
+  const authHeaders = Object.freeze({
+    Accept: 'application/json',
+    Authorization: ['Bearer', token].join(' '),
+    apikey: key,
+  });
+
+  const verifyUserIdentity = async (callerSignal?: AbortSignal): Promise<VerifiedUserIdentity> => {
+    const controller = new AbortController();
+    const cancel = () => controller.abort();
+    callerSignal?.addEventListener('abort', cancel, { once: true });
+    if (callerSignal?.aborted) controller.abort();
+    const timer = setTimeout(cancel, timeoutMs);
+    try {
+      const expectedUserUrl = `${parsedOrigin.origin}${FIXED_USER_PATH}`;
+      const upstream = await fetchImplementation(expectedUserUrl, {
+        method: 'GET',
+        redirect: 'error',
+        headers: authHeaders,
+        signal: controller.signal,
+      });
+      if (upstream.redirected || (upstream.url !== '' && upstream.url !== expectedUserUrl)) {
+        throw new FixedSupabaseClientError('FIXED_CLIENT_INVALID_CREDENTIAL');
+      }
+      if (!upstream.ok) {
+        throw new FixedSupabaseClientError(
+          upstream.status === 401 || upstream.status === 403
+            ? 'FIXED_CLIENT_INVALID_CREDENTIAL'
+            : 'FIXED_CLIENT_UPSTREAM_STATUS',
+        );
+      }
+      const advertisedLength = upstream.headers.get('content-length');
+      if (advertisedLength !== null && Number(advertisedLength) > maxResponseBytes) {
+        throw new FixedSupabaseClientError('FIXED_CLIENT_RESPONSE_TOO_LARGE');
+      }
+      const body = await readBoundedBody(upstream, maxResponseBytes);
+      let value: unknown;
+      try {
+        value = JSON.parse(body);
+      } catch {
+        throw new FixedSupabaseClientError('FIXED_CLIENT_MALFORMED_RESPONSE');
+      }
+      if (
+        typeof value !== 'object' ||
+        value === null ||
+        Array.isArray(value) ||
+        !('id' in value) ||
+        typeof value.id !== 'string' ||
+        !UUID.test(value.id) ||
+        !('aud' in value) ||
+        value.aud !== 'authenticated'
+      ) {
+        throw new FixedSupabaseClientError('FIXED_CLIENT_MALFORMED_RESPONSE');
+      }
+      return Object.freeze({ principalId: value.id });
+    } catch (error) {
+      if (error instanceof FixedSupabaseClientError) throw error;
+      if (controller.signal.aborted) throw new FixedSupabaseClientError('FIXED_CLIENT_TIMEOUT');
+      throw new FixedSupabaseClientError('FIXED_CLIENT_NETWORK_FAILURE');
+    } finally {
+      clearTimeout(timer);
+      callerSignal?.removeEventListener('abort', cancel);
+    }
+  };
 
   const listMemoryRows = async (): Promise<ReadonlyArray<Readonly<Record<string, unknown>>>> => {
     const controller = new AbortController();
@@ -430,6 +505,7 @@ export function createFixedSupabaseClient(config: FixedSupabaseClientConfig): Fi
   };
 
   return Object.freeze({
+    verifyUserIdentity,
     listMemoryRows,
     searchMemoryRows,
     getMemoryRow,

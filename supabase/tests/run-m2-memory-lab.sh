@@ -8,6 +8,25 @@ PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$PROJECT_ROOT"
 export SUPABASE_DISABLE_TELEMETRY=1
 
+HEAD_SHA="$(git rev-parse HEAD)"
+TREE_SHA="$(git rev-parse 'HEAD^{tree}')"
+[[ -z "$(git status --porcelain --untracked-files=all)" ]] \
+  || fail "acceptance worktree must be clean before execution"
+if [[ -n "${M2_EXPECTED_HEAD_SHA:-}" && "$HEAD_SHA" != "$M2_EXPECTED_HEAD_SHA" ]]; then
+  fail "repository head does not match the requested acceptance head"
+fi
+BASE_SHA="${M2_EXPECTED_BASE_SHA:-}"
+if [[ -n "$BASE_SHA" && ! "$BASE_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+  fail "requested acceptance base is not a full Git SHA"
+fi
+BASE_JSON="null"
+if [[ -n "$BASE_SHA" ]]; then
+  git cat-file -e "${BASE_SHA}^{commit}" 2>/dev/null || fail "acceptance base commit is unavailable"
+  git merge-base --is-ancestor "$BASE_SHA" "$HEAD_SHA" \
+    || fail "acceptance base is not an ancestor of the acceptance head"
+  BASE_JSON="\"${BASE_SHA}\""
+fi
+
 TMP_DIR="$(mktemp -d /tmp/supabase-user-mcp-m2.XXXXXX)"
 NETWORK_NAME="${M2_DOCKER_NETWORK:-supabase-user-mcp-m2-loopback}"
 NETWORK_BINDING_OPTION="com.docker.network.bridge.host_binding_ipv4"
@@ -90,8 +109,8 @@ for token_name in M2_ALICE_TOKEN M2_BOB_TOKEN M2_CHARLIE_TOKEN M2_DANA_TOKEN; do
 done
 log "Minted real local Auth sessions without printing bearer material."
 
-log "Running MCP client -> fixed Data API -> SECURITY INVOKER RPC -> PostgreSQL RLS tests."
-npx vitest run packages/server/src/m2-local-e2e.test.ts
+log "Running MCP client -> fixed Data API -> SECURITY INVOKER RPC -> PostgreSQL RLS and complete-frame tests."
+npx vitest run packages/server/src/m2-local-e2e.test.ts packages/server/src/read-only-server.test.ts
 
 log "Checking malformed bearer fails before any governed record is returned."
 malformed_status="$(curl -sS -o "$TMP_DIR/malformed.json" -w '%{http_code}' \
@@ -104,26 +123,16 @@ malformed_status="$(curl -sS -o "$TMP_DIR/malformed.json" -w '%{http_code}' \
   --data '{"id":"mem_01JTESTALPHA000000000001"}')"
 [[ ! "$malformed_status" =~ ^2 ]] || fail "malformed bearer unexpectedly reached the RPC"
 
-HEAD_SHA="$(git rev-parse HEAD)"
-if [[ -n "${M2_EXPECTED_HEAD_SHA:-}" && "$HEAD_SHA" != "$M2_EXPECTED_HEAD_SHA" ]]; then
-  fail "repository head does not match the requested acceptance head"
-fi
-BASE_SHA="${M2_EXPECTED_BASE_SHA:-}"
-if [[ -n "$BASE_SHA" && ! "$BASE_SHA" =~ ^[0-9a-f]{40}$ ]]; then
-  fail "requested acceptance base is not a full Git SHA"
-fi
-BASE_JSON="null"
-if [[ -n "$BASE_SHA" ]]; then
-  git cat-file -e "${BASE_SHA}^{commit}" 2>/dev/null || fail "acceptance base commit is unavailable"
-  git merge-base --is-ancestor "$BASE_SHA" "$HEAD_SHA" \
-    || fail "acceptance base is not an ancestor of the acceptance head"
-  BASE_JSON="\"${BASE_SHA}\""
-fi
 NODE_VERSION="$(node --version)"
 NPM_VERSION="$(npm --version)"
 SUPABASE_VERSION="$(supabase --version)"
-printf '{"schema":"supabase-user-mcp.m2-acceptance.v1","repositorySha":"%s","baseSha":%s,"node":"%s","npm":"%s","supabase":"%s","cases":["db-rls-matrix","rpc-acl-census","principal-positive","cross-principal-denial","revoked-client-denial","missing-client-denial","expired-credential-denial","malformed-credential-file-denial","hostile-content-boundary","malformed-bearer-denial"],"result":"pass"}\n' \
-  "$HEAD_SHA" "$BASE_JSON" "$NODE_VERSION" "$NPM_VERSION" "$SUPABASE_VERSION" \
+[[ "$(git rev-parse HEAD)" == "$HEAD_SHA" ]] || fail "repository head changed during acceptance"
+[[ "$(git rev-parse 'HEAD^{tree}')" == "$TREE_SHA" ]] \
+  || fail "repository tree changed during acceptance"
+[[ -z "$(git status --porcelain --untracked-files=all)" ]] \
+  || fail "acceptance worktree changed during execution"
+printf '{"schema":"supabase-user-mcp.m2-acceptance.v1","repositorySha":"%s","treeSha":"%s","baseSha":%s,"node":"%s","npm":"%s","supabase":"%s","cases":["db-rls-matrix","rpc-acl-census","auth-user-verification","principal-positive","principal-limiter-scope","cross-principal-denial","revoked-client-denial","missing-client-denial","expired-credential-denial","malformed-credential-file-denial","hostile-content-boundary","complete-frame-budget","malformed-bearer-denial"],"result":"pass"}\n' \
+  "$HEAD_SHA" "$TREE_SHA" "$BASE_JSON" "$NODE_VERSION" "$NPM_VERSION" "$SUPABASE_VERSION" \
   > "$TMP_DIR/m2-acceptance-receipt.json"
 cat "$TMP_DIR/m2-acceptance-receipt.json"
 log "PASS: M2 synthetic acceptance complete."

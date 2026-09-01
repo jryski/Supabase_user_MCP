@@ -81,9 +81,7 @@ Current `main` contains the reviewed local foundation through the governed read-
 - revocation/audit policy evidence;
 - protected local credential loader and fixed Supabase client seam;
 - bounded `memory_search`, `memory_get`, and `memory_list_recent` factories;
-- shared timeout, row, byte, concurrency, and process-local request governors whose
-  identity scope still depends on verified principal/client context being wired by the
-  active server profile;
+- shared timeout, row, coarse wire-byte, concurrency, and process-local request governors;
 - a real local Storage/RLS artifact lab used by the Governed Artifact Inspection design work.
 
 The critical read-only milestone is **not closed**. Draft PRs
@@ -92,19 +90,23 @@ The critical read-only milestone is **not closed**. Draft PRs
 a synthetic local client-to-RLS acceptance path, but they are unmerged candidate evidence,
 not behavior available from `main`.
 
-The stacked read-path review has two open base findings in PR #38: the registered server does
-not yet supply verified principal/client identity to the governor, and its byte-budget model
-does not cover the complete outbound JSON-RPC frame when both text content and
-`structuredContent` are emitted. The
+The current reconciliation candidate absorbs PR #40 into PR #38 and repairs both inherited base
+findings. Read-only server construction now verifies the protected user credential through the fixed
+Supabase Auth user endpoint before registering tools, then supplies the verified principal and exact
+SDK request ID to every governor call. One contracts-owned renderer now defines both the emitted
+dual-representation result and the complete JSON-RPC byte estimator. The
 [MCP tools specification](https://modelcontextprotocol.io/specification/2026-07-28/server/tools)
 says structured results **SHOULD** also provide serialized JSON text for compatibility; it is
-not a MUST. The current candidate chooses the full dual representation. A semantically
-equivalent text summary is an alternative design with degraded results for clients that
-ignore `structuredContent`. The current defect is the incomplete budget boundary for the
-selected representation. PR #40 inherits these findings but did not introduce them; its
-separate base-binding and E2E-skip repairs remain valid in scope. Issue #17 remains open until
-the base is repaired, the stack is refreshed, and independent review passes. The exact K1/K2
-mechanisms and acceptance criteria are in the
+not a MUST. This candidate retains full dual representation and measures the selected complete
+frame. Unit and transport tests cover exact/one-over byte boundaries, request-ID escaping, hostile
+content escaping, and bounded denial instead of oversized success. A read-only transport guard
+closes oversized inbound or outbound frames before dispatch/send, including denial paths with
+hostile request IDs. Serialized request IDs are separately capped at 1,024 bytes so bounded errors
+can echo them safely. PR #40's separate base-binding
+and E2E-skip repairs remain preserved in the consolidated candidate. Local `npm run check` passes;
+the dedicated M2 rerun is pending GitHub CI because this host cannot access the Docker socket.
+Issue #17 remains open until exact-head CI, independent review, and merge. The original K1/K2
+acceptance criteria remain in the
 [public PR #38 finding record](https://github.com/jryski/Supabase_user_MCP/pull/38#issuecomment-5472417281).
 
 The intended local path is:
@@ -164,7 +166,7 @@ This is proposed work. Hosted adoption remains gated by a verified non-service u
 | --- | --- | --- |
 | M0 | Protocol/policy/repository foundation | Foundation landed |
 | M1 | Local Auth/RLS policy laboratory | Core policy-lab evidence landed; issue #11 remains open for true MCP/PostgREST acceptance semantics |
-| M2 | Read-only stdio reference server | **Active critical path** — draft #40 is green but has unresolved review findings; issue #17 remains open |
+| M2 | Read-only stdio reference server | **Active critical path** — consolidated draft repair is locally green; exact-head M2 CI/review and merge remain open |
 | M3 | Idempotent writes and canonical approval | Future |
 | M4 | Remote HTTP/OAuth profile | Future; downstream-token/audience proof required |
 | M5 | Operations/adversarial hardening | Future |

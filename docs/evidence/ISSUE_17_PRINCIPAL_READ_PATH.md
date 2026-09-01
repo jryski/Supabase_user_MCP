@@ -56,13 +56,45 @@ PR #40's first exact-head M2 run reached PostgreSQL and failed four pgTAP expect
 6. Warden review seq. 783 identified that recording a 40-hex base value did not prove it belonged to the accepted head. Exact-head CI now fetches full history, requires the base commit to exist, and requires `git merge-base --is-ancestor` before the base is emitted in a passing receipt.
 7. The same review identified that `export TOKEN="$(mint_token ...)"` masks command-substitution failure behind the successful `export` builtin. Each token is now assigned before export so `set -e` observes mint failure, and the harness positively requires all four tokens to be non-empty before focused E2E Vitest. The local test suite may still skip without harness variables; the M2 acceptance harness cannot silently do so.
 
-No migration, seed, RLS policy, ACL, RPC, MCP server, credential, or production source behavior is changed by this repair.
+The earlier D1/D2 evidence-harness repair changed no migration, seed, RLS policy, ACL, RPC,
+credential, or production source behavior. The K1/K2 candidate below does change fixed-client and
+registered-server behavior within the existing read-only authority boundary.
+
+## K1/K2 consolidation repair
+
+The current unmerged reconciliation candidate absorbs PR #40 into PR #38 and repairs the two
+inherited base findings:
+
+1. `createFixedSupabaseClient` exposes a fixed `verifyUserIdentity()` method that calls only
+   `/auth/v1/user` at the configured Supabase origin with the protected publishable key and user
+   token. It accepts only an authenticated UUID principal and maps rejected, malformed, oversized,
+   timeout, and network responses to the existing generic fixed-client errors.
+2. `createReadOnlyServer` is async and fails closed before tool registration unless that Auth
+   verification succeeds. Every registered invocation passes the verified principal, exact SDK
+   JSON-RPC request ID, and abort signal to the governor. Tool arguments remain closed and cannot
+   select identity or scope. Tests prove two verified principals receive distinct process-local
+   limiter scopes.
+3. The contracts package owns one untrusted-content renderer used by both the registered server and
+   the JSON-RPC byte estimator. The selected complete frame includes the request ID, prefixed and
+   sanitized text content, duplicate `structuredContent`, `isError`, escaping, and protocol
+   envelope plus the stdio newline delimiter. Exact/one-over tests and a captured SDK
+   `JSONRPCMessage` prove estimator parity. An
+   eight-row 4,000-character fixture returns a bounded `RESPONSE_LIMIT_EXCEEDED` denial rather than
+   an oversized success. The registered read-only transport also closes oversized inbound or
+   outbound frames before dispatch/send, including error paths with hostile request IDs. Serialized
+   request IDs are separately capped at 1,024 bytes with exact/one-over transport tests.
+4. PR #40's D1 base-ancestry and D2 no-silent-skip repairs remain in the consolidated lineage.
+
+Local `npm run check` passes 19 test files with 181 tests and four intentional non-harness skips.
+The dedicated local M2 harness could not start because this host lacks Docker socket permission; it
+made no database or container mutation. Exact-head GitHub M2 CI and independent review remain
+required before acceptance or public merge.
 
 ## Real local Auth path
 
 `supabase/tests/run-m2-memory-lab.sh` starts only the pinned loopback Supabase lifecycle, resets synthetic migrations/fixtures, runs the database matrices, mints real local GoTrue sessions, and runs `packages/server/src/m2-local-e2e.test.ts`.
 
-The TypeScript suite loads bearer material from mode-0600 temporary credential files, creates the fixed client, and uses `StreamTransport` with a real MCP `Client`. A trusted test-only fetch adapter rewrites the fixed virtual HTTPS origin to the loopback local Supabase API; no tool argument can choose or alter that destination.
+The TypeScript suite loads bearer material from mode-0600 temporary credential files, creates the fixed client, and uses `StreamTransport` with a real MCP `Client`. A trusted test-only fetch adapter rewrites the fixed virtual HTTPS origin to the loopback local Supabase API while preserving the requested virtual URL as response provenance; no tool argument can choose or alter that destination.
 
 The end-to-end cases prove:
 
@@ -78,6 +110,7 @@ The end-to-end cases prove:
 A successful M2 harness emits one secret-free JSON receipt binding:
 
 - repository SHA;
+- committed tree SHA plus clean-worktree/head/tree preconditions before execution and the same checks immediately before receipt emission;
 - stacked pull-request base SHA when supplied by exact-head CI;
 - pinned Node, npm, and Supabase CLI versions;
 - named acceptance case IDs; and

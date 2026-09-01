@@ -26,10 +26,10 @@ Draft candidates are listed separately and must not be described as merged or ac
 
 ## Unmerged candidate evidence
 
-| Candidate | Exact coordinate | What it may support | Open limits |
+| Candidate | Coordinate/evidence source | What it may support | Open limits |
 | --- | --- | --- | --- |
-| [PR #38](https://github.com/jryski/Supabase_user_MCP/pull/38) strict registration | `ef7cd25428fa28451cfcc1f2b9d880a5cfa70476` | Exactly three registered read tools and invocation closure | Draft and unmerged; verified limiter/audit identity and complete-frame byte budget remain [open base findings](https://github.com/jryski/Supabase_user_MCP/pull/38#issuecomment-5472417281) |
-| [PR #40](https://github.com/jryski/Supabase_user_MCP/pull/40) client-to-RLS path | `c33adb4b8be284c114dcc307e3084b9635e60e43` over PR #38 | Synthetic local Auth, fixed Data API/RPC, RLS, and exact-head receipt evidence | Draft and unmerged; D1/D2 are repaired in its diff, but the candidate inherits PR #38 K1/K2 and must be refreshed after the base repair |
+| [PR #38](https://github.com/jryski/Supabase_user_MCP/pull/38) consolidated read path | GitHub PR head must be frozen as a full SHA in each review receipt | Strict registration, verified Auth principal context, complete-frame budgeting, and preserved PR #40 D1/D2/M2 artifacts | Draft and unmerged; local workspace gate passes, dedicated M2 rerun pending CI, independent review and Jesse-only merge required |
+| [PR #40](https://github.com/jryski/Supabase_user_MCP/pull/40) historical child | `c33adb4b8be284c114dcc307e3084b9635e60e43` over original PR #38 | Historical D1/D2 and M2 repair evidence now absorbed by consolidated PR #38 candidate | Keep open until consolidated candidate lands, then close as absorbed rather than merge separately |
 
 Green CI on a draft coordinate proves only that the named workflow passed for that source.
 It does not merge the code, satisfy independent review, authorize deployment, or establish
@@ -51,8 +51,9 @@ npm run policy-lab:test
 npm run test:s1
 ```
 
-The draft M2 acceptance command exists only on PR #40 and must be run from its exact stacked
-coordinate. Do not infer that command or its database functions are available from `main`.
+The draft M2 acceptance command is carried in the consolidated PR #38 candidate and must be run
+from a clean exact-head checkout. Do not infer that command or its database functions are available
+from `main`.
 
 ## Evidence rules
 

@@ -106,8 +106,8 @@ runtime or its caller-selected request tools.
 | Issue/PR | Current state | Next gate |
 | --- | --- | --- |
 | [#11](https://github.com/jryski/Supabase_user_MCP/issues/11) | Open after core policy-lab merge | Reconcile remaining acceptance/tracker scope |
-| [PR #38](https://github.com/jryski/Supabase_user_MCP/pull/38) | Draft strict registration base with two public K1/K2 findings | Repair base, then refresh stacked #40 |
-| [#17](https://github.com/jryski/Supabase_user_MCP/issues/17) / [PR #40](https://github.com/jryski/Supabase_user_MCP/pull/40) | Draft client-to-RLS candidate; D1/D2 repaired, K1/K2 inherited from #38 | Refresh on repaired base, rerun exact-head acceptance and review |
+| [PR #38](https://github.com/jryski/Supabase_user_MCP/pull/38) | Consolidated unmerged candidate absorbs #40 and locally repairs K1/K2 | Run exact-head M2 CI and independent review; Jesse-only public merge |
+| [#17](https://github.com/jryski/Supabase_user_MCP/issues/17) / [PR #40](https://github.com/jryski/Supabase_user_MCP/pull/40) | D1/D2 preserved in consolidated #38 candidate | Close #40 as absorbed only after the consolidated candidate lands |
 | [#18](https://github.com/jryski/Supabase_user_MCP/issues/18) | Blocked on #17 | Operator/release documentation after acceptance |
 
 ## Parallel work lanes
