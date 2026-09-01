@@ -28,6 +28,7 @@
     "start": "node packages/server/dist/cli.js",
     "test": "npm run build && vitest run",
     "test:compatibility": "npm run build && vitest run test/compatibility",
+    "test:m2": "bash supabase/tests/run-m2-memory-lab.sh",
     "test:s1": "bash supabase/tests/run-s1-lab.sh",
     "typecheck": "tsc -b --pretty false && tsc -p tsconfig.test.json --noEmit --pretty false"
   },

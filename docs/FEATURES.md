@@ -41,15 +41,17 @@ origins, schemas, relations, RPCs, URLs, raw SQL, and PostgREST operators. Memor
 an opaque `mem_` token and pagination cursors use an opaque `cur_` token; callers must not
 construct or decode either token.
 
-All three tools intend to enforce a project-defined 65,536-byte wire-response ceiling and a
-2,000 ms execution ceiling. The intended byte unit is the UTF-8 encoding of the complete
+All three tools enforce a project-defined 65,536-byte wire-response ceiling and a 2,000 ms
+execution ceiling in the current unmerged reconciliation candidate. The byte unit is the UTF-8 encoding of the complete
 serialized outbound JSON-RPC frame, including the request ID, result/content envelope, JSON
-escaping, protocol overhead, and every selected compatibility representation. The contract
-package currently sizes a single modeled representation. A registered result that emits both
-text content and `structuredContent` can therefore exceed the project ceiling. This is an
-[open PR #38 base finding](https://github.com/jryski/Supabase_user_MCP/pull/38#issuecomment-5472417281):
-`serializeReadToolWireResponse` is the intended final-boundary check, not yet a proven one for
-the registered server's complete outbound frame.
+escaping, the stdio newline delimiter, protocol overhead, and every selected compatibility representation. The contract
+package and registered server now share one dual-representation renderer and estimator. Contract
+boundary tests and an actual captured SDK `JSONRPCMessage` prove estimator parity; an oversized
+eight-row response returns a bounded `RESPONSE_LIMIT_EXCEEDED` result instead of an oversized
+success frame. A registered transport guard closes any oversized inbound or outbound JSON-RPC
+frame before dispatch/send, so extreme request IDs cannot amplify a denial beyond the same ceiling.
+Serialized request IDs have a separate inclusive 1,024-byte ceiling.
+This remains candidate evidence until exact-head CI/review and merge.
 `memory_search` accepts at most 512 query characters, five allowlisted filters (tag and
 creation-time filters combined), and 20 rows. When both creation bounds are present,
 `createdAfter` must be earlier than or equal to `createdBefore`. `memory_list_recent` accepts

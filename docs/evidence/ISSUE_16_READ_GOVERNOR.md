@@ -13,10 +13,10 @@ namespaced key internally in this order:
 Unknown runtime properties are ignored. In particular, adding or changing a `scope` property cannot
 create a new budget or collide with another principal's budget. Regression tests cover both attacks.
 
-The third fallback is an explicit pre-M1 safety property. Calls without verified identity share one
-conservative bucket per fixed operation. One caller can therefore reduce availability for other
-unidentified callers, but cannot increase authority or bypass the global operation budget. Issue #17
-must supply verified identity context before claiming per-principal or per-client enforcement.
+The third fallback remains a governor-level safety property for non-registered callers. The current
+unmerged issue #17 reconciliation candidate does not use it in the registered read-only profile:
+server construction calls the fixed Auth verifier and fails closed before tool registration when
+identity cannot be verified. Every registered invocation then carries the verified principal ID.
 
 ## State lifetime and exhaustion
 

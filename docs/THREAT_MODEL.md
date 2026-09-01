@@ -114,6 +114,33 @@ diagnostics and 25 missing closure members per diagnostic; explicit omitted coun
 additional unsafe flows or missing members. Inputs one over any input limit are invalid rather
 than partially analyzed.
 
+## M2 principal-bound read path
+
+The synthetic M2 acceptance path now realizes the read-side controls for T01, T02, T03, T05,
+T06, T12, T14, T15, and T18 through a deliberately narrow database surface.
+
+- The exposed `memory` Data API schema contains only the three versioned read RPCs used by the
+  MCP contract. Each is `SECURITY INVOKER`; the catalog linter includes the `memory` schema.
+- MCP and RPC inputs contain no principal, client, bearer, origin, schema, relation, path, or
+  method authority. The principal is derived from `auth.uid()` and the client from verified JWT
+  application metadata.
+- PostgreSQL remains the final visibility boundary. The RPCs require active principal,
+  client, membership, and capability intersections before returning a record or ranking it.
+- `memory_get` uses the same public unavailable result for absent and unauthorized records so
+  a guessed identifier does not distinguish record existence.
+- Search and list pagination operate only after authorization filtering and use bounded opaque
+  cursors. Invalid cursors fail closed.
+- The local acceptance harness mints real synthetic Supabase Auth sessions and drives a real
+  MCP client through the fixed Data API client into PostgreSQL RLS. Cross-principal, revoked
+  client, missing-client, malformed-bearer, and hostile stored-content fixtures are explicit
+  negative cases.
+- Service-role, database-owner, and `BYPASSRLS` identities are not accepted as evidence for the
+  user-context path.
+
+This realization is synthetic authorization evidence, not a production-deployment claim. It
+assumes the deployment supplies equivalent application tables and RLS invariants, and it does
+not establish semantic-search quality or hosted issuer/resource configuration.
+
 ## Trust-boundary review questions
 
 Every feature review answers:

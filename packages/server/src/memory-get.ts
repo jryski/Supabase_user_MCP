@@ -2,7 +2,6 @@ import {
   MAX_RESPONSE_BYTES,
   MAX_TOOL_EXECUTION_MS,
   MEMORY_GET_TOOL,
-  MemoryGetInputSchema,
   MemoryGetOutputSchema,
   publicMemoryGetUnavailable,
   readToolWireResponseByteLength,
@@ -85,7 +84,7 @@ export function createMemoryGet(client: FixedSupabaseClient, options: MemoryGetO
     unsafeInput: unknown,
     callerSignal?: AbortSignal,
   ): Promise<MemoryGetOutput> => {
-    const input = MemoryGetInputSchema.safeParse(unsafeInput);
+    const input = MEMORY_GET_TOOL.inputSchema.safeParse(unsafeInput);
     if (!input.success) return error('INVALID_REQUEST');
 
     const controller = new AbortController();

@@ -2,6 +2,8 @@ export {
   createFixedSupabaseClient,
   type FixedSupabaseClient,
   type FixedSupabaseClientConfig,
+  type VerifiedFixedSupabaseClient,
+  type VerifiedUserIdentity,
   FixedSupabaseClientError,
   type FixedSupabaseClientErrorCode,
   type FixedMemorySearchResult,
@@ -32,4 +34,12 @@ export {
   type PermissionInspection,
   type PermissionInspector,
 } from './local-credential-loader.js';
-export { createServer, SERVER_NAME, SERVER_VERSION, TARGET_PROTOCOL_VERSION } from './server.js';
+export {
+  createReadOnlyServer,
+  type ReadOnlyServer,
+  type ReadOnlyServerOptions,
+  createServer,
+  SERVER_NAME,
+  SERVER_VERSION,
+  TARGET_PROTOCOL_VERSION,
+} from './server.js';
