@@ -14,6 +14,7 @@
     "packages/*"
   ],
   "scripts": {
+    "artifact:calibrate": "npm run build && node scripts/run-artifact-chunk-calibration.mjs",
     "build": "tsc -b",
     "check": "npm run format:check && npm run lint && npm run typecheck && npm run test",
     "clean": "tsc -b --clean",
