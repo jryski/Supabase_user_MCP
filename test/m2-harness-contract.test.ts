@@ -3,6 +3,7 @@ import { readFile } from 'node:fs/promises';
 import { describe, expect, it } from 'vitest';
 
 const M2_HARNESS = new URL('../supabase/tests/run-m2-memory-lab.sh', import.meta.url);
+const CI_WORKFLOW = new URL('../.github/workflows/ci.yml', import.meta.url);
 
 describe('M2 official-upstream harness contract', () => {
   it('uses official Auth sign-in and a non-model-facing PostgREST surface census', async () => {
@@ -13,5 +14,12 @@ describe('M2 official-upstream harness contract', () => {
     expect(script).toContain('test/support/check-m2-postgrest-surface.ts');
     expect(script).toContain('official-auth-js-sign-in');
     expect(script).toContain('postgrest-openapi-surface-census');
+  });
+
+  it('installs and verifies the declared npm version in both CI jobs', async () => {
+    const workflow = await readFile(CI_WORKFLOW, 'utf8');
+
+    expect(workflow.match(/npm install --global npm@11\.19\.0/gu) ?? []).toHaveLength(2);
+    expect(workflow.match(/test "\$\(npm --version\)" = "11\.19\.0"/gu) ?? []).toHaveLength(2);
   });
 });
