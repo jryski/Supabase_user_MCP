@@ -33,6 +33,10 @@ describe('issue #18 experimental operator contract', () => {
       'SUPABASE_USER_MCP_CREDENTIAL_FILE',
       'SUPABASE_USER_MCP_ORIGIN',
     ]);
+    expect(server?.env?.SUPABASE_USER_MCP_ORIGIN).toBe('https://example.invalid');
+    expect(server?.env?.SUPABASE_USER_MCP_CREDENTIAL_FILE).toBe(
+      '/replace/with/absolute/path/to/protected-credentials.json',
+    );
     expect(JSON.stringify(example)).not.toMatch(
       /userAccessToken|projectPublishableKey|service_role/iu,
     );
@@ -44,6 +48,7 @@ describe('issue #18 experimental operator contract', () => {
     for (const required of [
       'local stdio, read-only, synthetic acceptance',
       'Windows reports permission inspection as unsupported and therefore fails closed',
+      'Supabase User MCP POSIX credential-permission profile is unavailable on Windows.',
       'Revoke and remove access',
       'Rollback',
       'Experimental release checklist',

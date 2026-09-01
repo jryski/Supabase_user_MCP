@@ -29,6 +29,12 @@ and mode bits there. Windows reports permission inspection as unsupported and th
 A future Windows profile requires a separately reviewed ACL inspector. Do not weaken or bypass this
 check merely to start the server.
 
+The unsupported Windows profile exits nonzero before credential loading and prints only:
+
+```text
+Supabase User MCP POSIX credential-permission profile is unavailable on Windows.
+```
+
 ## Exact prerequisites
 
 | Component | Version |
@@ -114,7 +120,7 @@ same private record. Missing and unauthorized records must retain the same publi
 
 ## Fail-closed checks
 
-The process must exit nonzero with the same generic startup message when:
+The process must exit nonzero with the generic startup message when:
 
 - any command argument is present;
 - either environment value is absent;
@@ -122,6 +128,9 @@ The process must exit nonzero with the same generic startup message when:
 - the credential file is missing, linked, oversized, malformed, insecure, unsupported, or expired;
 - Auth rejects the user;
 - stdio setup fails.
+
+The unsupported Windows profile instead emits the fixed platform diagnostic shown above so operators
+do not attempt POSIX permission troubleshooting.
 
 Raw paths, URLs, tokens, keys, upstream response bodies, and thrown errors must not appear on stderr.
 

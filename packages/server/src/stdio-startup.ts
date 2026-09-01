@@ -19,6 +19,8 @@ export const STDIO_STARTUP_FAILURE_MESSAGE = 'Supabase User MCP failed to start.
 export const STDIO_TRANSPORT_FAILURE_MESSAGE = 'Supabase User MCP stdio transport failed.';
 export const STDIO_SHUTDOWN_FAILURE_MESSAGE = 'Supabase User MCP failed to close cleanly.';
 export const STDIO_READY_MESSAGE = 'Supabase User MCP read-only stdio server ready.';
+export const WINDOWS_UNSUPPORTED_PROFILE_MESSAGE =
+  'Supabase User MCP POSIX credential-permission profile is unavailable on Windows.';
 
 export class StdioStartupError extends Error {
   constructor() {
@@ -47,6 +49,7 @@ export interface StdioStartupOptions {
 export interface StdioCliRuntime {
   readonly argv: readonly string[];
   readonly env: Readonly<Record<string, string | undefined>>;
+  readonly platform: NodeJS.Platform;
   readonly stderr: (message: string) => void;
   readonly setExitCode: (code: number) => void;
   readonly onceSignal: (signal: 'SIGINT' | 'SIGTERM', listener: () => void) => void;
@@ -90,6 +93,7 @@ export function createIdempotentShutdown(
 const defaultCliRuntime: StdioCliRuntime = Object.freeze({
   argv: process.argv.slice(2),
   env: process.env,
+  platform: process.platform,
   stderr: (message: string) => console.error(message),
   setExitCode: (code: number) => {
     process.exitCode = code;
@@ -102,6 +106,11 @@ const defaultCliRuntime: StdioCliRuntime = Object.freeze({
 export async function runReadOnlyStdioCli(options: ReadOnlyStdioCliOptions = {}): Promise<void> {
   const runtime = options.runtime ?? defaultCliRuntime;
   const start = options.start ?? startReadOnlyStdioFromEnvironment;
+  if (runtime.platform === 'win32') {
+    runtime.stderr(WINDOWS_UNSUPPORTED_PROFILE_MESSAGE);
+    runtime.setExitCode(1);
+    return;
+  }
   let handle: StdioServerHandle;
   try {
     handle = await start({

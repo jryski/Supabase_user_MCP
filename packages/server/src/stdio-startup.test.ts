@@ -9,6 +9,7 @@ import {
   STDIO_TRANSPORT_FAILURE_MESSAGE,
   startReadOnlyStdioFromEnvironment,
   type StdioStartupDependencies,
+  WINDOWS_UNSUPPORTED_PROFILE_MESSAGE,
 } from './stdio-startup.js';
 import type { VerifiedFixedSupabaseClient } from './fixed-supabase-client.js';
 import type { ReadOnlyServer } from './server.js';
@@ -113,7 +114,7 @@ describe('read-only stdio startup', () => {
     const onceSignal = vi.fn();
 
     await runReadOnlyStdioCli({
-      runtime: { argv: [], env: {}, stderr, setExitCode, onceSignal },
+      runtime: { argv: [], env: {}, platform: 'linux', stderr, setExitCode, onceSignal },
       start: async () => {
         throw new Error('secret path /private/credentials.json token=never-log');
       },
@@ -135,6 +136,7 @@ describe('read-only stdio startup', () => {
       runtime: {
         argv: [],
         env: {},
+        platform: 'linux',
         stderr,
         setExitCode,
         onceSignal: (signal, listener) => listeners.set(signal, listener),
@@ -194,6 +196,7 @@ describe('read-only stdio startup', () => {
       runtime: {
         argv: [],
         env: {},
+        platform: 'linux',
         stderr,
         setExitCode,
         onceSignal: (signal, listener) => listeners.set(signal, listener),
@@ -217,5 +220,29 @@ describe('read-only stdio startup', () => {
     ]);
     expect(stderr.mock.calls.flat().join(' ')).not.toMatch(/secret|upstream|detail/iu);
     expect(setExitCode).toHaveBeenCalledWith(1);
+  });
+
+  it('rejects the unsupported Windows credential-permission profile before startup', async () => {
+    const stderr = vi.fn();
+    const setExitCode = vi.fn();
+    const onceSignal = vi.fn();
+    const start = vi.fn(async () => ({ close: async () => undefined }));
+
+    await runReadOnlyStdioCli({
+      runtime: {
+        argv: [],
+        env: {},
+        platform: 'win32',
+        stderr,
+        setExitCode,
+        onceSignal,
+      },
+      start,
+    });
+
+    expect(start).not.toHaveBeenCalled();
+    expect(stderr).toHaveBeenCalledWith(WINDOWS_UNSUPPORTED_PROFILE_MESSAGE);
+    expect(setExitCode).toHaveBeenCalledWith(1);
+    expect(onceSignal).not.toHaveBeenCalled();
   });
 });
