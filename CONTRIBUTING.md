@@ -12,6 +12,9 @@ is early enough that careful disagreement is more valuable than volume.
 3. Use the private process in [SECURITY.md](SECURITY.md) for vulnerabilities. Never put
    exploit details, credentials, or production data in a public issue.
 4. Read [GOVERNANCE.md](GOVERNANCE.md) for decision rights and architecture gates.
+5. Use generic public terms such as `private deployment data`. Do not publish private
+   program aliases, deployment codenames, customer-derived failure signatures, or internal
+   operational details when a neutral description is sufficient.
 
 ## Active implementation plan
 

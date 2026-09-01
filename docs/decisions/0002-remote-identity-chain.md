@@ -1,6 +1,6 @@
 # ADR-0002: Remote identity and downstream token chain
 
-- **Status:** Proposed / blocking
+- **Status:** Accepted blocking decision; downstream mechanism unresolved
 - **Date:** 2026-08-17
 - **Owners:** Maintainers
 - **Milestone:** M0 decision; M4 implementation
@@ -38,6 +38,11 @@ are demonstrated to satisfy both systems.
 - RLS enforcement under the real calling identity.
 - Minimal ambient authority and contained server compromise.
 - Compatibility with common MCP clients.
+- MCP `2026-07-28` stateless request semantics and required `server/discover` support.
+- Reconciliation of MCP's RFC 7591 Dynamic Client Registration deprecation in favor of
+  Client ID Metadata Documents with public Supabase guidance that still presents dynamic
+  registration as an option.
+- RFC 9207 issuer validation and authorization-server-scoped client credential storage.
 
 ## Options under investigation
 
@@ -72,14 +77,15 @@ Rejected by default. A compromised server could impersonate arbitrary users, and
 credential would become ambient project authority even if application code attempted to
 reconstruct claims carefully.
 
-## Provisional decision
+## Accepted blocking decision
 
 Ship the first identity-preserving proof as a local stdio profile. Do not claim or
 implement production-ready remote HTTP support until options A–C are tested and one is
 accepted with a complete token trace.
 
 The remote profile remains an explicit M4 gate rather than silently adopting bearer token
-pass-through.
+pass-through. This acceptance governs the stdio-first and remote-block decisions only.
+Options A–C remain unresolved and require K3 review; none is promoted by this status.
 
 ## Required validation artifact
 
@@ -122,6 +128,7 @@ It must also cite the exact supported Supabase and MCP versions or dated documen
 ## References
 
 - [MCP 2026-07-28 authorization](https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization)
+- [MCP 2026-07-28 changelog](https://modelcontextprotocol.io/specification/2026-07-28/changelog)
 - [Supabase MCP authentication](https://supabase.com/docs/guides/auth/oauth-server/mcp-authentication)
 - [Supabase OAuth token security and RLS](https://supabase.com/docs/guides/auth/oauth-server/token-security)
 - [Supabase OAuth flows](https://supabase.com/docs/guides/auth/oauth-server/oauth-flows)

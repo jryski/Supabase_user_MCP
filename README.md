@@ -1,169 +1,210 @@
 # Supabase User MCP
 
-[![Project status: M0 active](https://img.shields.io/badge/status-M0%20active-f59e0b)](docs/ROADMAP.md)
 [![Documentation](https://github.com/jryski/Supabase_user_MCP/actions/workflows/docs.yml/badge.svg)](https://github.com/jryski/Supabase_user_MCP/actions/workflows/docs.yml)
 [![CI](https://github.com/jryski/Supabase_user_MCP/actions/workflows/ci.yml/badge.svg)](https://github.com/jryski/Supabase_user_MCP/actions/workflows/ci.yml)
 [![License: Apache 2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 
-**Give every human and agent its own database identity boundary.**
+**Give every human and agent its own bounded application-data identity path.**
 
-Supabase User MCP is an independent, security-first data-plane MCP server for
-applications built on Supabase. It is designed to let AI clients work with
-application data as a specific user or agent while PostgreSQL Row Level Security
-(RLS) remains the final authorization authority.
+Supabase User MCP is an independent, security-first data-plane MCP server for applications built on Supabase. It is designed to let AI clients work with application data as a specific user or agent while PostgreSQL Row Level Security (RLS) remains the final authorization authority.
 
 > [!WARNING]
-> This repository is in active M0 development. It contains only a zero-authority
-> protocol probe—not a deployable user-data server—and must not be connected to
-> production data.
+> This repository is still pre-release. The local policy laboratory, credential/fixed-client seam, bounded read contracts, catalog lint, and governed read factories are implemented and tested, but the real end-to-end user-context path is not yet accepted. Do not connect this project to production data merely because local tests are green.
 
 ## Why this exists
 
-Supabase's hosted MCP server is a developer control-plane tool. It manages projects,
-schemas, migrations, functions, and operational resources under a developer's
-authority. Supabase explicitly recommends using that server for development and
-testing rather than exposing it to customers or production data.
-
-Supabase User MCP explores the complementary data-plane problem:
+Supabase's hosted MCP server is a developer control-plane tool. Supabase User MCP explores the complementary **application data-plane** problem:
 
 | | Supabase hosted MCP | Supabase User MCP |
 | --- | --- | --- |
-| Primary user | Developer | Application user or bounded agent |
+| Primary user | Developer/operator | Application user or bounded agent |
 | Plane | Project control plane | Application data plane |
-| Typical actions | Schema, migration, project operations | Domain-specific reads and writes |
-| Authorization | Developer account and project scope | User, client, tenant, capability, and row |
+| Typical actions | Schema, migration, project operations | Fixed domain capabilities |
+| Authorization | Developer/project authority | User, client, tenant, capability, RLS |
 | Database boundary | Administrative tooling | RLS must remain effective |
-| Intended environment | Development and test | Production only after the security gates pass |
+| Intended environment | Development and operations | Production only after identity/security gates pass |
 
-The goal is not to make prompt injection impossible. The goal is to ensure that a
-compromised model cannot exceed the authority of the identity and capability it was
-given.
+The goal is not to make prompt injection impossible. The goal is to make the blast radius of a compromised model no larger than the mechanically enforced authority of its verified principal/client capability.
 
-## Security thesis
+## Relationship to the Sovereign Memory program
+
+This repository owns **authenticated application data-plane capability**, not the protocol and not a deployment.
+
+- **Sovereign Memory Protocol (SMP)** defines implementation-neutral provenance, custody, authority, verification, portability, and claim semantics.
+- **Sovereign Memory Core** is the PostgreSQL reference runtime for SMP semantics.
+- **Supabase User MCP** provides a bounded user/agent capability seam into Supabase-backed application data while preserving caller identity into RLS.
+- **Deployments** decide which principals, clients, tools, and data surfaces are actually enabled.
+
+The dependency direction is one way: this project may implement SMP-compatible semantics, but it must not redefine SMP through Supabase-specific mechanisms.
+
+A related proposed protocol lane is the **Agent Access Integrity Boundary**: establish a forward evidence boundary before agents are introduced to existing systems in situ. This repository can eventually provide one identity/capability mechanism for such deployments, but it does not itself establish the protocol claim.
+
+## Target security thesis
+
+This is the required end-state boundary. It is not a claim that every hop is accepted on
+`main` today.
 
 ```text
 MCP client
-    │ authenticated request
+    │ verified request context
     ▼
 Supabase User MCP
-    ├── validates identity and request context
     ├── exposes a small, allowlisted tool surface
-    ├── enforces limits, approval states, and audit metadata
+    ├── preserves verified principal/client context
+    ├── enforces validation, byte/time/rate bounds
     ▼
-Supabase Data API / PostgREST
+Supabase Data API / fixed RPC surface
     ▼
 PostgreSQL + RLS
-    ├── caller and OAuth-client policy
-    ├── tenant and capability policy
-    └── row and operation policy
+    ├── principal/client policy
+    ├── tenant/capability policy
+    └── row/operation policy
 ```
 
-The project follows six non-negotiable principles:
+Non-negotiable principles:
 
-1. **No master key in the MCP request path.** A public tool handler must never use a
-   `service_role` or secret key to perform user actions.
-2. **The database makes the final decision.** Application checks improve usability;
-   RLS and database constraints enforce authorization.
-3. **Tools are capabilities, not a generic REST console.** The initial server will not
-   expose arbitrary SQL, tables, schemas, RPC names, URLs, or HTTP methods.
-4. **Reads and writes are different authorities.** Canonical or irreversible changes
-   use a database-enforced proposal and approval workflow.
-5. **Untrusted content stays data.** Tool results are bounded and marked as untrusted;
-   prompt injection is tested as a containment problem.
-6. **Claims require evidence.** A milestone is complete only when its positive,
-   negative, cross-identity, and adversarial tests pass.
+1. **No master key in the user request path.** `service_role`, privileged database credentials, and admin Storage credentials do not prove user authorization.
+2. **The database makes the final authorization decision.** Application checks improve usability; RLS/constraints enforce access.
+3. **Tools are capabilities, not a generic REST console.** Public tools do not accept arbitrary SQL, tables, schemas, RPC names, URLs, buckets, or HTTP methods.
+4. **Caller-supplied actor/principal labels are not identity proof.** Identity is derived from the verified request/session context.
+5. **Reads and writes are different authorities.** Canonical or irreversible changes require separate governed proposal/approval semantics.
+6. **Untrusted content stays data.** Tool results are bounded and explicitly rendered as untrusted model-visible content.
+7. **Claims require evidence.** Positive, negative, cross-identity, broken-control, and adversarial tests are part of the boundary.
+
+## Current state
+
+Current `main` contains the reviewed local foundation through the governed read-tool stack:
+
+- strict TypeScript/MCP contracts and exact dependency lock;
+- synthetic local Supabase Auth/JWT + RLS policy laboratory;
+- cross-schema catalog lint for dangerous grants and SECURITY DEFINER review conditions;
+- revocation/audit policy evidence;
+- protected local credential loader and fixed Supabase client seam;
+- bounded `memory_search`, `memory_get`, and `memory_list_recent` factories;
+- shared timeout, row, byte, concurrency, and process-local request governors whose
+  identity scope still depends on verified principal/client context being wired by the
+  active server profile;
+- a real local Storage/RLS artifact lab used by the Governed Artifact Inspection design work.
+
+The critical read-only milestone is **not closed**. Draft PRs
+[#38](https://github.com/jryski/Supabase_user_MCP/pull/38) and
+[#40](https://github.com/jryski/Supabase_user_MCP/pull/40) add strict tool registration and
+a synthetic local client-to-RLS acceptance path, but they are unmerged candidate evidence,
+not behavior available from `main`.
+
+The stacked read-path review has two open base findings in PR #38: the registered server does
+not yet supply verified principal/client identity to the governor, and its byte-budget model
+does not cover the complete outbound JSON-RPC frame when both text content and
+`structuredContent` are emitted. The
+[MCP tools specification](https://modelcontextprotocol.io/specification/2026-07-28/server/tools)
+says structured results **SHOULD** also provide serialized JSON text for compatibility; it is
+not a MUST. The current candidate chooses the full dual representation. A semantically
+equivalent text summary is an alternative design with degraded results for clients that
+ignore `structuredContent`. The current defect is the incomplete budget boundary for the
+selected representation. PR #40 inherits these findings but did not introduce them; its
+separate base-binding and E2E-skip repairs remain valid in scope. Issue #17 remains open until
+the base is repaired, the stack is refreshed, and independent review passes. The exact K1/K2
+mechanisms and acceptance criteria are in the
+[public PR #38 finding record](https://github.com/jryski/Supabase_user_MCP/pull/38#issuecomment-5472417281).
+
+The intended local path is:
+
+```text
+local Auth/JWT
+  -> strict MCP tool
+  -> fixed Data API/RPC
+  -> RLS
+  -> authorized intersection
+```
+
+Passing CI on a draft head is reproducible test evidence for that coordinate. It is not
+merge, deployment, production-readiness, or security acceptance.
 
 ## Planned product surface
 
-The first useful release is deliberately narrow:
+Initial read capabilities:
 
-- `memory_search` — bounded full-text or semantic search over authorized records
-- `memory_get` — retrieve one authorized memory record by opaque identifier
-- `memory_list_recent` — list authorized recent records with a hard page limit
-- `memory_append_observation` — append non-canonical information idempotently
-- `memory_propose_change` — stage a canonical mutation for human review
-- `memory_get_proposal` — inspect approval status without applying the change
+- `memory_search`
+- `memory_get`
+- `memory_list_recent`
 
-The names describe the reference sovereign-memory implementation. Adapters may later
-map the same capability model to other Supabase application schemas. See the complete
-[feature catalog](docs/FEATURES.md).
+Later governed write capabilities are planned separately, including append-only observations and proposal/approval workflows. See [feature catalog](docs/FEATURES.md).
 
-## Current phase
+### Current scope limits
 
-The project is in **M0: protocol and policy foundation**. Active contributor work is
-organized under [epic #19](https://github.com/jryski/Supabase_user_MCP/issues/19)
-and the [v0.1 read-only implementation plan](docs/IMPLEMENTATION_PLAN.md).
-Before server code is treated as viable, M0 must resolve two identity questions:
+- The first profile is local stdio with one protected Supabase user access token. Remote
+  HTTP/OAuth remains blocked on a standards-compliant downstream-token and audience design.
+- The v0.1 tools expose one fixed allowlisted field projection. They do not provide
+  per-principal column entitlements; RLS remains a row boundary.
+- The current database search candidate is lexical. `semantic` mode does not establish an
+  approximate-nearest-neighbor implementation or semantic quality, recall, latency, or
+  multitenant isolation.
+- The 65,536-byte response ceiling is a project-defined safety budget, not an MCP protocol
+  limit. It must cover the complete serialized outbound frame, including the selected
+  compatibility representations and protocol overhead.
+- Production data, deployment credentials, and project-wide privileged keys remain outside
+  this repository's accepted test profile.
 
-- How a remote HTTP MCP server obtains a downstream Supabase token without violating
-  MCP audience-binding and token-transit requirements.
-- How durable non-human principals are provisioned and revoked, given that Supabase's
-  OAuth server currently documents authorization-code and refresh-token grants rather
-  than a `client_credentials` grant.
+### Governed Artifact Inspection
 
-These are architecture gates, not implementation details. The local stdio proof and the
-remote HTTP service are tracked as separate deployment profiles until the remote identity
-chain is demonstrated end to end.
+Issue #34 tracks a related Storage/Edge capability: agents inspect durable artifacts through opaque IDs, caller-context RLS, bounded reads, integrity/provenance receipts, and a small supported-profile registry rather than receiving generic Storage access.
 
-The executable M0 spike now proves a strict TypeScript workspace, MCP `2026-07-28`
-stdio negotiation, structured input/output validation, and a deliberately non-authoritative
-tool. It has no Supabase client, credentials, network access, or data operations. See the
-[compatibility evidence](docs/evidence/M0_COMPATIBILITY_SPIKE.md).
+The current design keeps:
 
-## Try the M0 compatibility probe
+- MCP as the agent capability surface;
+- Edge as a bounded inspection/execution surface;
+- Postgres/RLS as authorization;
+- Storage as byte custody.
 
-Prerequisites: Node.js `22.20.0` and npm `11.19.0`.
+This is proposed work. Hosted adoption remains gated by a verified non-service user/client identity path and by remediation of dangerous default Storage privileges before any user token is issued.
+
+## Roadmap
+
+| Milestone | Outcome | Current interpretation |
+| --- | --- | --- |
+| M0 | Protocol/policy/repository foundation | Foundation landed |
+| M1 | Local Auth/RLS policy laboratory | Core policy-lab evidence landed; issue #11 remains open for true MCP/PostgREST acceptance semantics |
+| M2 | Read-only stdio reference server | **Active critical path** — draft #40 is green but has unresolved review findings; issue #17 remains open |
+| M3 | Idempotent writes and canonical approval | Future |
+| M4 | Remote HTTP/OAuth profile | Future; downstream-token/audience proof required |
+| M5 | Operations/adversarial hardening | Future |
+| M6 | Stable v1 contract | Future |
+
+Detailed sequencing and claim limits live in [docs/ROADMAP.md](docs/ROADMAP.md) and [epic #19](https://github.com/jryski/Supabase_user_MCP/issues/19).
+
+## Local development
+
+Prerequisites and exact versions are documented in [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md).
 
 ```shell
 npm ci
 npm run check
 npm run build
-npm start
 ```
 
-`npm start` launches a JSON-RPC stdio server for an MCP `2026-07-28` client; it is not an
-interactive terminal application. The only exposed tool is `system_compatibility_probe`,
-which performs no network or data operation. Exact versions and verification commands are
-documented in the [development guide](docs/DEVELOPMENT.md).
-
-## Roadmap
-
-| Milestone | Outcome | Release gate |
-| --- | --- | --- |
-| M0 | Protocol, identity, policy, and threat-model decisions | Architecture review is complete |
-| M1 | Local policy laboratory with representative principals and records | Access matrix passes |
-| M2 | Read-only stdio reference server | RLS isolation is proven end to end |
-| M3 | Idempotent writes and canonical approval workflow | Direct canonical mutation is impossible |
-| M4 | Standards-compliant remote HTTP and OAuth profile | Audience and downstream-token chain pass review |
-| M5 | Fleet operations, observability, and adversarial hardening | Revocation and containment drills pass |
-| M6 | Stable v1 contract | Independent security review and release checklist pass |
-
-Each milestone has deliverables, dependencies, exclusions, and measurable exit criteria
-in the [development roadmap](docs/ROADMAP.md).
+Local Supabase policy tests use synthetic fixtures only. Do not point the harness at a
+private, restricted, customer, or production project.
 
 ## Documentation
 
-- [Product definition](docs/PRODUCT.md) — users, jobs, boundaries, and success measures
-- [Architecture](docs/ARCHITECTURE.md) — components, trust boundaries, and deployment profiles
-- [Feature catalog](docs/FEATURES.md) — proposed tools and platform capabilities
-- [Security model](docs/SECURITY_MODEL.md) — identities, capabilities, RLS, and approvals
-- [Threat model](docs/THREAT_MODEL.md) — assets, attackers, abuse cases, and mitigations
-- [Roadmap](docs/ROADMAP.md) — implementation sequence and release gates
-- [Development guide](docs/DEVELOPMENT.md) — pinned stack, layout, and engineering standards
-- [M0 compatibility evidence](docs/evidence/M0_COMPATIBILITY_SPIKE.md) — pinned versions and protocol proof
-- [Architecture decisions](docs/decisions/README.md) — consequential decisions and open gates
+- [Product definition](docs/PRODUCT.md)
+- [Architecture](docs/ARCHITECTURE.md)
+- [Feature catalog](docs/FEATURES.md)
+- [Security model](docs/SECURITY_MODEL.md)
+- [Threat model](docs/THREAT_MODEL.md)
+- [Roadmap](docs/ROADMAP.md)
+- [Implementation plan](docs/IMPLEMENTATION_PLAN.md)
+- [Development guide](docs/DEVELOPMENT.md)
+- [Architecture decisions](docs/decisions/README.md)
+- [Program context and plane ownership](docs/PROGRAM_CONTEXT.md)
+- [Evidence index](docs/evidence/README.md)
 
 ## Contributing
 
-The highest-value contributions today are adversarial reviews, prior art, policy-test
-cases, and small documentation corrections. Please read [CONTRIBUTING.md](CONTRIBUTING.md)
-and [GOVERNANCE.md](GOVERNANCE.md) before opening a pull request. Security reports belong
-in the private process described in [SECURITY.md](SECURITY.md), not in a public issue.
+Please read [CONTRIBUTING.md](CONTRIBUTING.md) and [GOVERNANCE.md](GOVERNANCE.md). Security reports belong in the private process described in [SECURITY.md](SECURITY.md), not in a public issue.
 
 ## Project status and independence
 
-Supabase User MCP is an independent open-source project. It is not an official Supabase
-product and is not endorsed by Supabase, Inc. “Supabase” is used to identify compatibility
-with the Supabase platform.
+Supabase User MCP is an independent open-source project. It is not an official Supabase product and is not endorsed by Supabase, Inc. "Supabase" identifies compatibility with the Supabase platform.
 
 Licensed under the [Apache License 2.0](LICENSE).
