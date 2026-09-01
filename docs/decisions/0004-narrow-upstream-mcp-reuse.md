@@ -61,19 +61,25 @@ Adopt these upstream seams:
 - the test topology demonstrated by `@supabase/mcp-server-postgrest`: synthetic local Supabase
   Auth sign-in, real user JWT, in-memory MCP client/server connection, and real PostgREST/RLS
   evaluation;
-- exact-pinned `@supabase/auth-js` only when issue #17 implements that synthetic identity harness;
-  and
+- exact-pinned `@supabase/auth-js@2.112.4` from
+  `supabase/supabase-js@b3b939a405ae663aea2fabecfa4dfcc6161d155a` for synthetic sign-in and
+  operator examples only; the archived standalone `supabase/auth-js` repository is not the source
+  coordinate;
+- the authenticated PostgREST root OpenAPI document as a non-model-facing M2 census that proves the
+  advertised profile remains within the fixed API allowlist; and
 - Supabase Auth OAuth 2.1 discovery, PKCE, user approval, and revocation as the preferred future
   remote identity foundation, subject to ADR-0002's audience/resource validation gate.
 
-Do not import the PostgREST server, `postgrestRequest`, `sqlToRest`, its OpenAPI resource, or
-upstream `hidden` behavior into the production capability surface.
+Do not import the PostgREST server, `postgrestRequest`, `sqlToRest`, its model-visible OpenAPI
+resource, or upstream `hidden` behavior into the production capability surface.
 
 ## Consequences
 
 ### Positive
 
 - Issue #17 can reuse maintained Auth and MCP transport plumbing rather than hand-roll it.
+- M2 can inspect the externally advertised PostgREST profile without exposing discovery to the
+  model.
 - Production authority remains visibly bounded in local registration code.
 - Upstream protocol changes are detected by executable compatibility tests.
 - Future remote OAuth work follows Supabase's supported identity system.
@@ -83,12 +89,15 @@ upstream `hidden` behavior into the production capability surface.
 - This project retains its fixed Data API client and tool-registration implementation.
 - Upstream package upgrades require source-coordinate review and compatibility evidence.
 - Useful upstream features are not inherited automatically.
+- Auth's browser/WebAuthn declarations require a narrow Node test adapter under this repository's
+  TypeScript 7 and `exactOptionalPropertyTypes` settings; compiler checks are not skipped.
 
 ### Follow-up
 
 - Assemble the protected credential loader, fixed client, and three governed handlers in the
   executable stdio server.
-- Extend issue #17 with the upstream Auth plus `StreamTransport` test topology.
+- Preserve issue #17's upstream Auth plus `StreamTransport` test topology and add the authenticated
+  OpenAPI census before the experimental release.
 - Keep prompt-injection acceptance deterministic; do not import upstream arbitrary-SQL model
   tests into the public request path.
 - Consider an upstream contribution separating PostgREST `apikey` and bearer-token options, but

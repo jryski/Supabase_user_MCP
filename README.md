@@ -73,7 +73,7 @@ Non-negotiable principles:
 
 ## Current state
 
-Current `main` contains the reviewed local foundation through the governed read-tool stack:
+Current `main` contains the reviewed local foundation and merged principal-bound read path:
 
 - strict TypeScript/MCP contracts and exact dependency lock;
 - synthetic local Supabase Auth/JWT + RLS policy laboratory;
@@ -81,32 +81,32 @@ Current `main` contains the reviewed local foundation through the governed read-
 - revocation/audit policy evidence;
 - protected local credential loader and fixed Supabase client seam;
 - bounded `memory_search`, `memory_get`, and `memory_list_recent` factories;
-- shared timeout, row, coarse wire-byte, concurrency, and process-local request governors;
+- verified Auth identity before read-only server registration;
+- exact principal-scoped limiter and operational-event attribution;
+- complete dual-representation JSON-RPC frame and request-ID ceilings;
+- real MCP client -> fixed Data API -> PostgreSQL RLS acceptance; and
 - a real local Storage/RLS artifact lab used by the Governed Artifact Inspection design work.
 
-The critical read-only milestone is **not closed**. Draft PRs
-[#38](https://github.com/jryski/Supabase_user_MCP/pull/38) and
-[#40](https://github.com/jryski/Supabase_user_MCP/pull/40) add strict tool registration and
-a synthetic local client-to-RLS acceptance path, but they are unmerged candidate evidence,
-not behavior available from `main`.
-
-The current reconciliation candidate absorbs PR #40 into PR #38 and repairs both inherited base
-findings. Read-only server construction now verifies the protected user credential through the fixed
-Supabase Auth user endpoint before registering tools, then supplies the verified principal and exact
-SDK request ID to every governor call. One contracts-owned renderer now defines both the emitted
-dual-representation result and the complete JSON-RPC byte estimator. The
+The consolidated read path merged through
+[PR #38](https://github.com/jryski/Supabase_user_MCP/pull/38) at
+`dd5ba98a00a3b37003554a14200f789fcb233cac`. PR #40's base-binding and E2E-skip repairs are
+absorbed in that tree. Read-only server construction verifies the protected user credential through
+the fixed Supabase Auth user endpoint before registering tools, then supplies the verified principal
+and exact SDK request ID to every governor call. One contracts-owned renderer defines both the
+emitted dual-representation result and complete JSON-RPC byte estimator. The
 [MCP tools specification](https://modelcontextprotocol.io/specification/2026-07-28/server/tools)
-says structured results **SHOULD** also provide serialized JSON text for compatibility; it is
-not a MUST. This candidate retains full dual representation and measures the selected complete
-frame. Unit and transport tests cover exact/one-over byte boundaries, request-ID escaping, hostile
-content escaping, and bounded denial instead of oversized success. A read-only transport guard
-closes oversized inbound or outbound frames before dispatch/send, including denial paths with
-hostile request IDs. Serialized request IDs are separately capped at 1,024 bytes so bounded errors
-can echo them safely. PR #40's separate base-binding
-and E2E-skip repairs remain preserved in the consolidated candidate. Local `npm run check` passes;
-the dedicated M2 rerun is pending GitHub CI because this host cannot access the Docker socket.
-Issue #17 remains open until exact-head CI, independent review, and merge. The original K1/K2
-acceptance criteria remain in the
+says structured results **SHOULD** also provide serialized JSON text for compatibility; it is not a
+MUST. This implementation retains full dual representation and measures the selected complete frame.
+Unit and transport tests cover exact/one-over byte boundaries, request-ID escaping, hostile-content
+escaping, and bounded denial instead of oversized success. A read-only transport guard closes
+oversized inbound or outbound frames before dispatch/send, including denial paths with hostile
+request IDs. Serialized request IDs are separately capped at 1,024 bytes so bounded errors can echo
+them safely. Exact-head and post-merge Build/M2/Markdown/Links workflows passed.
+
+The experimental local pilot is still not closed. The production CLI remains the compatibility probe,
+and issue #18 still owns executable stdio startup, operator guidance, revoke/rollback, and clean-room
+reproduction. Issue #44 is the unmerged candidate for official Auth test reuse and a non-model-facing
+authenticated PostgREST OpenAPI surface census. The original K1/K2 acceptance criteria remain in the
 [public PR #38 finding record](https://github.com/jryski/Supabase_user_MCP/pull/38#issuecomment-5472417281).
 
 The intended local path is:

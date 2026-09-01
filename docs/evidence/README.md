@@ -1,7 +1,7 @@
 # Evidence Index
 
 - **Status:** Active index of merged evidence and unmerged candidates
-- **Last reviewed:** 2026-08-30
+- **Last reviewed:** 2026-09-01
 
 This index maps public claims to exact artifacts. A commit in the merged table means the
 named artifact is present on `main`; it does not prove a larger milestone or deployment.
@@ -23,13 +23,13 @@ Draft candidates are listed separately and must not be described as merged or ac
 | Bounded lexical search application seam | [Issue #14 evidence](ISSUE_14_MEMORY_SEARCH.md) | `packages/server/src/memory-search.test.ts` | `3b7121fb0a3cc0b19db6463c17264a00fab706e6` |
 | Read governors, get, and recent-list factories | [Issue #16 evidence](ISSUE_16_READ_GOVERNOR.md) | `packages/server/src/read-tool-governor.test.ts`, `read-tool-governor.integration.test.ts`, `memory-get.test.ts`, and `memory-list-recent.test.ts` | `963b342c789a183331a31c7a144cd7cfeaecd25b` |
 | Storage/RLS artifact laboratory | [S1 lab evidence](S1-lab.md) | `supabase/tests/run-s1-lab.sh` | `38013ae428c37b4140bfdb6b3cd174e72f0732c0` |
+| Verified principal-bound read path | [Issue #17 evidence](ISSUE_17_PRINCIPAL_READ_PATH.md) | `packages/server/src/m2-local-e2e.test.ts` and `supabase/tests/run-m2-memory-lab.sh` | `dd5ba98a00a3b37003554a14200f789fcb233cac` |
 
 ## Unmerged candidate evidence
 
 | Candidate | Coordinate/evidence source | What it may support | Open limits |
 | --- | --- | --- | --- |
-| [PR #38](https://github.com/jryski/Supabase_user_MCP/pull/38) consolidated read path | GitHub PR head must be frozen as a full SHA in each review receipt | Strict registration, verified Auth principal context, complete-frame budgeting, and preserved PR #40 D1/D2/M2 artifacts | Draft and unmerged; local workspace gate passes, dedicated M2 rerun pending CI, independent review and Jesse-only merge required |
-| [PR #40](https://github.com/jryski/Supabase_user_MCP/pull/40) historical child | `c33adb4b8be284c114dcc307e3084b9635e60e43` over original PR #38 | Historical D1/D2 and M2 repair evidence now absorbed by consolidated PR #38 candidate | Keep open until consolidated candidate lands, then close as absorbed rather than merge separately |
+| [Issue #44](ISSUE_44_UPSTREAM_ALIGNMENT.md) official-upstream alignment | Candidate branch must be frozen after real M2 CI | Official Auth synthetic sign-in, authenticated non-model-facing PostgREST OpenAPI census, and explicit generic-tool denial | Unmerged; unit/type/shell gates are local evidence until clean exact-head M2 passes |
 
 Green CI on a draft coordinate proves only that the named workflow passed for that source.
 It does not merge the code, satisfy independent review, authorize deployment, or establish
@@ -48,12 +48,12 @@ production readiness.
 npm ci
 npm run check
 npm run policy-lab:test
+npm run test:m2
 npm run test:s1
 ```
 
-The draft M2 acceptance command is carried in the consolidated PR #38 candidate and must be run
-from a clean exact-head checkout. Do not infer that command or its database functions are available
-from `main`.
+The M2 acceptance command must run from a clean exact-head checkout. Its receipt proves only the
+synthetic local profile at that exact Git coordinate.
 
 ## Evidence rules
 

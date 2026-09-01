@@ -395,7 +395,13 @@ describe('strict read-only MCP registration', () => {
 
   it('rejects undeclared names, extra authority, and above-cap limits', async () => {
     await withClient(createReadOnlyServer({ client: emptyClient() }), async (client) => {
-      for (const name of ['system_compatibility_probe', 'hidden_write', 'unknown_tool']) {
+      for (const name of [
+        'system_compatibility_probe',
+        'hidden_write',
+        'postgrestRequest',
+        'sqlToRest',
+        'unknown_tool',
+      ]) {
         await expect(client.callTool({ name, arguments: {} })).rejects.toThrow(/not found/);
       }
       expect(

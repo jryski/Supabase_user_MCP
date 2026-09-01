@@ -81,19 +81,8 @@ export M2_SUPABASE_URL M2_PUBLISHABLE_KEY
 mint_token() {
   local email="$1"
   local label="$2"
-  local response_file="$TMP_DIR/${label}.json"
-  local status
-  status="$(curl -sS -o "$response_file" -w '%{http_code}' \
-    -X POST "${M2_SUPABASE_URL}/auth/v1/token?grant_type=password" \
-    -H "apikey: ${M2_PUBLISHABLE_KEY}" \
-    -H "Content-Type: application/json" \
-    --data "{\"email\":\"${email}\",\"password\":\"SmpStrongPass!1\"}")"
-  [[ "$status" == "200" ]] || fail "mint ${label} session (HTTP ${status})"
-  node -e '
-    const r = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"));
-    if (typeof r.access_token !== "string") process.exit(1);
-    process.stdout.write(r.access_token);
-  ' "$response_file"
+  npx tsx test/support/mint-m2-token.ts "${M2_SUPABASE_URL}/auth/v1" "$email" \
+    || fail "mint ${label} session through official Auth client"
 }
 
 M2_ALICE_TOKEN="$(mint_token 'alice.fixture@example.test' 'alice')"
@@ -107,7 +96,11 @@ export M2_DANA_TOKEN
 for token_name in M2_ALICE_TOKEN M2_BOB_TOKEN M2_CHARLIE_TOKEN M2_DANA_TOKEN; do
   [[ -n "${!token_name:-}" ]] || fail "required local Auth token was not minted"
 done
-log "Minted real local Auth sessions without printing bearer material."
+log "Minted real local Auth sessions through official auth-js without printing bearer material."
+
+log "Censusing the authenticated PostgREST OpenAPI surface outside the model-visible tool surface."
+npx tsx test/support/check-m2-postgrest-surface.ts \
+  > "$TMP_DIR/postgrest-surface-census.json"
 
 log "Running MCP client -> fixed Data API -> SECURITY INVOKER RPC -> PostgreSQL RLS and complete-frame tests."
 npx vitest run packages/server/src/m2-local-e2e.test.ts packages/server/src/read-only-server.test.ts
@@ -131,7 +124,7 @@ SUPABASE_VERSION="$(supabase --version)"
   || fail "repository tree changed during acceptance"
 [[ -z "$(git status --porcelain --untracked-files=all)" ]] \
   || fail "acceptance worktree changed during execution"
-printf '{"schema":"supabase-user-mcp.m2-acceptance.v1","repositorySha":"%s","treeSha":"%s","baseSha":%s,"node":"%s","npm":"%s","supabase":"%s","cases":["db-rls-matrix","rpc-acl-census","auth-user-verification","principal-positive","principal-limiter-scope","cross-principal-denial","revoked-client-denial","missing-client-denial","expired-credential-denial","malformed-credential-file-denial","hostile-content-boundary","complete-frame-budget","malformed-bearer-denial"],"result":"pass"}\n' \
+printf '{"schema":"supabase-user-mcp.m2-acceptance.v1","repositorySha":"%s","treeSha":"%s","baseSha":%s,"node":"%s","npm":"%s","supabase":"%s","cases":["db-rls-matrix","rpc-acl-census","official-auth-js-sign-in","postgrest-openapi-surface-census","auth-user-verification","principal-positive","principal-limiter-scope","cross-principal-denial","revoked-client-denial","missing-client-denial","expired-credential-denial","malformed-credential-file-denial","hostile-content-boundary","complete-frame-budget","malformed-bearer-denial"],"result":"pass"}\n' \
   "$HEAD_SHA" "$TREE_SHA" "$BASE_JSON" "$NODE_VERSION" "$NPM_VERSION" "$SUPABASE_VERSION" \
   > "$TMP_DIR/m2-acceptance-receipt.json"
 cat "$TMP_DIR/m2-acceptance-receipt.json"
