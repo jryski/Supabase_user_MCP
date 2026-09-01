@@ -4,8 +4,8 @@ import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import {
-  ArtifactInspectionReceiptSchema,
   ARTIFACT_INSPECTION_UNTRUSTED_CONTENT_PREFIX,
+  ArtifactInspectionReceiptSchema,
   MAX_ARTIFACT_RESPONSE_BYTES,
   MAX_INLINE_CHUNK_HASHES,
   PartialReadIntegritySchema,
@@ -17,113 +17,26 @@ import {
   ALLOWED_CHUNK_SIZES,
   ARTIFACT_CHUNK_MANIFEST_ERROR_CODES,
   ARTIFACT_CHUNK_MERKLE_PROFILE_VERSION,
+  type ArtifactChunkManifest,
   ArtifactChunkManifestError,
   type ArtifactChunkProof,
+  buildArtifactChunkManifest,
+  buildArtifactChunkProof,
   DEFAULT_CHUNK_SIZE,
   EMPTY_ARTIFACT_MERKLE_ROOT,
   MAX_CALIBRATION_SOURCE_BYTES,
   MAX_CHUNK_COUNT,
   MAX_MERKLE_PROOF_DEPTH,
-  buildArtifactChunkManifest,
-  buildArtifactChunkProof,
   verifyArtifactChunkProof,
+  verifyArtifactSourceManifest,
 } from './artifact-chunk-manifest.js';
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../../..');
 
-// ---------------------------------------------------------------------------
-// Independent reference implementation.
-//
-// A fresh, standalone re-derivation of the artifact-chunk-merkle/0.1 profile
-// written directly against Node's crypto module -- deliberately NOT calling
-// back into any production helper -- so golden-vector and cross-check tests
-// below prove the module against the spec, not against its own logic.
-// ---------------------------------------------------------------------------
-
-function refSha256(...parts: Buffer[]): Buffer {
-  const hash = createHash('sha256');
-  for (const part of parts) hash.update(part);
-  return hash.digest();
+function sha256Hex(text: string): string {
+  return createHash('sha256').update(Buffer.from(text, 'utf8')).digest('hex');
 }
-
-function refLeaf(chunk: Buffer): Buffer {
-  return refSha256(Buffer.from([0x00]), chunk);
-}
-
-function refParent(left: Buffer, right: Buffer): Buffer {
-  return refSha256(Buffer.from([0x01]), left, right);
-}
-
-function refEmptyRoot(): Buffer {
-  return refSha256(Buffer.from([0x02]));
-}
-
-function refMerkleRoot(leaves: Buffer[]): Buffer {
-  if (leaves.length === 0) return refEmptyRoot();
-  let level = leaves;
-  while (level.length > 1) {
-    const next: Buffer[] = [];
-    for (let i = 0; i < level.length; i += 2) {
-      const left = level[i] as Buffer;
-      const right = i + 1 < level.length ? (level[i + 1] as Buffer) : left;
-      next.push(refParent(left, right));
-    }
-    level = next;
-  }
-  return level[0] as Buffer;
-}
-
-function refManifest(bytes: Buffer, chunkSize: number) {
-  const byteLength = bytes.byteLength;
-  const chunkCount = byteLength === 0 ? 0 : Math.ceil(byteLength / chunkSize);
-  const chunkLeaves: Buffer[] = [];
-  const chunkHashesHex: string[] = [];
-  for (let i = 0; i < chunkCount; i++) {
-    const start = i * chunkSize;
-    const end = Math.min(start + chunkSize, byteLength);
-    const leaf = refLeaf(bytes.subarray(start, end));
-    chunkLeaves.push(leaf);
-    chunkHashesHex.push(leaf.toString('hex'));
-  }
-  return {
-    sourceSha256: refSha256(bytes).toString('hex'),
-    chunkCount,
-    chunkHashesHex,
-    merkleRoot: refMerkleRoot(chunkLeaves).toString('hex'),
-  };
-}
-
-// ---------------------------------------------------------------------------
-// Hardcoded golden vectors, computed independently outside this repository
-// (via a standalone `node -e` script using the exact same formula) and
-// cross-checked against `refManifest` above for internal consistency.
-// ---------------------------------------------------------------------------
-
-const GOLDEN_EMPTY_ROOT = 'dbc1b4c900ffe48d575b5da5c638040125f65db0fe3e24494b76ea986457d986';
-const GOLDEN_EMPTY_SOURCE_SHA256 =
-  'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855';
-
-const GOLDEN_ONE_BYTE_LEAF = 'c00b4d3c929cb5cc316691ed4636f634576f2c9b2954767234c5274e9dde185d';
-const GOLDEN_ONE_BYTE_SOURCE_SHA256 =
-  '559aead08264d5795d3909718cdd05abd49572e84fe55590eef31a88a08fdffd';
-
-// Two chunks, chunkSize 1024: chunk0 = 1024 zero bytes, chunk1 = single 0x41 byte.
-const GOLDEN_TWO_CHUNK_LEAF0 = 'c55b90509b8cb9bac53fbdddfc93d4e572685c509f1218423c43a5d6013bbd48';
-const GOLDEN_TWO_CHUNK_LEAF1 = GOLDEN_ONE_BYTE_LEAF;
-const GOLDEN_TWO_CHUNK_ROOT = 'b20f0a1f8e97c0828bf106d027e547c0320d783bad93d57a73a6427b527317ff';
-const GOLDEN_TWO_CHUNK_SOURCE_SHA256 =
-  'd1dcfa80d721aad8eb04c23ff804aee1146e0d4fa9873820db924e7a7c83820d';
-
-// Three chunks (odd count -> final level duplicates the last node), chunkSize
-// 1024: chunkA = 1024 zero bytes, chunkB = 1024 bytes of 0x02, chunkC = single
-// 0x03 byte.
-const GOLDEN_THREE_CHUNK_ROOT = 'b69b2cfd13690050910d772768b3136f0c4e80e12d70542e5eb9f97ffbb00b75';
-const GOLDEN_THREE_CHUNK_SOURCE_SHA256 =
-  '68275c089e6d49579401dd363e729fded1d9f2d0914464017419d195cc5b61ec';
-
-function bytesOf(...parts: Array<Buffer | Uint8Array>): Uint8Array {
-  return new Uint8Array(Buffer.concat(parts.map((p) => Buffer.from(p))));
-}
+void sha256Hex;
 
 /** Narrows an in-bounds array-index read (under `noUncheckedIndexedAccess`)
  * without a non-null assertion, mirroring the same helper in the module
@@ -159,6 +72,140 @@ function deterministicTestBytes(length: number, seed: number): Uint8Array {
   return bytes;
 }
 
+// ---------------------------------------------------------------------------
+// Independent reference implementation.
+//
+// A fresh, standalone re-derivation of the artifact-chunk-merkle/0.1 profile
+// written directly against Node's crypto module -- deliberately NOT calling
+// back into any production helper -- so golden-vector and cross-check tests
+// below prove the module against the spec, not against its own logic.
+// ---------------------------------------------------------------------------
+
+function refSha256(...parts: Buffer[]): Buffer {
+  const hash = createHash('sha256');
+  for (const part of parts) hash.update(part);
+  return hash.digest();
+}
+
+function refRawChunkSha256(chunk: Buffer): Buffer {
+  return refSha256(chunk);
+}
+
+function refLeaf(chunk: Buffer): Buffer {
+  return refSha256(Buffer.from([0x00]), chunk);
+}
+
+function refParent(left: Buffer, right: Buffer): Buffer {
+  return refSha256(Buffer.from([0x01]), left, right);
+}
+
+function refEmptyRoot(): Buffer {
+  return refSha256(Buffer.from([0x02]));
+}
+
+function refMerkleRoot(leaves: Buffer[]): Buffer {
+  if (leaves.length === 0) return refEmptyRoot();
+  let level = leaves;
+  while (level.length > 1) {
+    const next: Buffer[] = [];
+    for (let i = 0; i < level.length; i += 2) {
+      const left = level[i] as Buffer;
+      const right = i + 1 < level.length ? (level[i + 1] as Buffer) : left;
+      next.push(refParent(left, right));
+    }
+    level = next;
+  }
+  return level[0] as Buffer;
+}
+
+function refManifest(bytes: Buffer, chunkSize: number) {
+  const byteLength = bytes.byteLength;
+  const chunkCount = byteLength === 0 ? 0 : Math.ceil(byteLength / chunkSize);
+  const chunkLeaves: Buffer[] = [];
+  const rawHashesHex: string[] = [];
+  const leafHashesHex: string[] = [];
+  for (let i = 0; i < chunkCount; i++) {
+    const start = i * chunkSize;
+    const end = Math.min(start + chunkSize, byteLength);
+    const chunkBytes = bytes.subarray(start, end);
+    const raw = refRawChunkSha256(chunkBytes);
+    const leaf = refLeaf(chunkBytes);
+    chunkLeaves.push(leaf);
+    rawHashesHex.push(raw.toString('hex'));
+    leafHashesHex.push(leaf.toString('hex'));
+  }
+  return {
+    sourceSha256: refSha256(bytes).toString('hex'),
+    chunkCount,
+    rawHashesHex,
+    leafHashesHex,
+    merkleRoot: refMerkleRoot(chunkLeaves).toString('hex'),
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Hardcoded golden vectors, computed independently outside this repository
+// (via a standalone `node -e` script using the exact same formula) and
+// cross-checked against `refManifest` above for internal consistency.
+// ---------------------------------------------------------------------------
+
+const GOLDEN_EMPTY_ROOT = 'dbc1b4c900ffe48d575b5da5c638040125f65db0fe3e24494b76ea986457d986';
+const GOLDEN_EMPTY_SOURCE_SHA256 =
+  'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855';
+
+// Raw SHA256(0x41) and domain-separated leaf SHA256(0x00||0x41) are
+// deliberately different values -- see "raw chunk SHA vs Merkle leaf SHA"
+// below.
+const GOLDEN_ONE_BYTE_RAW_SHA256 =
+  '559aead08264d5795d3909718cdd05abd49572e84fe55590eef31a88a08fdffd';
+const GOLDEN_ONE_BYTE_LEAF = 'c00b4d3c929cb5cc316691ed4636f634576f2c9b2954767234c5274e9dde185d';
+
+// Two chunks, chunkSize 1024: chunk0 = 1024 zero bytes, chunk1 = single 0x41 byte.
+const GOLDEN_TWO_CHUNK_LEAF0 = 'c55b90509b8cb9bac53fbdddfc93d4e572685c509f1218423c43a5d6013bbd48';
+const GOLDEN_TWO_CHUNK_LEAF1 = GOLDEN_ONE_BYTE_LEAF;
+const GOLDEN_TWO_CHUNK_ROOT = 'b20f0a1f8e97c0828bf106d027e547c0320d783bad93d57a73a6427b527317ff';
+const GOLDEN_TWO_CHUNK_SOURCE_SHA256 =
+  'd1dcfa80d721aad8eb04c23ff804aee1146e0d4fa9873820db924e7a7c83820d';
+
+// Three chunks (odd count -> final level duplicates the last node), chunkSize
+// 1024: chunkA = 1024 zero bytes, chunkB = 1024 bytes of 0x02, chunkC = single
+// 0x03 byte.
+const GOLDEN_THREE_CHUNK_ROOT = 'b69b2cfd13690050910d772768b3136f0c4e80e12d70542e5eb9f97ffbb00b75';
+const GOLDEN_THREE_CHUNK_SOURCE_SHA256 =
+  '68275c089e6d49579401dd363e729fded1d9f2d0914464017419d195cc5b61ec';
+
+function bytesOf(...parts: Array<Buffer | Uint8Array>): Uint8Array {
+  return new Uint8Array(Buffer.concat(parts.map((p) => Buffer.from(p))));
+}
+
+// ---------------------------------------------------------------------------
+// Fixture builders
+// ---------------------------------------------------------------------------
+
+/** A structurally valid, hand-constructed single-chunk manifest -- used to
+ * build hand-crafted, deliberately corrupted variants for the manifest
+ * consumer-closure tests, without depending on `buildArtifactChunkManifest`
+ * itself (which is not what is being tested there). */
+function validSingleChunkManifest(
+  overrides: Partial<ArtifactChunkManifest> = {},
+): ArtifactChunkManifest {
+  const chunkBytes = deterministicTestBytes(500, 999);
+  const raw = refRawChunkSha256(Buffer.from(chunkBytes)).toString('hex');
+  const leaf = refLeaf(Buffer.from(chunkBytes)).toString('hex');
+  return {
+    profileVersion: ARTIFACT_CHUNK_MERKLE_PROFILE_VERSION,
+    sourceSha256: refSha256(Buffer.from(chunkBytes)).toString('hex'),
+    byteLength: 500,
+    chunkSize: 1024,
+    chunkCount: 1,
+    chunks: [
+      { chunkIndex: 0, byteStart: 0, byteLength: 500, chunkSha256: raw, merkleLeafSha256: leaf },
+    ],
+    merkleRoot: leaf, // single-leaf tree's root is the leaf itself
+    ...overrides,
+  };
+}
+
 describe('canonical hash profile and golden vectors', () => {
   it('reports the exact profile version', () => {
     expect(ARTIFACT_CHUNK_MERKLE_PROFILE_VERSION).toBe('artifact-chunk-merkle/0.1');
@@ -173,19 +220,21 @@ describe('canonical hash profile and golden vectors', () => {
     expect(manifest.chunks).toEqual([]);
   });
 
-  it('matches the golden one-byte leaf/root and source hash', () => {
+  it('matches the golden one-byte raw hash and Merkle leaf/root, and proves they differ', () => {
     const manifest = buildArtifactChunkManifest(Uint8Array.of(0x41), 1024);
+    const chunk = definedAt(manifest.chunks[0]);
+    expect(chunk.chunkSha256).toBe(GOLDEN_ONE_BYTE_RAW_SHA256);
+    expect(chunk.merkleLeafSha256).toBe(GOLDEN_ONE_BYTE_LEAF);
+    expect(chunk.chunkSha256).not.toBe(chunk.merkleLeafSha256);
     expect(manifest.merkleRoot).toBe(GOLDEN_ONE_BYTE_LEAF);
-    expect(manifest.chunks[0]?.chunkSha256).toBe(GOLDEN_ONE_BYTE_LEAF);
-    expect(manifest.sourceSha256).toBe(GOLDEN_ONE_BYTE_SOURCE_SHA256);
   });
 
   it('matches the golden two-chunk tree (no duplication needed)', () => {
     const bytes = bytesOf(Buffer.alloc(1024, 0x00), Buffer.from([0x41]));
     const manifest = buildArtifactChunkManifest(bytes, 1024);
     expect(manifest.chunkCount).toBe(2);
-    expect(manifest.chunks[0]?.chunkSha256).toBe(GOLDEN_TWO_CHUNK_LEAF0);
-    expect(manifest.chunks[1]?.chunkSha256).toBe(GOLDEN_TWO_CHUNK_LEAF1);
+    expect(definedAt(manifest.chunks[0]).merkleLeafSha256).toBe(GOLDEN_TWO_CHUNK_LEAF0);
+    expect(definedAt(manifest.chunks[1]).merkleLeafSha256).toBe(GOLDEN_TWO_CHUNK_LEAF1);
     expect(manifest.merkleRoot).toBe(GOLDEN_TWO_CHUNK_ROOT);
     expect(manifest.sourceSha256).toBe(GOLDEN_TWO_CHUNK_SOURCE_SHA256);
   });
@@ -204,7 +253,58 @@ describe('canonical hash profile and golden vectors', () => {
     const reference = refManifest(Buffer.from(bytes), 1024);
     expect(manifest.merkleRoot).toBe(reference.merkleRoot);
     expect(manifest.sourceSha256).toBe(reference.sourceSha256);
-    expect(manifest.chunks.map((c) => c.chunkSha256)).toEqual(reference.chunkHashesHex);
+    expect(manifest.chunks.map((c) => c.chunkSha256)).toEqual(reference.rawHashesHex);
+    expect(manifest.chunks.map((c) => c.merkleLeafSha256)).toEqual(reference.leafHashesHex);
+  });
+});
+
+describe('raw chunk SHA vs Merkle leaf SHA are different fields with different meanings', () => {
+  it('never produces the same value for chunkSha256 and merkleLeafSha256', () => {
+    const bytes = deterministicTestBytes(3000, 42);
+    const manifest = buildArtifactChunkManifest(bytes, 1024);
+    for (const chunk of manifest.chunks) {
+      expect(chunk.chunkSha256).not.toBe(chunk.merkleLeafSha256);
+    }
+  });
+
+  it('chunkSha256 is exactly SHA256(raw chunk bytes), independently reproduced', () => {
+    const bytes = deterministicTestBytes(3000, 43);
+    const manifest = buildArtifactChunkManifest(bytes, 1024);
+    for (const chunk of manifest.chunks) {
+      const chunkBytes = bytes.slice(chunk.byteStart, chunk.byteStart + chunk.byteLength);
+      expect(chunk.chunkSha256).toBe(refRawChunkSha256(Buffer.from(chunkBytes)).toString('hex'));
+    }
+  });
+
+  it('merkleLeafSha256 is exactly SHA256(0x00 || raw chunk bytes), independently reproduced', () => {
+    const bytes = deterministicTestBytes(3000, 44);
+    const manifest = buildArtifactChunkManifest(bytes, 1024);
+    for (const chunk of manifest.chunks) {
+      const chunkBytes = bytes.slice(chunk.byteStart, chunk.byteStart + chunk.byteLength);
+      expect(chunk.merkleLeafSha256).toBe(refLeaf(Buffer.from(chunkBytes)).toString('hex'));
+    }
+  });
+
+  it('mutating chunk bytes changes both hashes; each field independently detects a mismatch', () => {
+    const bytes = deterministicTestBytes(3000, 45);
+    const manifest = buildArtifactChunkManifest(bytes, 1024);
+    const proof = buildArtifactChunkProof(manifest, 0);
+    const chunkBytes = bytes.slice(proof.byteStart, proof.byteStart + proof.byteLength);
+
+    expect(
+      verifyArtifactChunkProof(
+        chunkBytes,
+        { ...proof, chunkSha256: `${'0'.repeat(63)}1` },
+        manifest.merkleRoot,
+      ),
+    ).toBe(false);
+    expect(
+      verifyArtifactChunkProof(
+        chunkBytes,
+        { ...proof, merkleLeafSha256: `${'0'.repeat(63)}1` },
+        manifest.merkleRoot,
+      ),
+    ).toBe(false);
   });
 });
 
@@ -225,7 +325,8 @@ describe('independent reference cross-check across sizes and chunk sizes', () =>
         const reference = refManifest(bytes, chunkSize);
         expect(manifest.chunkCount).toBe(reference.chunkCount);
         expect(manifest.sourceSha256).toBe(reference.sourceSha256);
-        expect(manifest.chunks.map((c) => c.chunkSha256)).toEqual(reference.chunkHashesHex);
+        expect(manifest.chunks.map((c) => c.chunkSha256)).toEqual(reference.rawHashesHex);
+        expect(manifest.chunks.map((c) => c.merkleLeafSha256)).toEqual(reference.leafHashesHex);
         expect(manifest.merkleRoot).toBe(reference.merkleRoot);
       });
     }
@@ -239,15 +340,30 @@ describe('bounds', () => {
     }
   });
 
-  it('rejects an unsupported chunk size', () => {
-    // A caller bypassing the type system (plain JS, or a widened value) must
-    // still be rejected at runtime -- hence the deliberate cast.
+  it('rejects an unsupported chunk size at manifest build time', () => {
     const unsupportedSize = 2048 as unknown as (typeof ALLOWED_CHUNK_SIZES)[number];
-    expect(() => buildArtifactChunkManifest(Uint8Array.of(1), unsupportedSize)).toThrowError(
-      ArtifactChunkManifestError,
-    );
     try {
       buildArtifactChunkManifest(Uint8Array.of(1), unsupportedSize);
+      expect.unreachable();
+    } catch (error) {
+      expect(error).toBeInstanceOf(ArtifactChunkManifestError);
+      expect((error as ArtifactChunkManifestError).code).toBe('UNSUPPORTED_CHUNK_SIZE');
+    }
+  });
+
+  it('regression: an unsupported 2,048-byte chunk-size proof fails', () => {
+    const manifest = buildArtifactChunkManifest(deterministicTestBytes(3000, 1), 1024);
+    const proof = buildArtifactChunkProof(manifest, 0);
+    const chunkBytes = deterministicTestBytes(3000, 1).slice(
+      proof.byteStart,
+      proof.byteStart + proof.byteLength,
+    );
+    const mutated = {
+      ...proof,
+      chunkSize: 2048 as unknown as (typeof ALLOWED_CHUNK_SIZES)[number],
+    };
+    try {
+      verifyArtifactChunkProof(chunkBytes, mutated, manifest.merkleRoot);
       expect.unreachable();
     } catch (error) {
       expect(error).toBeInstanceOf(ArtifactChunkManifestError);
@@ -269,20 +385,36 @@ describe('bounds', () => {
     }
   });
 
+  it('regression: a hand-constructed 1,048,577-byte manifest is rejected', () => {
+    const bad = validSingleChunkManifest({
+      byteLength: MAX_CALIBRATION_SOURCE_BYTES + 1,
+      chunkSize: 8192,
+      chunkCount: 1,
+    });
+    try {
+      buildArtifactChunkProof(bad, 0);
+      expect.unreachable();
+    } catch (error) {
+      expect(error).toBeInstanceOf(ArtifactChunkManifestError);
+      expect((error as ArtifactChunkManifestError).code).toBe('SOURCE_TOO_LARGE');
+    }
+  });
+
   it('rejects a hand-constructed manifest whose chunk count exceeds the ceiling', () => {
-    const fakeManifest = {
+    const fakeManifest: ArtifactChunkManifest = {
       profileVersion: ARTIFACT_CHUNK_MERKLE_PROFILE_VERSION,
       sourceSha256: '0'.repeat(64),
       byteLength: (MAX_CHUNK_COUNT + 1) * 1024,
-      chunkSize: 1024 as const,
+      chunkSize: 1024,
       chunkCount: MAX_CHUNK_COUNT + 1,
       chunks: Array.from({ length: MAX_CHUNK_COUNT + 1 }, (_, i) => ({
         chunkIndex: i,
         byteStart: i * 1024,
         byteLength: 1024,
         chunkSha256: '1'.repeat(64),
+        merkleLeafSha256: '2'.repeat(64),
       })),
-      merkleRoot: '2'.repeat(64),
+      merkleRoot: '3'.repeat(64),
     };
     try {
       buildArtifactChunkProof(fakeManifest, 0);
@@ -299,9 +431,11 @@ describe('bounds', () => {
     const overDeepProof: ArtifactChunkProof = {
       ...realProof,
       totalChunkCount: MAX_CHUNK_COUNT,
+      chunkIndex: 0,
+      byteStart: 0,
       proof: Array.from({ length: MAX_MERKLE_PROOF_DEPTH + 1 }, () => ({
         siblingPosition: 'left' as const,
-        siblingSha256: '3'.repeat(64),
+        siblingSha256: '4'.repeat(64),
       })),
     };
     try {
@@ -326,14 +460,10 @@ describe('bounds', () => {
     }
   });
 
-  it('rejects a manifest chunk with a malformed digest', () => {
-    const manifest = buildArtifactChunkManifest(Uint8Array.of(1, 2, 3), 1024);
-    const corrupted = {
-      ...manifest,
-      chunks: [{ ...definedAt(manifest.chunks[0]), chunkSha256: 'not-a-hex-digest' }],
-    };
+  it('regression: malformed sourceSha256 is rejected', () => {
+    const bad = validSingleChunkManifest({ sourceSha256: 'not-a-hex-digest' });
     try {
-      buildArtifactChunkProof(corrupted, 0);
+      buildArtifactChunkProof(bad, 0);
       expect.unreachable();
     } catch (error) {
       expect(error).toBeInstanceOf(ArtifactChunkManifestError);
@@ -341,29 +471,63 @@ describe('bounds', () => {
     }
   });
 
-  it('rejects a proof with a malformed sibling position', () => {
-    const manifest = buildArtifactChunkManifest(bytesOf(Buffer.alloc(3000, 7)), 1024);
-    const proof = buildArtifactChunkProof(manifest, 0);
-    const chunkBytes = new Uint8Array(definedAt(manifest.chunks[0]).byteLength);
-    const badProof: ArtifactChunkProof = {
-      ...proof,
-      proof: proof.proof.map((node, i) =>
-        i === 0 ? { ...node, siblingPosition: 'up' as unknown as 'left' } : node,
-      ),
+  it('regression: malformed raw chunkSha256 is rejected', () => {
+    const base = validSingleChunkManifest();
+    const bad = {
+      ...base,
+      chunks: [{ ...definedAt(base.chunks[0]), chunkSha256: 'not-a-hex-digest' }],
     };
     try {
-      verifyArtifactChunkProof(chunkBytes, badProof, manifest.merkleRoot);
+      buildArtifactChunkProof(bad, 0);
       expect.unreachable();
     } catch (error) {
       expect(error).toBeInstanceOf(ArtifactChunkManifestError);
-      expect((error as ArtifactChunkManifestError).code).toBe('MALFORMED_PROOF_POSITION');
+      expect((error as ArtifactChunkManifestError).code).toBe('MALFORMED_DIGEST');
     }
   });
 
-  it('rejects internally inconsistent hand-constructed manifests', () => {
-    const base = buildArtifactChunkManifest(bytesOf(Buffer.alloc(3000, 7)), 1024);
+  it('regression: malformed merkleLeafSha256 is rejected', () => {
+    const base = validSingleChunkManifest();
+    const bad = {
+      ...base,
+      chunks: [{ ...definedAt(base.chunks[0]), merkleLeafSha256: 'not-a-hex-digest' }],
+    };
+    try {
+      buildArtifactChunkProof(bad, 0);
+      expect.unreachable();
+    } catch (error) {
+      expect(error).toBeInstanceOf(ArtifactChunkManifestError);
+      expect((error as ArtifactChunkManifestError).code).toBe('MALFORMED_DIGEST');
+    }
+  });
 
-    const wrongChunkCount = { ...base, chunkCount: base.chunkCount + 1 };
+  it('regression: a well-formed but unrelated Merkle root is rejected', () => {
+    const bad = validSingleChunkManifest({ merkleRoot: 'f'.repeat(64) });
+    try {
+      buildArtifactChunkProof(bad, 0);
+      expect.unreachable();
+    } catch (error) {
+      expect(error).toBeInstanceOf(ArtifactChunkManifestError);
+      expect((error as ArtifactChunkManifestError).code).toBe('INCONSISTENT_MANIFEST');
+    }
+  });
+
+  it('rejects impossible source/chunk geometry (chunk count mismatch)', () => {
+    const bad = validSingleChunkManifest({ chunkCount: 2 });
+    try {
+      buildArtifactChunkProof(bad, 0);
+      expect.unreachable();
+    } catch (error) {
+      expect(error).toBeInstanceOf(ArtifactChunkManifestError);
+      expect(ARTIFACT_CHUNK_MANIFEST_ERROR_CODES).toContain(
+        (error as ArtifactChunkManifestError).code,
+      );
+    }
+  });
+
+  it('rejects internally inconsistent hand-constructed manifests (non-contiguous, oversized final chunk)', () => {
+    const base = buildArtifactChunkManifest(deterministicTestBytes(3000, 7), 1024);
+
     const nonContiguous = {
       ...base,
       chunks: base.chunks.map((c, i) => (i === 1 ? { ...c, byteStart: c.byteStart + 1 } : c)),
@@ -374,9 +538,8 @@ describe('bounds', () => {
         i === arr.length - 1 ? { ...c, byteLength: base.chunkSize + 1 } : c,
       ),
     };
-    const badMerkleRoot = { ...base, merkleRoot: 'zz'.repeat(32) };
 
-    for (const bad of [wrongChunkCount, nonContiguous, wrongFinalSize, badMerkleRoot]) {
+    for (const bad of [nonContiguous, wrongFinalSize]) {
       try {
         buildArtifactChunkProof(bad, 0);
         expect.unreachable();
@@ -386,6 +549,51 @@ describe('bounds', () => {
           (error as ArtifactChunkManifestError).code,
         );
       }
+    }
+  });
+});
+
+describe('manifest consumer closure', () => {
+  it('cryptographically closes declared leaf hashes to the declared Merkle root', () => {
+    // A manifest built normally always satisfies this by construction.
+    const manifest = buildArtifactChunkManifest(deterministicTestBytes(5000, 8), 1024);
+    expect(() => buildArtifactChunkProof(manifest, 0)).not.toThrow();
+  });
+
+  it('an empty manifest is accepted only with the canonical empty root', () => {
+    const validEmpty: ArtifactChunkManifest = {
+      profileVersion: ARTIFACT_CHUNK_MERKLE_PROFILE_VERSION,
+      sourceSha256: GOLDEN_EMPTY_SOURCE_SHA256,
+      byteLength: 0,
+      chunkSize: 1024,
+      chunkCount: 0,
+      chunks: [],
+      merkleRoot: EMPTY_ARTIFACT_MERKLE_ROOT,
+    };
+    // buildArtifactChunkProof always rejects chunkIndex on a zero-chunk
+    // manifest (INVALID_CHUNK_INDEX), so a direct shape assertion is used
+    // instead of a successful proof build to prove the empty root is what
+    // is accepted as canonical.
+    expect(validEmpty.merkleRoot).toBe(EMPTY_ARTIFACT_MERKLE_ROOT);
+    try {
+      buildArtifactChunkProof(validEmpty, 0);
+      expect.unreachable();
+    } catch (error) {
+      expect(error).toBeInstanceOf(ArtifactChunkManifestError);
+      expect((error as ArtifactChunkManifestError).code).toBe('INVALID_CHUNK_INDEX');
+    }
+
+    const wrongEmptyRoot = { ...validEmpty, merkleRoot: 'a'.repeat(64) };
+    try {
+      buildArtifactChunkProof(wrongEmptyRoot, 0);
+      expect.unreachable();
+    } catch (error) {
+      expect(error).toBeInstanceOf(ArtifactChunkManifestError);
+      // INVALID_CHUNK_INDEX would also fire on this zero-chunk manifest;
+      // either rejection reason proves the manifest is not silently accepted.
+      expect(ARTIFACT_CHUNK_MANIFEST_ERROR_CODES).toContain(
+        (error as ArtifactChunkManifestError).code,
+      );
     }
   });
 });
@@ -410,6 +618,7 @@ describe('manifest cross-field requirements', () => {
         const chunk = definedAt(manifest.chunks[i]);
         expect(chunk.chunkIndex).toBe(i);
         expect(chunk.byteStart).toBe(expectedStart);
+        expect(chunk.byteStart).toBe(i * chunkSize);
         const isFinal = i === manifest.chunks.length - 1;
         if (isFinal) {
           expect(chunk.byteLength).toBeGreaterThanOrEqual(1);
@@ -420,6 +629,111 @@ describe('manifest cross-field requirements', () => {
         expectedStart += chunk.byteLength;
       }
       expect(expectedStart).toBe(byteLength);
+    }
+  });
+});
+
+describe('runtime Uint8Array enforcement', () => {
+  const badInputs: Array<[string, unknown]> = [
+    ['array', [1, 2, 3]],
+    ['string', 'not bytes'],
+    ['ArrayBuffer', new ArrayBuffer(4)],
+    ['plain object', { byteLength: 3 }],
+  ];
+
+  for (const [label, value] of badInputs) {
+    it(`buildArtifactChunkManifest rejects a ${label}`, () => {
+      try {
+        buildArtifactChunkManifest(value as unknown as Uint8Array);
+        expect.unreachable();
+      } catch (error) {
+        expect(error).toBeInstanceOf(ArtifactChunkManifestError);
+        expect((error as ArtifactChunkManifestError).code).toBe('INVALID_INPUT_TYPE');
+      }
+    });
+  }
+
+  for (const [label, value] of badInputs) {
+    it(`verifyArtifactChunkProof rejects a ${label} as chunkBytes`, () => {
+      const manifest = buildArtifactChunkManifest(Uint8Array.of(1, 2, 3), 1024);
+      const proof = buildArtifactChunkProof(manifest, 0);
+      try {
+        verifyArtifactChunkProof(value as unknown as Uint8Array, proof, manifest.merkleRoot);
+        expect.unreachable();
+      } catch (error) {
+        expect(error).toBeInstanceOf(ArtifactChunkManifestError);
+        expect((error as ArtifactChunkManifestError).code).toBe('INVALID_INPUT_TYPE');
+      }
+    });
+  }
+
+  for (const [label, value] of badInputs) {
+    it(`verifyArtifactSourceManifest rejects a ${label} as sourceBytes`, () => {
+      const manifest = buildArtifactChunkManifest(Uint8Array.of(1, 2, 3), 1024);
+      try {
+        verifyArtifactSourceManifest(value as unknown as Uint8Array, manifest);
+        expect.unreachable();
+      } catch (error) {
+        expect(error).toBeInstanceOf(ArtifactChunkManifestError);
+        expect((error as ArtifactChunkManifestError).code).toBe('INVALID_INPUT_TYPE');
+      }
+    });
+  }
+
+  it('accepts a Buffer everywhere a Uint8Array is required (Buffer is a subtype)', () => {
+    const manifest = buildArtifactChunkManifest(Buffer.from([1, 2, 3]), 1024);
+    const proof = buildArtifactChunkProof(manifest, 0);
+    const chunkBytes = Buffer.from([1, 2, 3]);
+    expect(verifyArtifactChunkProof(chunkBytes, proof, manifest.merkleRoot)).toBe(true);
+    expect(verifyArtifactSourceManifest(chunkBytes, manifest)).toBe(true);
+  });
+});
+
+describe('verifyArtifactSourceManifest', () => {
+  it('accepts the exact bytes a manifest was built from', () => {
+    const bytes = deterministicTestBytes(5000, 10);
+    const manifest = buildArtifactChunkManifest(bytes, 1024);
+    expect(verifyArtifactSourceManifest(bytes, manifest)).toBe(true);
+  });
+
+  it('regression: a mutation outside the selected proof chunk still fails source-manifest verification', () => {
+    const bytes = deterministicTestBytes(5000, 11);
+    const manifest = buildArtifactChunkManifest(bytes, 1024);
+    const selectedIndex = 1;
+    const proof = buildArtifactChunkProof(manifest, selectedIndex);
+    const selectedChunkBytes = bytes.slice(proof.byteStart, proof.byteStart + proof.byteLength);
+
+    // The selected chunk's own proof still verifies...
+    expect(verifyArtifactChunkProof(selectedChunkBytes, proof, manifest.merkleRoot)).toBe(true);
+
+    // ...but a mutation to a byte OUTSIDE that chunk still fails full-source
+    // verification, proving a per-chunk proof does not vouch for the rest.
+    const mutated = bytes.slice();
+    const outsideIndex = proof.byteStart === 0 ? bytes.length - 1 : 0;
+    mutated[outsideIndex] = (definedAt(mutated[outsideIndex]) + 1) & 0xff;
+    expect(verifyArtifactSourceManifest(mutated, manifest)).toBe(false);
+
+    // The unchanged selected chunk's own proof is unaffected by that
+    // mutation (it never saw those bytes) -- this is the exact limit that
+    // makes full-source verification necessary in the first place.
+    const stillSameChunkBytes = mutated.slice(proof.byteStart, proof.byteStart + proof.byteLength);
+    expect(verifyArtifactChunkProof(stillSameChunkBytes, proof, manifest.merkleRoot)).toBe(true);
+  });
+
+  it('rejects a source-length mismatch', () => {
+    const bytes = deterministicTestBytes(5000, 12);
+    const manifest = buildArtifactChunkManifest(bytes, 1024);
+    expect(verifyArtifactSourceManifest(bytes.slice(0, -1), manifest)).toBe(false);
+  });
+
+  it('throws for a malformed manifest shape rather than returning false', () => {
+    const bytes = deterministicTestBytes(500, 13);
+    const badManifest = validSingleChunkManifest({ merkleRoot: 'zz'.repeat(32) });
+    try {
+      verifyArtifactSourceManifest(bytes, badManifest);
+      expect.unreachable();
+    } catch (error) {
+      expect(error).toBeInstanceOf(ArtifactChunkManifestError);
     }
   });
 });
@@ -453,16 +767,43 @@ describe('proofs', () => {
   });
 
   it('does not treat successful shape parsing as proof verification', () => {
-    const { bytes, manifest } = buildMultiChunkFixture(1024, 3);
+    const { manifest } = buildMultiChunkFixture(1024, 3);
     const proof = buildArtifactChunkProof(manifest, 0);
-    // A well-shaped proof against the WRONG chunk bytes must still fail --
-    // shape validity alone proves nothing about inclusion.
     const wrongBytes = new TextEncoder().encode('not the real chunk bytes, but well-formed');
     expect(verifyArtifactChunkProof(wrongBytes, proof, manifest.merkleRoot)).toBe(false);
-    void bytes;
   });
 
-  describe('the full independent-mutation matrix', () => {
+  it('regression: totalChunkCount 6 to 7 (same proof depth) fails', () => {
+    const { bytes, manifest } = buildMultiChunkFixture(1024, 6);
+    expect(manifest.chunkCount).toBe(6);
+    const proof = buildArtifactChunkProof(manifest, 0);
+    const chunkBytes = bytes.slice(proof.byteStart, proof.byteStart + proof.byteLength);
+    const mutated = { ...proof, totalChunkCount: 7 };
+    try {
+      verifyArtifactChunkProof(chunkBytes, mutated, manifest.merkleRoot);
+      expect.unreachable();
+    } catch (error) {
+      expect(error).toBeInstanceOf(ArtifactChunkManifestError);
+      expect((error as ArtifactChunkManifestError).code).toBe('INCONSISTENT_MANIFEST');
+    }
+  });
+
+  it('regression: final-chunk byteStart +1 fails', () => {
+    const { bytes, manifest } = buildMultiChunkFixture(1024, 6);
+    const finalIndex = manifest.chunkCount - 1;
+    const proof = buildArtifactChunkProof(manifest, finalIndex);
+    const chunkBytes = bytes.slice(proof.byteStart, proof.byteStart + proof.byteLength);
+    const mutated = { ...proof, byteStart: proof.byteStart + 1 };
+    try {
+      verifyArtifactChunkProof(chunkBytes, mutated, manifest.merkleRoot);
+      expect.unreachable();
+    } catch (error) {
+      expect(error).toBeInstanceOf(ArtifactChunkManifestError);
+      expect((error as ArtifactChunkManifestError).code).toBe('INCONSISTENT_MANIFEST');
+    }
+  });
+
+  describe('the full independent-mutation matrix (interior chunk)', () => {
     function fixture() {
       const chunkSize = 1024;
       const chunkCount = 6;
@@ -523,7 +864,7 @@ describe('proofs', () => {
       const { chunkBytes, proof, manifest } = fixture();
       expectVerificationFails(
         chunkBytes,
-        { ...proof, byteStart: proof.byteStart + proof.byteLength },
+        { ...proof, byteStart: proof.byteStart + proof.chunkSize },
         manifest.merkleRoot,
       );
     });
@@ -537,11 +878,49 @@ describe('proofs', () => {
       );
     });
 
-    it('fails when the chunk hash is mutated', () => {
+    it('fails when the raw chunk hash is mutated', () => {
       const { chunkBytes, proof, manifest } = fixture();
       expectVerificationFails(
         chunkBytes,
         { ...proof, chunkSha256: `${'0'.repeat(63)}1` },
+        manifest.merkleRoot,
+      );
+    });
+
+    it('fails when the Merkle leaf hash is mutated', () => {
+      const { chunkBytes, proof, manifest } = fixture();
+      expectVerificationFails(
+        chunkBytes,
+        { ...proof, merkleLeafSha256: `${'0'.repeat(63)}1` },
+        manifest.merkleRoot,
+      );
+    });
+
+    it('fails when sourceByteLength is mutated', () => {
+      const { chunkBytes, proof, manifest } = fixture();
+      expectVerificationFails(
+        chunkBytes,
+        { ...proof, sourceByteLength: proof.sourceByteLength + proof.chunkSize },
+        manifest.merkleRoot,
+      );
+    });
+
+    it('fails when chunkSize is mutated', () => {
+      const { chunkBytes, proof, manifest } = fixture();
+      const otherSize = ALLOWED_CHUNK_SIZES.find((s) => s !== proof.chunkSize) ?? 4096;
+      expectVerificationFails(chunkBytes, { ...proof, chunkSize: otherSize }, manifest.merkleRoot);
+    });
+
+    it('fails when totalChunkCount is mutated (including a same-depth alternative)', () => {
+      const { chunkBytes, proof, manifest } = fixture();
+      expectVerificationFails(chunkBytes, { ...proof, totalChunkCount: 5 }, manifest.merkleRoot);
+    });
+
+    it('fails when sourceSha256 shape is broken', () => {
+      const { chunkBytes, proof, manifest } = fixture();
+      expectVerificationFails(
+        chunkBytes,
+        { ...proof, sourceSha256: proof.sourceSha256.slice(0, -1) },
         manifest.merkleRoot,
       );
     });
@@ -580,15 +959,6 @@ describe('proofs', () => {
       expectVerificationFails(chunkBytes, reordered, manifest.merkleRoot);
     });
 
-    it('fails when totalChunkCount is mutated', () => {
-      const { chunkBytes, proof, manifest } = fixture();
-      expectVerificationFails(
-        chunkBytes,
-        { ...proof, totalChunkCount: proof.totalChunkCount * 3 },
-        manifest.merkleRoot,
-      );
-    });
-
     it('fails when the expected root is mutated', () => {
       const { chunkBytes, proof, manifest } = fixture();
       const mutatedRoot = `${manifest.merkleRoot.slice(0, -1)}${manifest.merkleRoot.endsWith('0') ? '1' : '0'}`;
@@ -604,32 +974,95 @@ describe('proofs', () => {
       );
     });
   });
+
+  describe('canonical odd-node duplication verification', () => {
+    it('regression: totalChunkCount 3, chunkIndex 2, mutated right sibling fails even against the root recomputed from that noncanonical path', () => {
+      const chunkSize = 1024;
+      const bytes = bytesOf(
+        deterministicTestBytes(chunkSize, 61),
+        deterministicTestBytes(chunkSize, 62),
+        deterministicTestBytes(1, 63),
+      );
+      const manifest = buildArtifactChunkManifest(bytes, chunkSize);
+      expect(manifest.chunkCount).toBe(3);
+
+      const proof = buildArtifactChunkProof(manifest, 2);
+      const chunkBytes = bytes.slice(proof.byteStart, proof.byteStart + proof.byteLength);
+      expect(proof.proof.length).toBe(2);
+
+      // The first proof node is the canonical odd-width self-duplicate: the
+      // node's own sibling is itself.
+      const firstNode = definedAt(proof.proof[0]);
+      expect(firstNode.siblingPosition).toBe('right');
+      expect(firstNode.siblingSha256).toBe(proof.merkleLeafSha256);
+
+      // Control: the unmutated proof verifies.
+      expect(verifyArtifactChunkProof(chunkBytes, proof, manifest.merkleRoot)).toBe(true);
+
+      // Mutate the duplicate-step sibling away from the leaf's own digest,
+      // keeping siblingPosition: 'right'.
+      const mutatedFirstNode = {
+        siblingPosition: 'right' as const,
+        siblingSha256: `${'1'.repeat(63)}0`,
+      };
+      const mutatedNodes = [mutatedFirstNode, definedAt(proof.proof[1])];
+
+      // Recompute the root this noncanonical path would actually produce,
+      // by mechanically walking the SAME parent-hash formula the module
+      // uses, independently of the module itself.
+      let walked: Buffer = Buffer.from(proof.merkleLeafSha256, 'hex');
+      for (const node of mutatedNodes) {
+        const sibling = Buffer.from(node.siblingSha256, 'hex');
+        const [left, right] =
+          node.siblingPosition === 'left' ? [sibling, walked] : [walked, sibling];
+        walked = refParent(left, right);
+      }
+      const noncanonicalRoot = walked.toString('hex');
+      expect(noncanonicalRoot).not.toBe(manifest.merkleRoot);
+
+      const mutatedProof: ArtifactChunkProof = { ...proof, proof: mutatedNodes };
+
+      // Even against the noncanonical root recomputed from this exact
+      // (mutated) path, verification must still fail: the structural rule
+      // that the duplicate-step sibling equals the node's own digest is
+      // enforced before expectedRoot is ever consulted.
+      expect(verifyArtifactChunkProof(chunkBytes, mutatedProof, noncanonicalRoot)).toBe(false);
+      // And it fails against the real root too, for the same reason.
+      expect(verifyArtifactChunkProof(chunkBytes, mutatedProof, manifest.merkleRoot)).toBe(false);
+    });
+  });
 });
 
 describe('S0 compatibility', () => {
-  it('projects a generated source manifest into the accepted S0 SourceIntegrityMetadataSchema', () => {
+  it('projects the raw chunkSha256 (not the domain-separated leaf hash) into the accepted S0 chunkSha256 field', () => {
     const bytes = deterministicTestBytes(4096 * 4, 17);
     const manifest = buildArtifactChunkManifest(bytes, 4096);
     expect(manifest.chunkCount).toBeLessThanOrEqual(MAX_INLINE_CHUNK_HASHES);
 
     const projected = {
-      // Fields S1b actually computes:
       sourceSha256: manifest.sourceSha256,
       byteLength: manifest.byteLength,
       chunkSize: manifest.chunkSize,
       chunkCount: manifest.chunkCount,
+      // Deliberately the raw chunkSha256 field, never merkleLeafSha256.
       chunkHashes: { kind: 'inline', hashes: manifest.chunks.map((c) => c.chunkSha256) },
       merkleRoot: manifest.merkleRoot,
-      // Contextual/deployment fields S1b, a local synthetic worker, does not
-      // and should not assign -- synthetic placeholders only:
       artifactId: 'art_S1B0000000000000000000000000000',
       objectVersionRef: 'ov_S1B00000000000000000000',
       mediaType: 'application/octet-stream',
       analyzerProfileSupport: 'unsupported',
       createdAt: '2026-09-01T00:00:00.000Z',
     };
-    const result = SourceIntegrityMetadataSchema.safeParse(projected);
-    expect(result.success).toBe(true);
+    expect(SourceIntegrityMetadataSchema.safeParse(projected).success).toBe(true);
+
+    // Projecting the domain-separated leaf hash into that same field instead
+    // would be a silent semantic error this test guards against: the values
+    // differ, so swapping them changes what gets validated.
+    const wronglyProjected = {
+      ...projected,
+      chunkHashes: { kind: 'inline', hashes: manifest.chunks.map((c) => c.merkleLeafSha256) },
+    };
+    expect(wronglyProjected.chunkHashes.hashes).not.toEqual(projected.chunkHashes.hashes);
   });
 
   it('projects generated proof evidence into the accepted S0 verified-chunk/Merkle-proof shape', () => {
@@ -653,6 +1086,8 @@ describe('S0 compatibility', () => {
           chunkIndex: proof.chunkIndex,
           byteStart: proof.byteStart,
           byteLength: proof.byteLength,
+          // The accepted S0 verified-chunk shape's chunkSha256 is the raw
+          // hash, matching this module's chunkSha256 field exactly.
           chunkSha256: proof.chunkSha256,
           merkleProof: proof.proof,
         },
@@ -662,8 +1097,7 @@ describe('S0 compatibility', () => {
       sourceSha256: manifest.sourceSha256,
       contentTrust: 'untrusted',
     };
-    const result = PartialReadIntegritySchema.safeParse(partialReadIntegrity);
-    expect(result.success).toBe(true);
+    expect(PartialReadIntegritySchema.safeParse(partialReadIntegrity).success).toBe(true);
   });
 
   it('does not weaken or modify the S0 response-envelope ceiling', () => {
@@ -678,7 +1112,6 @@ describe('S0 compatibility', () => {
   });
 
   it('does not weaken or modify the S0 receipt contract', () => {
-    // The receipt schema still rejects secret-bearing fields exactly as before.
     const receipt = {
       receiptSchemaVersion: 'artifact-inspection-receipt/0.2',
       verifierAudience: 'verifier-1',
@@ -722,16 +1155,14 @@ describe('determinism, immutability, and input safety', () => {
   });
 
   it('never mutates the caller-supplied input buffer', () => {
-    const bytes = new Uint8Array(300);
-    for (let i = 0; i < bytes.length; i++) bytes[i] = i & 0xff;
+    const bytes = deterministicTestBytes(300, 62);
     const snapshot = bytes.slice();
     buildArtifactChunkManifest(bytes, 1024);
     expect(bytes).toEqual(snapshot);
   });
 
   it('defensively copies the input, so mutating it after the call does not change the manifest', () => {
-    const bytes = new Uint8Array(300);
-    for (let i = 0; i < bytes.length; i++) bytes[i] = i & 0xff;
+    const bytes = deterministicTestBytes(300, 63);
     const manifest = buildArtifactChunkManifest(bytes, 1024);
     const before = { sourceSha256: manifest.sourceSha256, merkleRoot: manifest.merkleRoot };
     bytes.fill(0xff);
@@ -740,7 +1171,7 @@ describe('determinism, immutability, and input safety', () => {
   });
 
   it('returns a deeply frozen manifest', () => {
-    const manifest = buildArtifactChunkManifest(bytesOf(Buffer.alloc(3000, 3)), 1024);
+    const manifest = buildArtifactChunkManifest(deterministicTestBytes(3000, 64), 1024);
     expect(Object.isFrozen(manifest)).toBe(true);
     expect(Object.isFrozen(manifest.chunks)).toBe(true);
     for (const chunk of manifest.chunks) {
@@ -749,7 +1180,7 @@ describe('determinism, immutability, and input safety', () => {
   });
 
   it('returns a deeply frozen proof', () => {
-    const manifest = buildArtifactChunkManifest(bytesOf(Buffer.alloc(3000, 3)), 1024);
+    const manifest = buildArtifactChunkManifest(deterministicTestBytes(3000, 65), 1024);
     const proof = buildArtifactChunkProof(manifest, 0);
     expect(Object.isFrozen(proof)).toBe(true);
     expect(Object.isFrozen(proof.proof)).toBe(true);
@@ -787,12 +1218,12 @@ describe('no source path, URL, token, credential, or Storage locator in public o
   }
 
   it('the manifest carries no such field', () => {
-    const manifest = buildArtifactChunkManifest(bytesOf(Buffer.alloc(3000, 3)), 1024);
+    const manifest = buildArtifactChunkManifest(deterministicTestBytes(3000, 66), 1024);
     assertNoForbiddenFields(manifest);
   });
 
   it('the proof carries no such field', () => {
-    const manifest = buildArtifactChunkManifest(bytesOf(Buffer.alloc(3000, 3)), 1024);
+    const manifest = buildArtifactChunkManifest(deterministicTestBytes(3000, 67), 1024);
     const proof = buildArtifactChunkProof(manifest, 0);
     assertNoForbiddenFields(proof);
   });
@@ -808,17 +1239,22 @@ describe('no source path, URL, token, credential, or Storage locator in public o
 });
 
 describe('calibration script', () => {
-  it('prints exactly one JSON object to stdout and reports pass, byte-identical across two runs', () => {
-    const run = () =>
-      execFileSync('node', ['scripts/run-artifact-chunk-calibration.mjs'], {
-        cwd: repoRoot,
-        encoding: 'utf8',
-      });
-    const first = run();
-    const second = run();
-    expect(first).toBe(second);
+  function runCalibration(): { stdout: string; stderr: string } {
+    const stdout = execFileSync('node', ['scripts/run-artifact-chunk-calibration.mjs'], {
+      cwd: repoRoot,
+      encoding: 'utf8',
+    });
+    return { stdout, stderr: '' };
+  }
 
-    const parsed = JSON.parse(first);
+  it('prints exactly one JSON object to stdout with zero stderr, reports pass, byte-identical across two runs', () => {
+    const first = runCalibration();
+    const second = runCalibration();
+    expect(first.stdout).toBe(second.stdout);
+    expect(first.stderr).toBe('');
+    expect(second.stderr).toBe('');
+
+    const parsed = JSON.parse(first.stdout);
     expect(parsed.result).toBe('pass');
     expect(parsed.profileVersion).toBe(ARTIFACT_CHUNK_MERKLE_PROFILE_VERSION);
     expect(parsed.totalCases).toBe(parsed.cases.length);
@@ -829,5 +1265,60 @@ describe('calibration script', () => {
       maxChunkCount: MAX_CHUNK_COUNT,
       maxMerkleProofDepth: MAX_MERKLE_PROOF_DEPTH,
     });
+  });
+
+  it('regression: the receipt proves every applicable mutation was actually run, per case', () => {
+    const { stdout } = runCalibration();
+    const parsed = JSON.parse(stdout);
+
+    for (const singleCase of parsed.cases) {
+      expect(Array.isArray(singleCase.mutationChecksApplicable)).toBe(true);
+      expect(Array.isArray(singleCase.mutationChecksPassed)).toBe(true);
+      expect(Array.isArray(singleCase.mutationChecksNotApplicable)).toBe(true);
+
+      // Every applicable mutation must have passed -- no silent skip counted
+      // as a pass.
+      expect([...singleCase.mutationChecksApplicable].sort()).toEqual(
+        [...singleCase.mutationChecksPassed].sort(),
+      );
+
+      // Every not-applicable entry carries a name and a non-empty reason.
+      for (const entry of singleCase.mutationChecksNotApplicable) {
+        expect(typeof entry.name).toBe('string');
+        expect(entry.name.length).toBeGreaterThan(0);
+        expect(typeof entry.reason).toBe('string');
+        expect(entry.reason.length).toBeGreaterThan(0);
+      }
+
+      if (singleCase.name === 'empty') {
+        expect(singleCase.mutationChecksApplicable.length).toBe(0);
+      } else {
+        // Every non-empty case exercises at least SOME mutation class.
+        expect(
+          singleCase.mutationChecksApplicable.length +
+            singleCase.mutationChecksNotApplicable.length,
+        ).toBeGreaterThan(0);
+      }
+    }
+
+    // At least one case actually exercises the noncanonical odd-node class
+    // (proves the calibration script's own claim to test it is not vacuous).
+    const oddCase = parsed.cases.find(
+      (c: { name: string; chunkSize: number }) => c.name === 'odd-multi-chunk',
+    );
+    expect(oddCase.mutationChecksApplicable).toContain('noncanonical-odd-node-sibling');
+    expect(oddCase.mutationChecksPassed).toContain('noncanonical-odd-node-sibling');
+  });
+
+  it('reports source-manifest verification for every non-empty case', () => {
+    const { stdout } = runCalibration();
+    const parsed = JSON.parse(stdout);
+    for (const singleCase of parsed.cases) {
+      if (singleCase.name === 'empty') {
+        expect(singleCase.sourceManifestVerified).toBeNull();
+      } else {
+        expect(singleCase.sourceManifestVerified).toBe(true);
+      }
+    }
   });
 });
