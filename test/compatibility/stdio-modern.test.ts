@@ -5,7 +5,9 @@ import { StdioClientTransport } from '@modelcontextprotocol/client/stdio';
 import { COMPATIBILITY_PROBE_TOOL_NAME } from '@supabase-user-mcp/contracts';
 import { describe, expect, it } from 'vitest';
 
-const serverEntry = fileURLToPath(new URL('../../packages/server/dist/cli.js', import.meta.url));
+const serverEntry = fileURLToPath(
+  new URL('../../packages/server/dist/compatibility-cli.js', import.meta.url),
+);
 
 describe('MCP 2026-07-28 stdio compatibility', () => {
   it('negotiates the modern era and validates structured tool input and output', async () => {

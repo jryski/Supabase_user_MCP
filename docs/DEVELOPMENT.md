@@ -1,7 +1,7 @@
 # Development Guide
 
-**Status:** Implemented for the M0 TypeScript/MCP compatibility surface; Supabase data
-integration remains planned.
+**Status:** Implemented through the merged synthetic M2 principal-bound read path; executable
+local-stdio operator packaging remains experimental.
 
 ## Engineering posture
 
@@ -21,13 +21,15 @@ fixtures must be synthetic.
 | TypeScript | `7.0.2` | Strict compiler and project references |
 | MCP server SDK | `@modelcontextprotocol/server@2.0.0` | Modern stdio server |
 | MCP client SDK | `@modelcontextprotocol/client@2.0.0` | Compatibility harness |
+| Supabase Auth client | `@supabase/auth-js@2.112.4` | Synthetic M2 sign-in only |
+| Supabase CLI | `2.115.0` | Synthetic local Auth/PostgREST/RLS lifecycle |
 | Zod | `4.4.3` | Runtime input/output contracts |
 | Vitest | `4.1.10` | Unit and stdio compatibility tests |
 | Biome | `2.5.8` | Formatting and linting |
 
-The root workspace and runtime dependencies use exact versions; `package-lock.json` is
-committed. The Supabase JavaScript client and Supabase CLI remain intentionally absent
-until the M1 policy laboratory selects and tests their exact versions.
+The root workspace and runtime dependencies use exact versions; `package-lock.json` is committed.
+Official Auth is test/operator-only and is not a production runtime replacement for the fixed
+identity verifier.
 
 ## Local workflow
 
@@ -39,10 +41,14 @@ npm run check
 npm run build
 ```
 
-Individual checks are available as `npm run format:check`, `npm run lint`,
-`npm run typecheck`, `npm run test`, and `npm run test:compatibility`. `npm start` runs
-the built, modern-only MCP stdio probe. The process communicates over stdin/stdout; human
-diagnostics go to stderr so they cannot corrupt JSON-RPC messages.
+Individual checks are available as `npm run format:check`, `npm run lint`, `npm run typecheck`,
+`npm run test`, and `npm run test:compatibility`. `npm start` runs the built verified read-only
+stdio server. `npm run start:compatibility` runs the M0 no-data probe. Both communicate over
+stdin/stdout; human diagnostics go to stderr so they cannot corrupt JSON-RPC messages.
+
+The read-only server accepts no command arguments. It requires
+`SUPABASE_USER_MCP_ORIGIN` and `SUPABASE_USER_MCP_CREDENTIAL_FILE`. See the
+[experimental operator guide](evidence/ISSUE_18_OPERATOR_RELEASE.md).
 
 ## Repository layout
 
@@ -68,9 +74,9 @@ diagnostics go to stderr so they cannot corrupt JSON-RPC messages.
 └── README.md
 ```
 
-Only directories required by completed or active milestones are created. The M0 scaffold
-currently implements `packages/contracts`, `packages/server`, and the compatibility tests;
-database and policy-testkit directories arrive with M1.
+Only directories required by completed or active milestones are created. M0 through the synthetic
+M2 read path are represented in the current repository; later write, remote, and fleet profiles are
+not implemented.
 
 ## Configuration principles
 
@@ -87,8 +93,8 @@ database and policy-testkit directories arrive with M1.
 
 ## Database workflow
 
-The exact CLI commands will be added after a Supabase CLI version is pinned and discovered
-through its `--help` output.
+The pinned synthetic lifecycle is available through `npm run test:m2`; focused policy checks are
+available through the `policy-lab:*` scripts.
 
 Required workflow properties:
 
@@ -159,12 +165,10 @@ A change is done when:
 
 ## Continuous integration
 
-The repository currently checks formatting, linting, strict compilation, unit contracts,
-and the MCP stdio compatibility path from a clean checkout. Documentation has separate
-Markdown and link checks. Later milestones add:
+The repository currently checks formatting, linting, strict compilation, unit contracts, the MCP
+stdio compatibility path, and synthetic M2 Auth/PostgREST/RLS acceptance from a clean checkout.
+Documentation has separate Markdown and link checks. Later milestones add:
 
-- local Supabase policy tests;
-- integration and adversarial suites;
 - dependency and secret scanning;
 - action and dependency pin checks; and
 - build and package provenance.

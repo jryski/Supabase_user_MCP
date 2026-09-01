@@ -24,12 +24,13 @@ Draft candidates are listed separately and must not be described as merged or ac
 | Read governors, get, and recent-list factories | [Issue #16 evidence](ISSUE_16_READ_GOVERNOR.md) | `packages/server/src/read-tool-governor.test.ts`, `read-tool-governor.integration.test.ts`, `memory-get.test.ts`, and `memory-list-recent.test.ts` | `963b342c789a183331a31c7a144cd7cfeaecd25b` |
 | Storage/RLS artifact laboratory | [S1 lab evidence](S1-lab.md) | `supabase/tests/run-s1-lab.sh` | `38013ae428c37b4140bfdb6b3cd174e72f0732c0` |
 | Verified principal-bound read path | [Issue #17 evidence](ISSUE_17_PRINCIPAL_READ_PATH.md) | `packages/server/src/m2-local-e2e.test.ts` and `supabase/tests/run-m2-memory-lab.sh` | `dd5ba98a00a3b37003554a14200f789fcb233cac` |
+| Official Supabase upstream alignment | [Issue #44 evidence](ISSUE_44_UPSTREAM_ALIGNMENT.md) | Official Auth synthetic sign-in and authenticated PostgREST OpenAPI census | `7f2a3fa955a811f97ed4f88e4cfa50ad7e3aa4d4` |
 
 ## Unmerged candidate evidence
 
 | Candidate | Coordinate/evidence source | What it may support | Open limits |
 | --- | --- | --- | --- |
-| [Issue #44](ISSUE_44_UPSTREAM_ALIGNMENT.md) official-upstream alignment | Candidate branch must be frozen after real M2 CI | Official Auth synthetic sign-in, authenticated non-model-facing PostgREST OpenAPI census, and explicit generic-tool denial | Unmerged; unit/type/shell gates are local evidence until clean exact-head M2 passes |
+| [Issue #18](ISSUE_18_OPERATOR_RELEASE.md) executable local stdio/operator package | Candidate branch must be frozen after full CI and clean-room reproduction | Environment-only read-only startup, separate M0 probe, synthetic client example, revoke/rollback guide, and release checklist | Unmerged; POSIX-only credential-permission profile and non-production claim limits |
 
 Green CI on a draft coordinate proves only that the named workflow passed for that source.
 It does not merge the code, satisfy independent review, authorize deployment, or establish

@@ -38,7 +38,6 @@ export {
   createReadOnlyServer,
   type ReadOnlyServer,
   type ReadOnlyServerOptions,
-  createServer,
   SERVER_NAME,
   SERVER_VERSION,
   TARGET_PROTOCOL_VERSION,

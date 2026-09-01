@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "supabase-user-mcp": {
+      "command": "node",
+      "args": ["/absolute/path/to/Supabase_user_MCP/packages/server/dist/cli.js"],
+      "env": {
+        "SUPABASE_USER_MCP_ORIGIN": "https://example.invalid",
+        "SUPABASE_USER_MCP_CREDENTIAL_FILE": "/replace/with/absolute/path/to/protected-credentials.json"
+      }
+    }
+  }
+}
