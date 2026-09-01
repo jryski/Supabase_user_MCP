@@ -51,7 +51,7 @@ eight-row response returns a bounded `RESPONSE_LIMIT_EXCEEDED` result instead of
 success frame. A registered transport guard closes any oversized inbound or outbound JSON-RPC
 frame before dispatch/send, so extreme request IDs cannot amplify a denial beyond the same ceiling.
 Serialized request IDs have a separate inclusive 1,024-byte ceiling.
-This remains candidate evidence until exact-head CI/review and merge.
+This frame-budget behavior is merged and covered by exact-head M2 acceptance.
 `memory_search` accepts at most 512 query characters, five allowlisted filters (tag and
 creation-time filters combined), and 20 rows. When both creation bounds are present,
 `createdAfter` must be earlier than or equal to `createdBefore`. `memory_list_recent` accepts
@@ -66,8 +66,8 @@ read behavior, no approval requirement, and `read_access` audit classification. 
 unavailable records, response overflow, timeout, and unexpected failures map respectively
 to `INVALID_REQUEST`, `RESOURCE_UNAVAILABLE`, `RESPONSE_LIMIT_EXCEEDED`,
 `DEADLINE_EXCEEDED`, and `INTERNAL_ERROR`; reaching 2,000 ms is the timeout condition. These
-describe merged contracts and application factories on `main`. Strict MCP registration and
-the synthetic Data API/RLS path remain unmerged candidates in draft PRs #38 and #40.
+describe merged contracts, strict MCP registration, and the synthetic Data API/RLS path on `main`.
+The executable environment-only stdio/operator package remains the issue #18 candidate.
 
 The only serialized record fields are `id`, `title`, `content`, `contentTrust`, `createdAt`,
 and `provenanceSummary`; search results additionally include `rank`. Stored `content` is

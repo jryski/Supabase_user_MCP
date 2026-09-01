@@ -64,20 +64,13 @@ M2
 
 ### Current execution order
 
-As of 2026-08-30, the contract, policy-lab, credential/client, read-factory, and
-process-local governor foundations are merged. Strict registration and the full synthetic
-client-to-RLS path remain draft candidates. Work should proceed in this order:
+As of 2026-09-01, issues #11 and #17 are closed after the principal-bound path merged through PR #38,
+and issue #44's official-upstream alignment merged through PR #45. The remaining M2 order is:
 
-1. Finish issue #11's remaining tracker/acceptance semantics without reimplementing its merged
-   policy-lab foundation.
-2. Repair the two public PR #38 base findings: verified principal/client governor context and the
-   complete outbound-frame byte budget.
-3. Rerun issue #17's exact-head client-to-RLS acceptance and independent review on the repaired
-   stacked coordinate.
-4. Complete issue #18's synthetic client, operator guide, rollback procedure, and experimental
-   release checklist only after #17 is accepted.
-5. Reconcile issue labels and draft PR disposition without treating green draft CI as merged or
-   accepted behavior.
+1. Complete issue #18's executable environment-only stdio entrypoint, synthetic client example,
+   operator guide, revoke/rollback procedure, and experimental release checklist.
+2. Run exact-head Build/M2/Markdown/Links plus independent review and clean-room reproduction.
+3. Reconcile epic #19 and release only with local-stdio/read-only/synthetic-only claim limits.
 
 Use the upstream Auth plus `StreamTransport` test topology selected by
 [ADR-0004](decisions/0004-narrow-upstream-mcp-reuse.md). Do not import the generic PostgREST MCP
@@ -92,7 +85,7 @@ runtime or its caller-selected request tools.
 | [#9](https://github.com/jryski/Supabase_user_MCP/issues/9) | Authorization vocabulary and access matrix | `0b48b72127e3ac222195eab32f197a7665ba10f6` |
 | [#10](https://github.com/jryski/Supabase_user_MCP/issues/10) | Bounded read-tool contracts | `7c930af9ca4c991eabcf0f111dafe3f7dc0fc444` |
 | [#25](https://github.com/jryski/Supabase_user_MCP/issues/25) | Pinned upstream StreamTransport seam | `63269c64bb1d259faf93e7c3e63e3e210e705afc` |
-| [#11](https://github.com/jryski/Supabase_user_MCP/issues/11) | Core local policy-lab implementation; tracker remains open | `83a72f52cf387c10589ea580e5c4738bf3ce497b` |
+| [#11](https://github.com/jryski/Supabase_user_MCP/issues/11) | Core local policy-lab implementation; acceptance tracker closed after merged M2 | `83a72f52cf387c10589ea580e5c4738bf3ce497b` |
 | [#3](https://github.com/jryski/Supabase_user_MCP/issues/3) | RLS catalog lint | `7ed3cfb955456dc29bf5ba34ca0d18cea4ca2e89` |
 | [#4](https://github.com/jryski/Supabase_user_MCP/issues/4) | SECURITY DEFINER pre-grant evidence contract | `80fcfe32c7378cca2ff81f85d990a89fcad2d1f8` |
 | [#12](https://github.com/jryski/Supabase_user_MCP/issues/12) | Revocation and append-only audit boundary proof | `f7374c7477252f8443b65499188cac01026aadfb` |
@@ -100,21 +93,20 @@ runtime or its caller-selected request tools.
 | [#14](https://github.com/jryski/Supabase_user_MCP/issues/14) | Bounded memory-search application seam | `3b7121fb0a3cc0b19db6463c17264a00fab706e6` |
 | [#15](https://github.com/jryski/Supabase_user_MCP/issues/15) | Governed memory get and recent-list factories | `963b342c789a183331a31c7a144cd7cfeaecd25b` |
 | [#16](https://github.com/jryski/Supabase_user_MCP/issues/16) | Process-local governors, errors, and operational events | `963b342c789a183331a31c7a144cd7cfeaecd25b` |
+| [#17](https://github.com/jryski/Supabase_user_MCP/issues/17) | Verified principal-bound MCP/Data API/RLS acceptance | `dd5ba98a00a3b37003554a14200f789fcb233cac` |
+| [#44](https://github.com/jryski/Supabase_user_MCP/issues/44) | Official Auth test reuse and authenticated OpenAPI census | `7f2a3fa955a811f97ed4f88e4cfa50ad7e3aa4d4` |
 
 ### Active and blocked work
 
 | Issue/PR | Current state | Next gate |
 | --- | --- | --- |
-| [#11](https://github.com/jryski/Supabase_user_MCP/issues/11) | Open after core policy-lab merge | Reconcile remaining acceptance/tracker scope |
-| [PR #38](https://github.com/jryski/Supabase_user_MCP/pull/38) | Consolidated unmerged candidate absorbs #40 and locally repairs K1/K2 | Run exact-head M2 CI and independent review; Jesse-only public merge |
-| [#17](https://github.com/jryski/Supabase_user_MCP/issues/17) / [PR #40](https://github.com/jryski/Supabase_user_MCP/pull/40) | D1/D2 preserved in consolidated #38 candidate | Close #40 as absorbed only after the consolidated candidate lands |
-| [#18](https://github.com/jryski/Supabase_user_MCP/issues/18) | Blocked on #17 | Operator/release documentation after acceptance |
+| [#18](https://github.com/jryski/Supabase_user_MCP/issues/18) | In progress on merged principal/upstream foundation | Exact-head CI, independent review, and clean-room operator reproduction |
 
 ## Parallel work lanes
 
-The remaining critical path is narrow. Avoid reopening merged work packages or starting
-remote/write surfaces around #11, #17, or #18. Small independent documentation, denial-test,
-and evidence-index fixes may proceed when they do not change the active authority boundary.
+The remaining critical path is issue #18 only. Avoid reopening merged work packages or starting
+remote/write surfaces around it. Small independent documentation, denial-test, and evidence-index
+fixes may proceed when they do not change the active authority boundary.
 
 ## Contributor workflow
 
@@ -145,9 +137,9 @@ npm ci
 npm run check
 ```
 
-At reconciled main `f691b1a…`, `npm run check` passes 18 test files and 168 tests after exact
-lockfile installation. That merged suite does not include draft PR #38/#40 behavior or prove
-the open issue #17 acceptance boundary.
+At reconciled main `7f2a3fa…`, `npm run check` passes 22 test files and 194 tests with four
+intentional non-harness skips after exact lockfile installation. Exact M2 CI separately proves the
+synthetic Auth/PostgREST/RLS boundary at that coordinate.
 
 ## Pull-request acceptance
 

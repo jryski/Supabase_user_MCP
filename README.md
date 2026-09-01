@@ -103,10 +103,12 @@ oversized inbound or outbound frames before dispatch/send, including denial path
 request IDs. Serialized request IDs are separately capped at 1,024 bytes so bounded errors can echo
 them safely. Exact-head and post-merge Build/M2/Markdown/Links workflows passed.
 
-The experimental local pilot is still not closed. The production CLI remains the compatibility probe,
-and issue #18 still owns executable stdio startup, operator guidance, revoke/rollback, and clean-room
-reproduction. Issue #44 is the unmerged candidate for official Auth test reuse and a non-model-facing
-authenticated PostgREST OpenAPI surface census. The original K1/K2 acceptance criteria remain in the
+The experimental local pilot is still not closed. Issue #44's official Auth test reuse and
+non-model-facing authenticated PostgREST OpenAPI census merged at
+`7f2a3fa955a811f97ed4f88e4cfa50ad7e3aa4d4`. The current issue #18 candidate changes `npm start`
+from the compatibility probe to environment-only verified read-only stdio startup and adds operator,
+revoke, rollback, and release guidance. It remains unmerged until exact-head CI, review, and
+clean-room reproduction pass. The original K1/K2 acceptance criteria remain in the
 [public PR #38 finding record](https://github.com/jryski/Supabase_user_MCP/pull/38#issuecomment-5472417281).
 
 The intended local path is:
@@ -165,8 +167,8 @@ This is proposed work. Hosted adoption remains gated by a verified non-service u
 | Milestone | Outcome | Current interpretation |
 | --- | --- | --- |
 | M0 | Protocol/policy/repository foundation | Foundation landed |
-| M1 | Local Auth/RLS policy laboratory | Core policy-lab evidence landed; issue #11 remains open for true MCP/PostgREST acceptance semantics |
-| M2 | Read-only stdio reference server | **Active critical path** — consolidated draft repair is locally green; exact-head M2 CI/review and merge remain open |
+| M1 | Local Auth/RLS policy laboratory | Complete for the synthetic reference profile |
+| M2 | Read-only stdio reference server | **Active critical path** — merged principal/RLS path; executable operator candidate remains unmerged |
 | M3 | Idempotent writes and canonical approval | Future |
 | M4 | Remote HTTP/OAuth profile | Future; downstream-token/audience proof required |
 | M5 | Operations/adversarial hardening | Future |
@@ -197,6 +199,7 @@ private, restricted, customer, or production project.
 - [Roadmap](docs/ROADMAP.md)
 - [Implementation plan](docs/IMPLEMENTATION_PLAN.md)
 - [Development guide](docs/DEVELOPMENT.md)
+- [Experimental local stdio operator guide](docs/evidence/ISSUE_18_OPERATOR_RELEASE.md)
 - [Architecture decisions](docs/decisions/README.md)
 - [Program context and plane ownership](docs/PROGRAM_CONTEXT.md)
 - [Evidence index](docs/evidence/README.md)
