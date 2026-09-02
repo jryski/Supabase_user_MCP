@@ -28,11 +28,16 @@ Draft candidates are listed separately and must not be described as merged or ac
 | Executable local stdio/operator package | [Issue #18 operator and release evidence](ISSUE_18_OPERATOR_RELEASE.md) | `packages/server/src/stdio-startup.test.ts` and `test/issue-18-operator-contract.test.ts` | `d59d6967cb276752878baa5c03f57a179ac8e9c0` |
 | Governed Artifact Inspection S0 contract | [Issue #34 S0 evidence](ISSUE_34_S0_ARTIFACT_CONTRACT.md) | `packages/contracts/src/artifact-inspection.test.ts` | `6bff150d673055028e19e2202875b8f7d27f4782` |
 | S1b deterministic chunk/Merkle calibration | [Issue #34 S1b evidence](ISSUE_34_S1B_CHUNK_MERKLE_CALIBRATION.md) | `packages/server/src/artifact-chunk-manifest.test.ts` and `npm run artifact:calibrate` | `e36418d812a7004f5b9cf1ef14070375cfed7493` |
+| S2 fixed read-only artifact inspector | [Issue #34 S2 evidence](ISSUE_34_S2_FIXED_INSPECTOR.md) | `packages/server/src/artifact-inspector.test.ts` | `57ebbf5d836835a7fe8cd2330e46c2696aa1162b` |
 
 ## Unmerged candidate evidence
 
-There is no unmerged candidate at this documentation coordinate. Issue #34 S2 is the next planned
-candidate; it must remain listed as future work until an exact branch and review artifact exist.
+| Candidate | Coordinate/evidence source | What it may support | Open limits |
+| --- | --- | --- | --- |
+| Issue #34 S4 deterministic text-index spike | [Draft PR #51](https://github.com/jryski/Supabase_user_MCP/pull/51), exact reviewed head `52037d40f2336f4444746d85a7c6c8f6ea505372` | Pure in-memory UTF-8 line and Markdown ATX-heading index primitive | Technically accepted only as an isolated spike; remains draft and blocked on S3, then requires rebase and fresh exact-head review |
+
+Issue #34 S3 MCP registration and Storage containment closure is the next dependency-ready stage. No
+S3 implementation branch or PR exists at this documentation coordinate.
 
 Green CI on a draft coordinate proves only that the named workflow passed for that source.
 It does not merge the code, satisfy independent review, authorize deployment, or establish
