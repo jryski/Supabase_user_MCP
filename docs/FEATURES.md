@@ -247,13 +247,19 @@ Merged foundations:
   Merkle proofs, full-source verification, and mutation-sensitive calibration; and
 - S2 synthetic/local fixed inspector library for `artifact_stat`, bounded byte ranges, and bounded
   UTF-8 line reads, with runtime record/read validation, distinct client and capability-grant
-  references, exact-version unavailability, redacted dependency failures, and immutable receipts.
+  references, exact-version unavailability, redacted dependency failures, and immutable receipts;
+  and
+- S3 optional synthetic/local registration for those exact three tools, trusted context derived from
+  verified identity plus fixed operator configuration, fixed timeout/abort behavior, shared wire
+  limits, and an executable Storage closure manifest.
 
-S2 is complete only as that pure TypeScript synthetic/local library. It registers no MCP tool and is
-not an Edge or hosted deployment. The next gate is S3 MCP registration and Storage containment
-closure. No caller may select a bucket, object path, URL, origin, method, schema, table, RPC, parser,
-or privileged credential. S2 makes no Storage/database mutation, signed-URL, `service_role`, ingest,
-search, semantic-analysis, write, private-data, or production-readiness claim.
+S3 is complete only as an optional synthetic/local registration seam and executable closure account.
+Default CLI/stdio startup remains the exact three memory tools because no real Storage/network adapter
+or startup activation is added. No caller may select a bucket, object path, URL, origin, method,
+schema, table, RPC, parser, or privileged credential. S3 makes no Edge/hosted deployment,
+Storage/database mutation, signed-URL, `service_role`, listing, ingest, semantic-analysis, exact-search,
+write, private-data, or production-readiness claim. S4 deterministic Markdown text indexing is the
+next dependency-ready stage, but draft PR #51 must be rebased and freshly reviewed.
 
 Later heading/search indexing, durable operational adoption, semantic analysis, and any write or
 derived-artifact publication remain separate stages.
