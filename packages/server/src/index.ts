@@ -1,4 +1,10 @@
 export {
+  type ArtifactMcpRegistrationConfig,
+  type ArtifactStorageClosureManifest,
+  ARTIFACT_STORAGE_CLOSURE_MANIFEST,
+  assertArtifactStorageClosureManifest,
+} from './artifact-mcp-registration.js';
+export {
   ARTIFACT_INSPECTOR_PROFILE_VERSION,
   type ArtifactInspector,
   type ArtifactInspectorDependencies,

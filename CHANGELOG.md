@@ -33,9 +33,15 @@ the first public package is released.
 - Synthetic/local S2 fixed artifact inspector library for stat, bounded range, and bounded UTF-8
   line reads, including strict injected-record/read validation, distinct capability-grant custody,
   exact immutable-version unavailability, redacted dependency failures, and validated immutable
-  receipts. This adds no MCP registration, hosted/Edge deployment, Storage/database mutation,
-  `service_role`, signed URL, ingest, search, semantic analysis, write, private-data, or
-  production-readiness claim; S3 registration and Storage containment closure remains next.
+  receipts.
+- Optional S3 synthetic/local MCP registration for exactly `artifact_stat`, `artifact_read_range`,
+  and `artifact_read_lines`, with trusted-context derivation, fixed timeout/abort handling, shared
+  complete-wire containment, and a deeply frozen executable Supabase Storage closure manifest.
+  Default CLI/stdio startup remains memory-only; this adds no real network/Storage adapter,
+  Edge/hosted deployment, Storage/database mutation, `service_role`, signed URL, caller-selected
+  coordinate, listing, ingest, semantic analysis, exact search, write, private-data, or
+  production-readiness claim. S4 Markdown indexing is next only after draft PR #51 is rebased and
+  freshly reviewed.
 
 ### Changed
 

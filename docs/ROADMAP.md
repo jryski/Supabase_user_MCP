@@ -13,8 +13,10 @@ The local-stdio, read-only v0.1 pilot described in
 The active extension is [issue #34](https://github.com/jryski/Supabase_user_MCP/issues/34),
 Governed Artifact Inspection. S0 contracts, the synthetic S1 Storage/RLS laboratory, S1b
 chunk/Merkle calibration, the M1 identity prerequisite, and the synthetic/local S2 fixed inspector
-library are complete. The next gate is S3 MCP registration and Storage containment closure. M3–M6
-remain separate product roadmap gates.
+library are complete. S3 optional synthetic/local MCP registration and executable Storage closure
+accounting are complete. S4 deterministic Markdown text indexing is next, but draft PR #51 must be
+rebased onto the merged S3 coordinate and freshly reviewed. M3–M6 remain separate product roadmap
+gates.
 
 ## How milestones work
 
@@ -156,18 +158,19 @@ authorization without exposing a generic Storage or file-download tool.
 | S1b chunk/Merkle worker calibration | Complete | Deterministic in-memory manifests, source verification, bounded proofs, and calibration only |
 | M1 non-service user/client identity prerequisite | Complete | Merged principal/client-bound v0.1 read path |
 | S2 fixed read-only inspector | Complete | Pure TypeScript synthetic/local `artifact_stat` plus bounded range/text inspection library only; no MCP registration or deployment |
-| S3 MCP registration and Storage containment closure | **Next** | Register only after the S2 dependency boundaries and containment contract are accepted |
-| S4 Markdown structure/index extraction | Future | One approved synthetic artifact profile |
+| S3 MCP registration and Storage containment closure | Complete | Optional synthetic/local stat/range/lines registration and executable Storage closure only; default startup remains memory-only |
+| S4 Markdown structure/index extraction | **Next** | One approved synthetic artifact profile; draft PR #51 requires rebase and fresh review |
 | S5 exact search and durable inspection receipts | Future | Operational adoption remains separate |
 | S6–S9 semantic, async, vector, and write/publication stages | Future | Separate authority and deployment reviews required |
 
-S2 preserves caller context, resolves opaque adapter locators only through injected dependencies,
-verifies the accepted S1b manifest/proof profile, returns non-enumerating errors, and remains
-bounded/read-only. Its completion is limited to a synthetic/local library: it does not deploy Edge,
-create hosted resources, mutate Storage or the database, use `service_role`, issue signed URLs,
-accept caller-selected paths, register MCP tools, ingest artifacts, search, enable semantic analysis,
-write state, access private data, or establish production readiness. S3 owns MCP registration and
-Storage containment closure and has not started in this change.
+S3 consumes S2 through an optional fixed registration configuration, derives principal context only
+from verified server identity, and closes the Storage data plane in a versioned executable manifest.
+Its completion is limited to synthetic/local registration and accounting: default CLI/stdio startup
+remains memory-only, and it does not add a real Storage/network adapter, deploy Edge, create hosted
+resources, mutate Storage or the database, use `service_role`, issue signed URLs, accept
+caller-selected paths, list or ingest artifacts, implement exact search, enable semantic analysis,
+write state, access private data, or establish production readiness. S4 remains separate and starts
+only after draft PR #51 is rebased and freshly reviewed.
 
 ## M3 — Safe writes and human authority
 

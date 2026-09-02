@@ -93,7 +93,9 @@ Current `main` contains the reviewed local foundation and merged principal-bound
 - the accepted Governed Artifact Inspection S0 capability, receipt, and integrity contracts; and
 - deterministic S1b source-manifest, chunk, and Merkle-proof calibration; and
 - an S2 synthetic/local fixed inspector library for `artifact_stat`, bounded byte ranges, and
-  bounded UTF-8 line reads through injected authorization and immutable-version dependencies.
+  bounded UTF-8 line reads through injected authorization and immutable-version dependencies; and
+- optional S3 synthetic/local MCP registration for those three operations plus a deeply frozen,
+  executable Supabase Storage containment manifest.
 
 The consolidated read path merged through
 [PR #38](https://github.com/jryski/Supabase_user_MCP/pull/38) at
@@ -179,13 +181,18 @@ Current repository evidence includes:
   full-source verification, and mutation-sensitive calibration; and
 - **S2:** a pure TypeScript synthetic/local fixed inspector library with strict runtime adapter
   validation, distinct client/capability-grant custody, exact-version disappearance handling,
-  redacted dependency failures, and schema-valid immutable receipts.
+  redacted dependency failures, and schema-valid immutable receipts; and
+- **S3:** optional fixed MCP registration for stat/range/lines plus executable Storage authorization,
+  byte-read, immutable-version, integrity, retry, listing, credential, and write closure accounting.
 
 The M1 non-service user/client identity prerequisite is satisfied by the accepted v0.1 read path.
-S2 is complete only for that synthetic/local library scope. The next gate is **S3 MCP registration
-and Storage containment closure**; S2 itself registers no MCP tool. No Edge or hosted deployment,
-Storage/database mutation, signed URL, `service_role`, caller-selected Storage coordinate, ingest,
-semantic analysis, search, write, private-data access, or production-readiness claim is accepted.
+S3 completes only an optional synthetic/local registration seam. Default CLI/stdio startup remains
+memory-only because no real Storage/network adapter or startup activation was added. **S4
+deterministic Markdown text indexing** is the next dependency-ready stage, but existing draft PR #51
+must be rebased onto the merged S3 coordinate and freshly reviewed. No Edge or hosted deployment,
+Storage/database mutation, signed URL, `service_role`, caller-selected Storage coordinate, listing,
+ingest, semantic analysis, exact search, write, private-data access, or production-readiness claim is
+accepted.
 
 ## Roadmap
 
@@ -199,8 +206,9 @@ semantic analysis, search, write, private-data access, or production-readiness c
 | M5 | Operations/adversarial hardening | Future |
 | M6 | Stable v1 contract | Future |
 
-The active extension is issue #34 S3 MCP registration and Storage containment closure. Detailed sequencing and claim limits
-live in [docs/ROADMAP.md](docs/ROADMAP.md); the completed v0.1 execution baseline remains archived in
+The active extension completed issue #34 S3's optional MCP registration and Storage closure. S4 is
+next only after PR #51 is rebased and freshly reviewed. Detailed sequencing and claim limits live in
+[docs/ROADMAP.md](docs/ROADMAP.md); the completed v0.1 execution baseline remains archived in
 [epic #19](https://github.com/jryski/Supabase_user_MCP/issues/19).
 
 ## Local development
@@ -230,6 +238,7 @@ private, restricted, customer, or production project.
 - [Governed Artifact Inspection S0 contract](docs/evidence/ISSUE_34_S0_ARTIFACT_CONTRACT.md)
 - [S1b chunk/Merkle calibration](docs/evidence/ISSUE_34_S1B_CHUNK_MERKLE_CALIBRATION.md)
 - [S2 synthetic/local fixed inspector](docs/evidence/ISSUE_34_S2_FIXED_INSPECTOR.md)
+- [S3 optional MCP registration and Storage closure](docs/evidence/ISSUE_34_S3_MCP_STORAGE_CLOSURE.md)
 - [Architecture decisions](docs/decisions/README.md)
 - [Program context and plane ownership](docs/PROGRAM_CONTEXT.md)
 - [Evidence index](docs/evidence/README.md)
