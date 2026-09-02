@@ -77,6 +77,31 @@ export interface IndexedTextRead {
 const decoder = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true });
 const LF = 0x0a;
 const CR = 0x0d;
+const INDEX_KEYS = [
+  'profileVersion',
+  'sourceSha256',
+  'byteLength',
+  'mediaType',
+  'lineCount',
+  'lines',
+  'headings',
+] as const;
+const LINE_KEYS = [
+  'lineNumber',
+  'byteStart',
+  'contentByteLength',
+  'newlineByteLength',
+  'newlineKind',
+] as const;
+const HEADING_KEYS = [
+  'headingId',
+  'level',
+  'rawText',
+  'normalizedText',
+  'lineNumber',
+  'byteStart',
+  'byteLength',
+] as const;
 
 function fail(code: ArtifactTextIndexErrorCode, message: string): never {
   throw new ArtifactTextIndexError(code, message);
@@ -180,6 +205,24 @@ function parseFence(text: string): Fence | undefined {
   return end - indent >= 3 ? { marker, length: end - indent } : undefined;
 }
 
+function isClosingFence(text: string, opening: Fence): boolean {
+  const indent = countLeadingSpaces(text);
+  if (indent > 3 || text[indent] !== opening.marker) return false;
+  let end = indent;
+  while (text[end] === opening.marker) end += 1;
+  if (end - indent < opening.length) return false;
+  for (let offset = end; offset < text.length; offset += 1) {
+    if (text[offset] !== ' ' && text[offset] !== '\t') return false;
+  }
+  return true;
+}
+
+function codePointCount(text: string): number {
+  let count = 0;
+  for (const _character of text) count += 1;
+  return count;
+}
+
 function parseAtxHeading(text: string): { level: number; rawText: string } | undefined {
   const indent = countLeadingSpaces(text);
   if (indent > 3) return undefined;
@@ -192,8 +235,8 @@ function parseAtxHeading(text: string): { level: number; rawText: string } | und
   // Closing hashes count only when their run is preceded by whitespace.
   const closing = /\s+#+\s*$/u.exec(rawText);
   if (closing !== null) rawText = rawText.slice(0, closing.index).trimEnd();
-  if (rawText.length > MAX_HEADING_TEXT_CHARS) {
-    fail('TOO_MANY_HEADINGS', 'Heading text exceeds the profile heading-text bound.');
+  if (codePointCount(rawText) > MAX_HEADING_TEXT_CHARS) {
+    fail('RESPONSE_LIMIT_EXCEEDED', 'Heading text exceeds the profile heading-text bound.');
   }
   return { level, rawText };
 }
@@ -216,7 +259,9 @@ function headingSlug(normalizedText: string): string {
     }
     if (code > 0x7f) {
       if (separator && slug.length > 0) slug += '-';
-      slug += `u${code.toString(16)}`;
+      // ASCII normalization can never emit a double hyphen, so these bounded
+      // escape tokens cannot collide with literal ASCII heading text.
+      slug += `u--${code.toString(16)}--`;
       separator = false;
       continue;
     }
@@ -250,8 +295,7 @@ function scanHeadings(
     const text = decode(source.subarray(line.byteStart, line.byteStart + line.contentByteLength));
     const foundFence = parseFence(text);
     if (fence !== undefined) {
-      if (foundFence?.marker === fence.marker && foundFence.length >= fence.length)
-        fence = undefined;
+      if (isClosingFence(text, fence)) fence = undefined;
       continue;
     }
     if (foundFence !== undefined) {
@@ -308,27 +352,182 @@ export function buildArtifactTextIndex(
   });
 }
 
+function assertOrdinaryDataRecord(
+  value: unknown,
+  expectedKeys: readonly string[],
+): Record<string, unknown> {
+  if (
+    typeof value !== 'object' ||
+    value === null ||
+    Array.isArray(value) ||
+    Object.getPrototypeOf(value) !== Object.prototype
+  ) {
+    fail('INCONSISTENT_INDEX', 'Index record is not an ordinary data object.');
+  }
+  const names = Object.getOwnPropertyNames(value);
+  if (Object.getOwnPropertySymbols(value).length !== 0 || names.length !== expectedKeys.length) {
+    fail('INCONSISTENT_INDEX', 'Index record has unexpected properties.');
+  }
+  for (const key of expectedKeys) {
+    const descriptor = Object.getOwnPropertyDescriptor(value, key);
+    if (
+      descriptor === undefined ||
+      !('value' in descriptor) ||
+      !descriptor.enumerable ||
+      !names.includes(key)
+    ) {
+      fail('INCONSISTENT_INDEX', 'Index record has non-data properties.');
+    }
+  }
+  return value as Record<string, unknown>;
+}
+
+function assertOrdinaryArray(value: unknown): unknown[] {
+  if (!Array.isArray(value) || Object.getPrototypeOf(value) !== Array.prototype) {
+    fail('INCONSISTENT_INDEX', 'Index collection is not an ordinary array.');
+  }
+  const descriptors = Object.getOwnPropertyDescriptors(value);
+  const lengthDescriptor = Object.getOwnPropertyDescriptor(value, 'length');
+  if (
+    Object.getOwnPropertySymbols(value).length !== 0 ||
+    lengthDescriptor === undefined ||
+    !('value' in lengthDescriptor) ||
+    typeof lengthDescriptor.value !== 'number' ||
+    !Number.isSafeInteger(lengthDescriptor.value) ||
+    lengthDescriptor.enumerable
+  ) {
+    fail('INCONSISTENT_INDEX', 'Index collection has invalid properties.');
+  }
+  const length = lengthDescriptor.value;
+  const names = Object.getOwnPropertyNames(value);
+  if (names.length !== length + 1)
+    fail('INCONSISTENT_INDEX', 'Index collection has unexpected properties.');
+  for (let offset = 0; offset < length; offset += 1) {
+    const descriptor = descriptors[String(offset)];
+    if (descriptor === undefined || !('value' in descriptor) || !descriptor.enumerable) {
+      fail('INCONSISTENT_INDEX', 'Index collection has non-data properties.');
+    }
+  }
+  return value;
+}
+
+function assertSafeInteger(
+  value: unknown,
+  minimum: number,
+  maximum: number,
+): asserts value is number {
+  if (
+    typeof value !== 'number' ||
+    !Number.isSafeInteger(value) ||
+    value < minimum ||
+    value > maximum
+  ) {
+    fail('INCONSISTENT_INDEX', 'Index numeric field is invalid.');
+  }
+}
+
+function assertIndexShape(unsafeIndex: unknown): asserts unsafeIndex is ArtifactTextIndex {
+  const index = assertOrdinaryDataRecord(unsafeIndex, INDEX_KEYS);
+  if (
+    index.profileVersion !== ARTIFACT_TEXT_INDEX_PROFILE_VERSION ||
+    typeof index.sourceSha256 !== 'string' ||
+    !/^[0-9a-f]{64}$/u.test(index.sourceSha256) ||
+    (index.mediaType !== 'text/plain' && index.mediaType !== 'text/markdown')
+  ) {
+    fail('INCONSISTENT_INDEX', 'Index top-level fields are invalid.');
+  }
+  assertSafeInteger(index.byteLength, 0, MAX_TEXT_INDEX_BYTES);
+  assertSafeInteger(index.lineCount, 0, MAX_TEXT_INDEX_LINES);
+  const lines = assertOrdinaryArray(index.lines);
+  const headings = assertOrdinaryArray(index.headings);
+  if (lines.length !== index.lineCount || headings.length > MAX_TEXT_INDEX_HEADINGS) {
+    fail('INCONSISTENT_INDEX', 'Index collection sizes are invalid.');
+  }
+  for (const lineValue of lines) {
+    const line = assertOrdinaryDataRecord(lineValue, LINE_KEYS);
+    assertSafeInteger(line.lineNumber, 1, MAX_TEXT_INDEX_LINES);
+    assertSafeInteger(line.byteStart, 0, index.byteLength);
+    assertSafeInteger(line.contentByteLength, 0, index.byteLength);
+    if (
+      (line.newlineByteLength !== 0 &&
+        line.newlineByteLength !== 1 &&
+        line.newlineByteLength !== 2) ||
+      (line.newlineKind !== 'none' && line.newlineKind !== 'lf' && line.newlineKind !== 'crlf')
+    ) {
+      fail('INCONSISTENT_INDEX', 'Index line fields are invalid.');
+    }
+  }
+  for (const headingValue of headings) {
+    const heading = assertOrdinaryDataRecord(headingValue, HEADING_KEYS);
+    if (
+      typeof heading.headingId !== 'string' ||
+      heading.headingId.length < 1 ||
+      heading.headingId.length > 128 ||
+      typeof heading.rawText !== 'string' ||
+      codePointCount(heading.rawText) > MAX_HEADING_TEXT_CHARS ||
+      typeof heading.normalizedText !== 'string'
+    ) {
+      fail('INCONSISTENT_INDEX', 'Index heading text fields are invalid.');
+    }
+    assertSafeInteger(heading.level, 1, MAX_HEADING_LEVEL);
+    assertSafeInteger(heading.lineNumber, 1, index.lineCount);
+    assertSafeInteger(heading.byteStart, 0, index.byteLength);
+    assertSafeInteger(heading.byteLength, 0, index.byteLength);
+  }
+}
+
 function sameIndex(left: ArtifactTextIndex, right: ArtifactTextIndex): boolean {
-  return JSON.stringify(left) === JSON.stringify(right);
+  if (
+    left.profileVersion !== right.profileVersion ||
+    left.sourceSha256 !== right.sourceSha256 ||
+    left.byteLength !== right.byteLength ||
+    left.mediaType !== right.mediaType ||
+    left.lineCount !== right.lineCount ||
+    left.lines.length !== right.lines.length ||
+    left.headings.length !== right.headings.length
+  ) {
+    return false;
+  }
+  for (let offset = 0; offset < left.lines.length; offset += 1) {
+    const actual = left.lines[offset];
+    const expected = right.lines[offset];
+    if (
+      actual === undefined ||
+      expected === undefined ||
+      actual.lineNumber !== expected.lineNumber ||
+      actual.byteStart !== expected.byteStart ||
+      actual.contentByteLength !== expected.contentByteLength ||
+      actual.newlineByteLength !== expected.newlineByteLength ||
+      actual.newlineKind !== expected.newlineKind
+    ) {
+      return false;
+    }
+  }
+  for (let offset = 0; offset < left.headings.length; offset += 1) {
+    const actual = left.headings[offset];
+    const expected = right.headings[offset];
+    if (
+      actual === undefined ||
+      expected === undefined ||
+      actual.headingId !== expected.headingId ||
+      actual.level !== expected.level ||
+      actual.rawText !== expected.rawText ||
+      actual.normalizedText !== expected.normalizedText ||
+      actual.lineNumber !== expected.lineNumber ||
+      actual.byteStart !== expected.byteStart ||
+      actual.byteLength !== expected.byteLength
+    ) {
+      return false;
+    }
+  }
+  return true;
 }
 
 function assertConsistentIndex(bytes: Uint8Array, unsafeIndex: unknown): ArtifactTextIndex {
-  if (typeof unsafeIndex !== 'object' || unsafeIndex === null || Array.isArray(unsafeIndex)) {
-    fail('INCONSISTENT_INDEX', 'Index is not a valid text-index record.');
-  }
-  const index = unsafeIndex as ArtifactTextIndex;
-  if (typeof index.sourceSha256 !== 'string' || index.sourceSha256 !== sha256(bytes)) {
+  assertIndexShape(unsafeIndex);
+  const index = unsafeIndex;
+  if (index.sourceSha256 !== sha256(bytes)) {
     fail('SOURCE_MISMATCH', 'Source bytes do not match the indexed source digest.');
-  }
-  if (
-    index.profileVersion !== ARTIFACT_TEXT_INDEX_PROFILE_VERSION ||
-    !Array.isArray(index.lines) ||
-    !Array.isArray(index.headings)
-  ) {
-    fail('INCONSISTENT_INDEX', 'Index profile or record collections are invalid.');
-  }
-  if (index.mediaType !== 'text/plain' && index.mediaType !== 'text/markdown') {
-    fail('INCONSISTENT_INDEX', 'Index media type is invalid.');
   }
   let expected: ArtifactTextIndex;
   try {

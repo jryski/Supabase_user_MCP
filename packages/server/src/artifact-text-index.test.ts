@@ -73,7 +73,9 @@ describe('artifact-text-index/0.1', () => {
     expect(markdown).toMatchObject({
       sourceSha256: '8aa33665d679204c0df2a61e98cfaa9f0bed348445443829389adc5cc18fa556',
       byteLength: 12,
-      headings: [{ headingId: 'cafue9', level: 1, rawText: 'Café', byteStart: 0, byteLength: 7 }],
+      headings: [
+        { headingId: 'cafu--e9--', level: 1, rawText: 'Café', byteStart: 0, byteLength: 7 },
+      ],
     });
     expect(markdown.sourceSha256).toBe(sha256(utf8('# Café\ntext')));
   });
@@ -171,7 +173,55 @@ describe('artifact-text-index/0.1', () => {
     ]);
   });
 
-  it('creates deterministic opaque IDs including duplicates, Unicode, empty slugs, and length ceiling', () => {
+  it('does not close a fenced block when a closing run has trailing text', () => {
+    const index = buildArtifactTextIndex(
+      utf8('```\n# hidden not-a-close\n``` not-a-close\n# must-stay-hidden\n```\n# visible'),
+      'text/markdown',
+    );
+    expect(index.headings.map((heading) => heading.rawText)).toEqual(['visible']);
+  });
+
+  it('does not close a fenced block with a shorter matching-marker run', () => {
+    const index = buildArtifactTextIndex(
+      utf8('````\n# hidden\n```\n# still-hidden\n````\n# visible'),
+      'text/markdown',
+    );
+    expect(index.headings.map((heading) => heading.rawText)).toEqual(['visible']);
+  });
+
+  it('does not close a fenced block with a different marker character', () => {
+    const index = buildArtifactTextIndex(
+      utf8('```\n# hidden\n~~~\n# still-hidden\n```\n# visible'),
+      'text/markdown',
+    );
+    expect(index.headings.map((heading) => heading.rawText)).toEqual(['visible']);
+  });
+
+  it('closes a fenced block with a longer matching run followed only by spaces and tabs', () => {
+    const index = buildArtifactTextIndex(
+      utf8('```\n# hidden\n```` \t\n# visible'),
+      'text/markdown',
+    );
+    expect(index.headings.map((heading) => heading.rawText)).toEqual(['visible']);
+  });
+
+  it('counts heading text as Unicode code points and uses the response limit for overflow', () => {
+    const accepted = buildArtifactTextIndex(
+      utf8(`# ${'😀'.repeat(MAX_HEADING_TEXT_CHARS)}`),
+      'text/markdown',
+    );
+    expect(accepted.headings[0]?.rawText).toHaveLength(MAX_HEADING_TEXT_CHARS * 2);
+    expect(
+      codeOf(() =>
+        buildArtifactTextIndex(
+          utf8(`# ${'😀'.repeat(MAX_HEADING_TEXT_CHARS + 1)}`),
+          'text/markdown',
+        ),
+      ),
+    ).toBe('RESPONSE_LIMIT_EXCEEDED');
+  });
+
+  it('creates deterministic opaque IDs including collision-proof Unicode, duplicates, and length ceiling', () => {
     const index = buildArtifactTextIndex(
       utf8(`# Title\n# Title\n# Title\n# Привет\n# !!!\n# ${'x'.repeat(MAX_HEADING_TEXT_CHARS)}`),
       'text/markdown',
@@ -180,7 +230,7 @@ describe('artifact-text-index/0.1', () => {
       'title',
       'title-2',
       'title-3',
-      'u43fu440u438u432u435u442',
+      'u--43f--u--440--u--438--u--432--u--435--u--442--',
       'heading',
       'x'.repeat(128),
     ]);
@@ -194,7 +244,28 @@ describe('artifact-text-index/0.1', () => {
           'text/markdown',
         ),
       ),
-    ).toBe('TOO_MANY_HEADINGS');
+    ).toBe('RESPONSE_LIMIT_EXCEEDED');
+  });
+
+  it('uses base IDs that distinguish literal ASCII from Unicode regardless of source order', () => {
+    const inOrder = buildArtifactTextIndex(utf8('# u43f\n# п'), 'text/markdown');
+    const reversed = buildArtifactTextIndex(utf8('# п\n# u43f'), 'text/markdown');
+    expect(inOrder.headings.map((heading) => heading.headingId)).toEqual(['u43f', 'u--43f--']);
+    expect(reversed.headings.map((heading) => [heading.rawText, heading.headingId])).toEqual([
+      ['п', 'u--43f--'],
+      ['u43f', 'u43f'],
+    ]);
+  });
+
+  it('keeps consecutive and duplicate Unicode heading IDs unambiguous and stable', () => {
+    const consecutive = buildArtifactTextIndex(utf8('# пр'), 'text/markdown');
+    expect(consecutive.headings[0]?.headingId).toBe('u--43f--u--440--');
+    const duplicates = buildArtifactTextIndex(utf8('# п\n# п\n# п'), 'text/markdown');
+    expect(duplicates.headings.map((heading) => heading.headingId)).toEqual([
+      'u--43f--',
+      'u--43f---2',
+      'u--43f---3',
+    ]);
   });
 
   it('rejects unsupported media, invalid UTF-8, and non-Uint8Array runtime input', () => {
@@ -274,6 +345,43 @@ describe('artifact-text-index/0.1', () => {
     expect(
       codeOf(() => readIndexedLines(large, buildArtifactTextIndex(large, 'text/plain'), 1, 1)),
     ).toBe('RESPONSE_LIMIT_EXCEEDED');
+  });
+
+  it('rejects every unknown, hidden, symbol, accessor, and toJSON index property without getters', () => {
+    const bytes = utf8('# A\nbody');
+    const index = buildArtifactTextIndex(bytes, 'text/markdown');
+    const firstLine = definedAt(index.lines[0]);
+    const firstHeading = definedAt(index.headings[0]);
+    const expectInconsistent = (unsafeIndex: object): void => {
+      expect(codeOf(() => readIndexedLines(bytes, unsafeIndex as never, 1, 1))).toBe(
+        'INCONSISTENT_INDEX',
+      );
+    };
+    expectInconsistent({ ...index, path: undefined });
+    expectInconsistent({ ...index, unknown: 'value' });
+    const nonEnumerable = { ...index };
+    Object.defineProperty(nonEnumerable, 'hidden', { value: true });
+    expectInconsistent(nonEnumerable);
+    const symbolic = { ...index };
+    Object.defineProperty(symbolic, Symbol('hidden'), { value: true, enumerable: true });
+    expectInconsistent(symbolic);
+    expectInconsistent({ ...index, toJSON: () => ({}) });
+    let getterCalled = false;
+    const getterLine = { ...firstLine };
+    Object.defineProperty(getterLine, 'byteStart', {
+      enumerable: true,
+      get: () => {
+        getterCalled = true;
+        throw new Error('must not execute');
+      },
+    });
+    expectInconsistent({ ...index, lines: [getterLine, ...index.lines.slice(1)] });
+    expect(getterCalled).toBe(false);
+    expectInconsistent({
+      ...index,
+      lines: [{ ...firstLine, unknown: undefined }, ...index.lines.slice(1)],
+    });
+    expectInconsistent({ ...index, headings: [{ ...firstHeading, unknown: undefined }] });
   });
 
   it('leaves hostile Markdown as inert, untrusted source data and exposes no locators', () => {
