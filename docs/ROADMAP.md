@@ -159,7 +159,7 @@ authorization without exposing a generic Storage or file-download tool.
 | M1 non-service user/client identity prerequisite | Complete | Merged principal/client-bound v0.1 read path |
 | S2 fixed read-only inspector | Complete | Pure TypeScript synthetic/local `artifact_stat` plus bounded range/text inspection library only; no MCP registration or deployment |
 | S3 MCP registration and Storage containment closure | Complete | Optional synthetic/local stat/range/lines registration and executable Storage closure only; default startup remains memory-only |
-| S4 Markdown structure/index extraction | **Next** | One approved synthetic artifact profile; draft PR #51 requires rebase and fresh review |
+| S4 Markdown structure/index extraction | In progress | Deterministic line/ATX-heading primitive implemented; bounded inspector/MCP integration and one approved synthetic artifact remain next |
 | S5 exact search and durable inspection receipts | Future | Operational adoption remains separate |
 | S6–S9 semantic, async, vector, and write/publication stages | Future | Separate authority and deployment reviews required |
 
@@ -169,8 +169,9 @@ Its completion is limited to synthetic/local registration and accounting: defaul
 remains memory-only, and it does not add a real Storage/network adapter, deploy Edge, create hosted
 resources, mutate Storage or the database, use `service_role`, issue signed URLs, accept
 caller-selected paths, list or ingest artifacts, implement exact search, enable semantic analysis,
-write state, access private data, or establish production readiness. S4 remains separate and starts
-only after draft PR #51 is rebased and freshly reviewed.
+write state, access private data, or establish production readiness. The isolated S4 primitive adds
+no adapter, inspector, MCP, ingest, or deployment wiring; one bounded synthetic integration/demo
+remains before S4 completion.
 
 ## M3 — Safe writes and human authority
 
