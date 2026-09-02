@@ -1,10 +1,11 @@
 # Issue #34 S4 deterministic text-index spike
 
-Base commit: `374473bc0700e30649f63d1db164f64c0aab3dee`
-Base tree: `af37d139509a1ffea193c2baecf589c90a92f02c`
+Rebased base commit: `f8a3a77963e5e8abf9b1b13b84c8df01adb2d412`
+Rebased base tree: `e1c810e40525b0b59e15df8ada68b814def2d74c`
 Candidate profile: `artifact-text-index/0.1`
 
-This is a blocked S4 spike. S2 and S3 remain prerequisites; this candidate has no merge authority until both are accepted.
+S2 and S3 are merged. This artifact remains only the deterministic S4 text-index primitive: it adds
+no inspector/MCP integration, automatic extraction, ingest lifecycle, or approved-artifact demo.
 
 ## Exact semantics and bounds
 
@@ -20,6 +21,12 @@ Read helpers reject malformed indexes before rebuilding them: the index, its arr
 
 ## Verification and claim limits
 
-Clean baseline passed before changes: `npx --yes npm@11.19.0 ci` and `npx --yes npm@11.19.0 run check` (27 passed / 1 skipped test files; 534 passed / 4 skipped tests). Final verification passed: `npx --yes npm@11.19.0 run check` (552 passed, 4 skipped, 556 total); `npx vitest run packages/server/src/artifact-text-index.test.ts` (1 file, 18 passed); `git diff --check`; and `git status --short` (only the three paths below). This spike remains BLOCKED ON S2/S3.
+The original isolated baseline passed before S4 changes. After rebasing onto merged S2/S3 and adding
+same-stage documentation closure, exact npm 11.19.0 `npm run check` passes 645 tests with four
+pre-existing skips (649 total), and `npx vitest run packages/server/src/artifact-text-index.test.ts`
+passes all 18 focused tests. `git diff --check` and authorized-path status also pass.
 
-Excluded: S2 inspector changes, MCP registration, Edge or hosted deployment, Storage/database access, artifact ingest, semantic analysis, search, vector indexing, writes, private data, production-readiness claims, and merge authority before S2/S3 acceptance.
+Excluded: S2 inspector changes, S3 registration changes, server-barrel export, MCP activation, Edge or
+hosted deployment, Storage/database access, artifact ingest, automatic extraction, approved-artifact
+demo, semantic analysis, exact search, vector indexing, writes, private data, and production-readiness
+claims. These bytes do not complete the full S4 integration stage.

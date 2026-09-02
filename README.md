@@ -183,16 +183,20 @@ Current repository evidence includes:
   validation, distinct client/capability-grant custody, exact-version disappearance handling,
   redacted dependency failures, and schema-valid immutable receipts; and
 - **S3:** optional fixed MCP registration for stat/range/lines plus executable Storage authorization,
-  byte-read, immutable-version, integrity, retry, listing, credential, and write closure accounting.
+  byte-read, immutable-version, integrity, retry, listing, credential, and write closure accounting;
+  and
+- **S4 primitive:** a pure in-memory deterministic UTF-8 line and Markdown ATX-heading index with
+  exact source-byte offsets, strict consumed-index validation, bounded reads, and collision-resistant
+  heading identifiers.
 
 The M1 non-service user/client identity prerequisite is satisfied by the accepted v0.1 read path.
-S3 completes only an optional synthetic/local registration seam. Default CLI/stdio startup remains
-memory-only because no real Storage/network adapter or startup activation was added. **S4
-deterministic Markdown text indexing** is the next dependency-ready stage, but existing draft PR #51
-must be rebased onto the merged S3 coordinate and freshly reviewed. No Edge or hosted deployment,
-Storage/database mutation, signed URL, `service_role`, caller-selected Storage coordinate, listing,
-ingest, semantic analysis, exact search, write, private-data access, or production-readiness claim is
-accepted.
+S3 completes only an optional synthetic/local registration seam. The S4 primitive is also local and
+model-free: it is not exported through the server barrel, connected to the S2 inspector, registered
+through MCP, run automatically on ingest, or demonstrated against an approved artifact. The next S4
+gate is that bounded integration/demo. Default CLI/stdio startup remains memory-only. No Edge or
+hosted deployment, Storage/database mutation, signed URL, `service_role`, caller-selected Storage
+coordinate, listing, ingest, semantic analysis, exact search, write, private-data access, or
+production-readiness claim is accepted.
 
 ## Roadmap
 
@@ -206,8 +210,9 @@ accepted.
 | M5 | Operations/adversarial hardening | Future |
 | M6 | Stable v1 contract | Future |
 
-The active extension completed issue #34 S3's optional MCP registration and Storage closure. S4 is
-next only after PR #51 is rebased and freshly reviewed. Detailed sequencing and claim limits live in
+The active extension now includes the isolated S4 deterministic text-index primitive. Bounded
+inspector/MCP integration and one approved synthetic Markdown artifact remain the next S4 gate.
+Detailed sequencing and claim limits live in
 [docs/ROADMAP.md](docs/ROADMAP.md); the completed v0.1 execution baseline remains archived in
 [epic #19](https://github.com/jryski/Supabase_user_MCP/issues/19).
 

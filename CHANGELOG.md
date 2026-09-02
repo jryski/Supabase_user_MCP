@@ -40,8 +40,12 @@ the first public package is released.
   Default CLI/stdio startup remains memory-only; this adds no real network/Storage adapter,
   Edge/hosted deployment, Storage/database mutation, `service_role`, signed URL, caller-selected
   coordinate, listing, ingest, semantic analysis, exact search, write, private-data, or
-  production-readiness claim. S4 Markdown indexing is next only after draft PR #51 is rebased and
-  freshly reviewed.
+  production-readiness claim.
+- An isolated S4 deterministic text-index primitive for in-memory UTF-8 line records and Markdown
+  ATX headings, with exact source-byte offsets, fatal UTF-8 validation, bounded source/read counts,
+  collision-resistant heading identifiers, fenced-code exclusion, strict consumed-index validation,
+  immutable outputs, and no I/O or model execution. Inspector/MCP integration, automatic ingest, an
+  approved synthetic artifact demo, exact search, and publication remain outside this primitive.
 
 ### Changed
 

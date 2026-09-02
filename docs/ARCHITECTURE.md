@@ -117,10 +117,12 @@ closure manifest consumed by registration. It derives artifact principal context
 server identity, fixes approved client/capability/audience/policy/deployment coordinates, enforces
 the accepted deadline and shared complete-frame limits, and records zero/one/one byte-read classes.
 Default CLI/stdio startup stays memory-only because no real Storage/network adapter or activation is
-added. S4 deterministic Markdown text indexing is next only after draft PR #51 is rebased and freshly
-reviewed. Generic Storage access, Edge/hosted deployment, Storage/database mutation, signed URLs,
-`service_role`, caller-selected paths, listing, ingest, exact search, semantic analysis, writes,
-private-data use, and production readiness remain outside the accepted architecture.
+added. The isolated S4 primitive deterministically indexes in-memory UTF-8 line boundaries and
+Markdown ATX headings without I/O or models, but it is not yet exported, connected to S2/S3, run on
+ingest, or demonstrated against an approved artifact. Generic Storage access, Edge/hosted deployment,
+Storage/database mutation, signed URLs, `service_role`, caller-selected paths, listing, ingest, exact
+search, semantic analysis, writes, private-data use, and production readiness remain outside the
+accepted architecture.
 
 ### Audit layer
 

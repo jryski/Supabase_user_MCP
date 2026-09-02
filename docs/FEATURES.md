@@ -251,15 +251,19 @@ Merged foundations:
   and
 - S3 optional synthetic/local registration for those exact three tools, trusted context derived from
   verified identity plus fixed operator configuration, fixed timeout/abort behavior, shared wire
-  limits, and an executable Storage closure manifest.
+  limits, and an executable Storage closure manifest; and
+- an isolated S4 deterministic text-index primitive for in-memory UTF-8 line boundaries and
+  Markdown ATX headings, with exact byte offsets, strict index validation, bounded reads, and no
+  model or external-data access.
 
 S3 is complete only as an optional synthetic/local registration seam and executable closure account.
 Default CLI/stdio startup remains the exact three memory tools because no real Storage/network adapter
 or startup activation is added. No caller may select a bucket, object path, URL, origin, method,
 schema, table, RPC, parser, or privileged credential. S3 makes no Edge/hosted deployment,
 Storage/database mutation, signed-URL, `service_role`, listing, ingest, semantic-analysis, exact-search,
-write, private-data, or production-readiness claim. S4 deterministic Markdown text indexing is the
-next dependency-ready stage, but draft PR #51 must be rebased and freshly reviewed.
+write, private-data, or production-readiness claim. The S4 primitive is not yet exported, connected
+to the inspector, registered through MCP, run on ingest, or exercised against an approved artifact;
+that bounded integration/demo is the next S4 gate.
 
 Later heading/search indexing, durable operational adoption, semantic analysis, and any write or
 derived-artifact publication remain separate stages.
