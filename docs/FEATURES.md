@@ -1,7 +1,7 @@
 # Feature Catalog
 
 - **Status:** Mixed — merged local contracts and factories; later capabilities proposed
-- **Last reviewed:** 2026-08-30
+- **Last reviewed:** 2026-09-01
 
 This catalog defines both merged foundations and the intended product surface. Each section's
 status governs its named scope. `Implemented` or `Partially implemented` does not mean that a
@@ -42,7 +42,7 @@ an opaque `mem_` token and pagination cursors use an opaque `cur_` token; caller
 construct or decode either token.
 
 All three tools enforce a project-defined 65,536-byte wire-response ceiling and a 2,000 ms
-execution ceiling in the current unmerged reconciliation candidate. The byte unit is the UTF-8 encoding of the complete
+execution ceiling on merged `main`. The byte unit is the UTF-8 encoding of the complete
 serialized outbound JSON-RPC frame, including the request ID, result/content envelope, JSON
 escaping, the stdio newline delimiter, protocol overhead, and every selected compatibility representation. The contract
 package and registered server now share one dual-representation renderer and estimator. Contract
@@ -67,7 +67,8 @@ unavailable records, response overflow, timeout, and unexpected failures map res
 to `INVALID_REQUEST`, `RESOURCE_UNAVAILABLE`, `RESPONSE_LIMIT_EXCEEDED`,
 `DEADLINE_EXCEEDED`, and `INTERNAL_ERROR`; reaching 2,000 ms is the timeout condition. These
 describe merged contracts, strict MCP registration, and the synthetic Data API/RLS path on `main`.
-The executable environment-only stdio/operator package remains the issue #18 candidate.
+The executable environment-only stdio/operator package is merged and remains experimental,
+local-stdio, read-only, and synthetic-only.
 
 The only serialized record fields are `id`, `title`, `content`, `contentTrust`, `createdAt`,
 and `provenanceSummary`; search results additionally include `rank`. Stored `content` is
@@ -82,7 +83,7 @@ authorization denials both pass their distinct internal reasons through
 ### `memory_search`
 
 - **Milestone:** M2
-- **Status:** Partially implemented
+- **Status:** Implemented
 - **Capability:** `memory:search`
 - **Risk:** Read
 
@@ -110,7 +111,7 @@ Acceptance highlights:
 ### `memory_get`
 
 - **Milestone:** M2
-- **Status:** Partially implemented
+- **Status:** Implemented
 - **Capability:** `memory:read`
 - **Risk:** Read
 
@@ -125,7 +126,7 @@ Acceptance highlights:
 ### `memory_list_recent`
 
 - **Milestone:** M2
-- **Status:** Partially implemented
+- **Status:** Implemented
 - **Capability:** `memory:read`
 - **Risk:** Read
 
@@ -209,7 +210,7 @@ The exact user experience is deliberately open; the database state machine is no
 ### Stdio user-token profile
 
 - **Milestone:** M2
-- **Status:** Partially implemented
+- **Status:** Experimental
 
 - Protected local credential source.
 - Fixed Supabase origin.
@@ -229,6 +230,29 @@ The exact user experience is deliberately open; the database state machine is no
 - Stateless authorization and horizontally scalable request handling.
 
 Blocked by [ADR-0002](decisions/0002-remote-identity-chain.md).
+
+## Governed Artifact Inspection
+
+- **Roadmap:** [Issue #34](https://github.com/jryski/Supabase_user_MCP/issues/34)
+- **Status:** Partially implemented
+- **Risk:** Read and external byte-custody boundary
+
+Merged foundations:
+
+- S0 strict contracts for opaque IDs, bounded operations, complete-wire outputs, non-enumerating
+  errors, source/partial-read integrity, receipts, deterministic profiles, and derivation lineage;
+- synthetic S1 artifact registry, chunk and derivation tables, approved inspector-client policy,
+  and Storage RLS laboratory; and
+- S1b deterministic source manifests, distinct raw and domain-separated chunk hashes, canonical
+  Merkle proofs, full-source verification, and mutation-sensitive calibration.
+
+The next gate is S2 fixed read-only inspection: `artifact_stat` plus bounded range and UTF-8 text
+reads behind injected caller-context authorization and immutable artifact identity. S2 is not yet
+an MCP-registered tool or deployed Edge Function. No caller may select a bucket, object path, URL,
+origin, method, schema, table, RPC, parser, or privileged credential.
+
+Later heading/search indexing, durable operational adoption, semantic analysis, and any write or
+derived-artifact publication remain separate stages.
 
 ### Principal lifecycle
 
@@ -313,7 +337,8 @@ replay, audit tampering, and inference channels.
 The following require separate design and are not part of v1 unless promoted through an
 ADR:
 
-- Supabase Storage tools.
+- Generic Supabase Storage tools. The fixed governed inspector in issue #34 is a separately bounded
+  capability and does not authorize generic Storage access.
 - Realtime subscriptions.
 - Cross-project federation.
 - Customer-defined arbitrary tools.

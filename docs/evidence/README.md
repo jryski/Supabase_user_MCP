@@ -25,12 +25,14 @@ Draft candidates are listed separately and must not be described as merged or ac
 | Storage/RLS artifact laboratory | [S1 lab evidence](S1-lab.md) | `supabase/tests/run-s1-lab.sh` | `38013ae428c37b4140bfdb6b3cd174e72f0732c0` |
 | Verified principal-bound read path | [Issue #17 evidence](ISSUE_17_PRINCIPAL_READ_PATH.md) | `packages/server/src/m2-local-e2e.test.ts` and `supabase/tests/run-m2-memory-lab.sh` | `dd5ba98a00a3b37003554a14200f789fcb233cac` |
 | Official Supabase upstream alignment | [Issue #44 evidence](ISSUE_44_UPSTREAM_ALIGNMENT.md) | Official Auth synthetic sign-in and authenticated PostgREST OpenAPI census | `7f2a3fa955a811f97ed4f88e4cfa50ad7e3aa4d4` |
+| Executable local stdio/operator package | [Issue #18 operator and release evidence](ISSUE_18_OPERATOR_RELEASE.md) | `packages/server/src/stdio-startup.test.ts` and `test/issue-18-operator-contract.test.ts` | `d59d6967cb276752878baa5c03f57a179ac8e9c0` |
+| Governed Artifact Inspection S0 contract | [Issue #34 S0 evidence](ISSUE_34_S0_ARTIFACT_CONTRACT.md) | `packages/contracts/src/artifact-inspection.test.ts` | `6bff150d673055028e19e2202875b8f7d27f4782` |
+| S1b deterministic chunk/Merkle calibration | [Issue #34 S1b evidence](ISSUE_34_S1B_CHUNK_MERKLE_CALIBRATION.md) | `packages/server/src/artifact-chunk-manifest.test.ts` and `npm run artifact:calibrate` | `e36418d812a7004f5b9cf1ef14070375cfed7493` |
 
 ## Unmerged candidate evidence
 
-| Candidate | Coordinate/evidence source | What it may support | Open limits |
-| --- | --- | --- | --- |
-| [Issue #18](ISSUE_18_OPERATOR_RELEASE.md) executable local stdio/operator package | Candidate branch must be frozen after full CI and clean-room reproduction | Environment-only read-only startup, separate M0 probe, synthetic client example, revoke/rollback guide, and release checklist | Unmerged; POSIX-only credential-permission profile and non-production claim limits |
+There is no unmerged candidate at this documentation coordinate. Issue #34 S2 is the next planned
+candidate; it must remain listed as future work until an exact branch and review artifact exist.
 
 Green CI on a draft coordinate proves only that the named workflow passed for that source.
 It does not merge the code, satisfy independent review, authorize deployment, or establish
@@ -51,6 +53,7 @@ npm run check
 npm run policy-lab:test
 npm run test:m2
 npm run test:s1
+npm run artifact:calibrate
 ```
 
 The M2 acceptance command must run from a clean exact-head checkout. Its receipt proves only the

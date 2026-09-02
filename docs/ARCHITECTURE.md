@@ -1,7 +1,7 @@
 # Architecture
 
 - **Status:** Mixed — local foundation implemented; remote and write profiles proposed or blocked
-- **Last reviewed:** 2026-08-30
+- **Last reviewed:** 2026-09-01
 
 Implemented behavior is linked through the [evidence index](evidence/README.md). Target
 components and profiles remain design requirements until their named acceptance gates pass.
@@ -97,6 +97,22 @@ The policy layer is the final authority for tenant, subject, client, capability,
 operation, and record-state checks. Database constraints enforce state-machine and
 integrity properties that cannot safely depend on model behavior.
 
+### Governed artifact inspection extension
+
+Issue #34 extends the same identity/capability model to immutable Storage-backed artifacts without
+turning Storage into a generic model-facing file system. It separates four surfaces:
+
+- MCP contracts name fixed capabilities and bounded request/result shapes;
+- a deterministic inspector performs exact reads and integrity verification;
+- Postgres/RLS authorizes opaque artifact identity under the current principal and approved client;
+- Storage retains byte custody behind internal locators that callers never select.
+
+Merged `main` includes the S0 contract, synthetic S1 registry/RLS laboratory, and S1b deterministic
+source-manifest/chunk/Merkle profile. The next gate, S2, is a synthetic/local fixed inspector for
+`artifact_stat` and bounded range/text reads. It remains unregistered with MCP and undeployed to
+Edge. Generic Storage access, signed URLs, `service_role`, caller-selected paths, ingest, semantic
+analysis, and writes remain outside the accepted architecture.
+
 ### Audit layer
 
 Application audit records transport and tool outcomes without tokens or sensitive result
@@ -147,9 +163,10 @@ surface.
 - User credential loaded from a protected local source, never a CLI argument.
 - Fixed API origin and tool catalog.
 - No remote listener, OAuth callback, or refresh-token store in the server.
-- Read-only until M2 gates pass.
+- Read-only M2 gates pass for the experimental synthetic profile.
 
-This profile proves RLS mechanics but is not a multi-user hosted service.
+This profile proves the accepted local Auth/Data API/RLS path and fixed read tools but is not a
+multi-user hosted or production service.
 
 ### Profile B: remote HTTP service
 

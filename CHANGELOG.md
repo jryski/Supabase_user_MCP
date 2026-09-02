@@ -20,6 +20,16 @@ the first public package is released.
 - Runtime-validated zero-authority tool contract and automated compatibility tests.
 - Build, format, lint, type-check, and test workflow for pull requests.
 - Reproducible M0 compatibility evidence.
+- Synthetic Supabase Auth, Data API, PostgreSQL RLS, revocation, audit, and catalog-policy laboratories.
+- Principal/client-bound `memory_search`, `memory_get`, and `memory_list_recent` through a fixed
+  read-only MCP surface with complete wire, request-ID, time, row, and concurrency bounds.
+- Official Auth sign-in reuse and authenticated PostgREST OpenAPI surface census in synthetic M2.
+- Environment-only verified read-only stdio startup, synthetic client example, and operator
+  revoke/rollback guidance for the experimental local profile.
+- Governed Artifact Inspection S0 contracts for opaque IDs, bounded operations, integrity evidence,
+  receipts, deterministic profiles, and many-source derivation lineage.
+- Synthetic artifact registry, approved-inspector policy, Storage RLS laboratory, and deterministic
+  S1b source/chunk/Merkle calibration with mutation-sensitive proof verification.
 
 ### Changed
 
