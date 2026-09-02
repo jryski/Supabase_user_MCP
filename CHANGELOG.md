@@ -30,6 +30,12 @@ the first public package is released.
   receipts, deterministic profiles, and many-source derivation lineage.
 - Synthetic artifact registry, approved-inspector policy, Storage RLS laboratory, and deterministic
   S1b source/chunk/Merkle calibration with mutation-sensitive proof verification.
+- Synthetic/local S2 fixed artifact inspector library for stat, bounded range, and bounded UTF-8
+  line reads, including strict injected-record/read validation, distinct capability-grant custody,
+  exact immutable-version unavailability, redacted dependency failures, and validated immutable
+  receipts. This adds no MCP registration, hosted/Edge deployment, Storage/database mutation,
+  `service_role`, signed URL, ingest, search, semantic analysis, write, private-data, or
+  production-readiness claim; S3 registration and Storage containment closure remains next.
 
 ### Changed
 

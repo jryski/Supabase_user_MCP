@@ -6,6 +6,7 @@ import {
   type ArtifactInspectionOperation,
   type ArtifactInspectionReceipt,
   ArtifactInspectionReceiptSchema,
+  ArtifactIdSchema,
   ArtifactReadLinesInputSchema,
   type ArtifactReadLinesOutput,
   ArtifactReadLinesOutputSchema,
@@ -37,6 +38,8 @@ import {
   type ArtifactChunkProof,
   buildArtifactChunkProof,
   EMPTY_ARTIFACT_MERKLE_ROOT,
+  MAX_CALIBRATION_SOURCE_BYTES,
+  MAX_CHUNK_COUNT,
   verifyArtifactChunkProof,
   verifyArtifactSourceManifest,
 } from './artifact-chunk-manifest.js';
@@ -82,6 +85,8 @@ import {
 const GIT_COMMIT_COORDINATE_PATTERN = /^[0-9a-f]{40}$/;
 const BOUNDED_VERSION_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
 const HEX64_PATTERN = /^[0-9a-f]{64}$/;
+const OBJECT_VERSION_REF_PATTERN = /^ov_[A-Za-z0-9_-]+$/;
+const CHUNK_HASHES_REF_PATTERN = /^chr_[A-Za-z0-9_-]+$/;
 
 /** This module's own fixed deterministic-profile identity, bound into every
  * receipt's `analyzerProfileVersion`. S2 performs no semantic analysis and
@@ -135,7 +140,12 @@ export const ArtifactInspectorTrustedContextSchema = z
   .object({
     principalRef: AuthorizationIdentifierSchema,
     inspectorClientRef: AuthorizationIdentifierSchema,
-    inspectorCapabilityRef: z.literal('artifact:inspect'),
+    inspectorCapabilityRef: z
+      .object({
+        capability: z.literal('artifact:inspect'),
+        ref: AuthorizationIdentifierSchema,
+      })
+      .strict(),
     verifierAudience: AuthorizationIdentifierSchema,
     policyVersion: z.string().min(1).max(64).regex(BOUNDED_VERSION_PATTERN),
     inspectorDeploymentGitCoordinate: z.string().regex(GIT_COMMIT_COORDINATE_PATTERN),
@@ -150,7 +160,7 @@ export function createArtifactInspectorTrustedContext(
   input: unknown,
 ): ArtifactInspectorTrustedContext {
   const parsed = ArtifactInspectorTrustedContextSchema.parse(input);
-  return Object.freeze({ ...parsed });
+  return deepFreeze(parsed);
 }
 
 // ---------------------------------------------------------------------------
@@ -189,6 +199,61 @@ export interface ReadVersionedRangeResult {
   readonly objectVersionRef: string;
 }
 
+const ObjectVersionRefSchema = z.string().min(20).max(256).regex(OBJECT_VERSION_REF_PATTERN);
+const ChunkHashesRefSchema = z.string().min(20).max(256).regex(CHUNK_HASHES_REF_PATTERN);
+const Sha256HexSchema = z.string().length(64).regex(HEX64_PATTERN);
+
+const AuthorizedArtifactMetadataSchema = z
+  .object({
+    artifactId: ArtifactIdSchema,
+    objectVersionRef: ObjectVersionRefSchema,
+    sourceSha256: Sha256HexSchema,
+    byteLength: z.number().int().min(0).max(MAX_CALIBRATION_SOURCE_BYTES),
+    chunkSize: z
+      .number()
+      .int()
+      .refine((value): value is AllowedChunkSize =>
+        (ALLOWED_CHUNK_SIZES as readonly number[]).includes(value),
+      ),
+    chunkCount: z.number().int().min(0).max(MAX_CHUNK_COUNT),
+    chunkSha256s: z.array(Sha256HexSchema).max(MAX_CHUNK_COUNT),
+    merkleLeafSha256s: z.array(Sha256HexSchema).max(MAX_CHUNK_COUNT),
+    merkleRoot: Sha256HexSchema,
+    mediaType: z.string().min(1).max(255),
+    createdAt: z.iso.datetime({ offset: true }),
+    expiresAt: z.iso.datetime({ offset: true }).optional(),
+    chunkHashesRef: ChunkHashesRefSchema.optional(),
+  })
+  .strict()
+  .superRefine((record, ctx) => {
+    const expectedChunkCount =
+      record.byteLength === 0 ? 0 : Math.ceil(record.byteLength / record.chunkSize);
+    if (record.chunkCount !== expectedChunkCount) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['chunkCount'],
+        message: 'Chunk count must match the declared byte length and chunk size.',
+      });
+    }
+    if (
+      record.chunkSha256s.length !== record.chunkCount ||
+      record.merkleLeafSha256s.length !== record.chunkCount
+    ) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['chunkSha256s'],
+        message: 'Both hash arrays must exactly match the declared chunk count.',
+      });
+    }
+  });
+
+const ReadVersionedRangeResultSchema = z
+  .object({
+    bytes: z.instanceof(Uint8Array),
+    objectVersionRef: ObjectVersionRefSchema,
+  })
+  .strict();
+
 export interface ArtifactInspectorOperationalEvent {
   readonly operation: ArtifactInspectionOperation;
   readonly resultClass: 'success' | ArtifactInspectionErrorCode;
@@ -217,7 +282,8 @@ export interface ArtifactInspectorDependencies {
     artifactId: string,
   ): Promise<AuthorizedArtifactRecord | null>;
   /** Reads exactly `length` bytes of the immutable object version starting
-   * at `offset`, or throws. Must never leak a signed URL, bucket, path,
+   * at `offset`; returns `null` only when that exact version is unavailable,
+   * and throws for dependency failures. Must never leak a signed URL, bucket, path,
    * HTTP method, token, or credential in its return value. */
   readVersionedRange(
     context: ArtifactInspectorTrustedContext,
@@ -225,7 +291,7 @@ export interface ArtifactInspectorDependencies {
     objectVersionRef: string,
     offset: number,
     length: number,
-  ): Promise<ReadVersionedRangeResult>;
+  ): Promise<ReadVersionedRangeResult | null>;
   /** Deterministic clock, injected for reproducible expiry tests. */
   now(): Date;
   /** Redacted operational telemetry. Never receives an artifact ID, an
@@ -245,6 +311,85 @@ export interface ArtifactInspectorDependencies {
 // `ArtifactChunkManifest` so every subsequent proof build/verify call runs
 // through the existing, independently calibrated S1b module unchanged.
 // ---------------------------------------------------------------------------
+
+const AUTHORIZED_ARTIFACT_RECORD_KEYS = new Set([
+  'artifactId',
+  'internalLocator',
+  'objectVersionRef',
+  'sourceSha256',
+  'byteLength',
+  'chunkSize',
+  'chunkCount',
+  'chunkSha256s',
+  'merkleLeafSha256s',
+  'merkleRoot',
+  'mediaType',
+  'createdAt',
+  'expiresAt',
+  'chunkHashesRef',
+]);
+
+/**
+ * Validates every public registry coordinate while keeping `internalLocator`
+ * opaque. The locator is copied by reference into a frozen wrapper solely so
+ * it can be handed back to the byte adapter; its value is never traversed,
+ * parsed, serialized, or frozen.
+ */
+function validateAuthorizedArtifactRecord(
+  rawRecord: unknown,
+  requestedArtifactId: string,
+): AuthorizedArtifactRecord | null {
+  if (rawRecord === null || typeof rawRecord !== 'object' || Array.isArray(rawRecord)) {
+    return null;
+  }
+  const candidate = rawRecord as Record<string, unknown>;
+  if (
+    !Object.hasOwn(candidate, 'internalLocator') ||
+    Reflect.ownKeys(candidate).some(
+      (key) => typeof key !== 'string' || !AUTHORIZED_ARTIFACT_RECORD_KEYS.has(key),
+    )
+  ) {
+    return null;
+  }
+
+  const parsed = AuthorizedArtifactMetadataSchema.safeParse({
+    artifactId: candidate.artifactId,
+    objectVersionRef: candidate.objectVersionRef,
+    sourceSha256: candidate.sourceSha256,
+    byteLength: candidate.byteLength,
+    chunkSize: candidate.chunkSize,
+    chunkCount: candidate.chunkCount,
+    chunkSha256s: candidate.chunkSha256s,
+    merkleLeafSha256s: candidate.merkleLeafSha256s,
+    merkleRoot: candidate.merkleRoot,
+    mediaType: candidate.mediaType,
+    createdAt: candidate.createdAt,
+    ...(candidate.expiresAt === undefined ? {} : { expiresAt: candidate.expiresAt }),
+    ...(candidate.chunkHashesRef === undefined ? {} : { chunkHashesRef: candidate.chunkHashesRef }),
+  });
+  if (!parsed.success || parsed.data.artifactId !== requestedArtifactId) {
+    return null;
+  }
+
+  return Object.freeze({
+    artifactId: parsed.data.artifactId,
+    internalLocator: candidate.internalLocator,
+    objectVersionRef: parsed.data.objectVersionRef,
+    sourceSha256: parsed.data.sourceSha256,
+    byteLength: parsed.data.byteLength,
+    chunkSize: parsed.data.chunkSize as AllowedChunkSize,
+    chunkCount: parsed.data.chunkCount,
+    chunkSha256s: Object.freeze(parsed.data.chunkSha256s),
+    merkleLeafSha256s: Object.freeze(parsed.data.merkleLeafSha256s),
+    merkleRoot: parsed.data.merkleRoot,
+    mediaType: parsed.data.mediaType,
+    createdAt: parsed.data.createdAt,
+    ...(parsed.data.expiresAt === undefined ? {} : { expiresAt: parsed.data.expiresAt }),
+    ...(parsed.data.chunkHashesRef === undefined
+      ? {}
+      : { chunkHashesRef: parsed.data.chunkHashesRef }),
+  });
+}
 
 function buildManifestFromRecord(record: AuthorizedArtifactRecord): ArtifactChunkManifest {
   if (
@@ -320,7 +465,7 @@ function validateManifestConsistency(manifest: ArtifactChunkManifest): void {
 
 type ResolveOutcome =
   | { readonly kind: 'unavailable' }
-  | { readonly kind: 'internal_error'; readonly record: AuthorizedArtifactRecord }
+  | { readonly kind: 'internal_error' }
   | {
       readonly kind: 'ok';
       readonly record: AuthorizedArtifactRecord;
@@ -331,24 +476,25 @@ async function resolveArtifact(
   dependencies: ArtifactInspectorDependencies,
   context: ArtifactInspectorTrustedContext,
   artifactId: string,
+  nowIso: string,
 ): Promise<ResolveOutcome> {
-  const record = await dependencies.resolveAuthorizedArtifact(context, artifactId);
-  if (record === null) {
-    return { kind: 'unavailable' };
-  }
-  const nowIso = dependencies.now().toISOString();
-  if (isArtifactExpired(record.expiresAt, nowIso)) {
-    return { kind: 'unavailable' };
-  }
   try {
+    const rawRecord = await dependencies.resolveAuthorizedArtifact(context, artifactId);
+    if (rawRecord === null) {
+      return { kind: 'unavailable' };
+    }
+    const record = validateAuthorizedArtifactRecord(rawRecord, artifactId);
+    if (record === null) {
+      return { kind: 'internal_error' };
+    }
+    if (isArtifactExpired(record.expiresAt, nowIso)) {
+      return { kind: 'unavailable' };
+    }
     const manifest = buildManifestFromRecord(record);
     validateManifestConsistency(manifest);
     return { kind: 'ok', record, manifest };
-  } catch (error) {
-    if (error instanceof ArtifactChunkManifestError) {
-      return { kind: 'internal_error', record };
-    }
-    throw error;
+  } catch {
+    return { kind: 'internal_error' };
   }
 }
 
@@ -471,8 +617,8 @@ function buildReceiptBase(
     inspectorClientRef: context.inspectorClientRef,
     inspectorClientBinding: 'approved' as const,
     inspectorCapabilityRef: Object.freeze({
-      capability: 'artifact:inspect' as const,
-      ref: context.inspectorClientRef,
+      capability: context.inspectorCapabilityRef.capability,
+      ref: context.inspectorCapabilityRef.ref,
     }),
     artifactId,
     objectVersionRef: record.objectVersionRef,
@@ -488,21 +634,23 @@ function buildReceiptBase(
   });
 }
 
+/** Parses and freezes the receipt before any success is returned. Observer
+ * callback failures remain isolated, but malformed generated receipt data is
+ * reported to the caller through the boolean result instead of being dropped. */
 function emitReceiptSafely(
   dependencies: ArtifactInspectorDependencies,
   receipt: ArtifactInspectionReceipt,
-): void {
+): boolean {
   const validated = ArtifactInspectionReceiptSchema.safeParse(receipt);
   if (!validated.success) {
-    // A receipt that fails its own schema must never be emitted; the caller
-    // still gets the public error output constructed independently below.
-    return;
+    return false;
   }
   try {
     dependencies.emitInspectionReceipt?.(deepFreeze(validated.data));
   } catch {
     // Receipt emission must never affect tool execution.
   }
+  return true;
 }
 
 function emitEventSafely(
@@ -516,6 +664,36 @@ function emitEventSafely(
   }
 }
 
+function validateRuntimeContext(context: unknown): ArtifactInspectorTrustedContext | null {
+  try {
+    const parsed = ArtifactInspectorTrustedContextSchema.safeParse(context);
+    return parsed.success ? deepFreeze(parsed.data) : null;
+  } catch {
+    return null;
+  }
+}
+
+function readClockIso(dependencies: ArtifactInspectorDependencies): string | null {
+  try {
+    const now = dependencies.now();
+    if (!(now instanceof Date) || !Number.isFinite(now.getTime())) {
+      return null;
+    }
+    return now.toISOString();
+  } catch {
+    return null;
+  }
+}
+
+function parseReadResult(rawResult: unknown): ReadVersionedRangeResult | null {
+  try {
+    const parsed = ReadVersionedRangeResultSchema.safeParse(rawResult);
+    return parsed.success ? parsed.data : null;
+  } catch {
+    return null;
+  }
+}
+
 // ---------------------------------------------------------------------------
 // artifact_stat
 // ---------------------------------------------------------------------------
@@ -525,15 +703,16 @@ export async function artifactStat(
   context: ArtifactInspectorTrustedContext,
   rawInput: unknown,
 ): Promise<ArtifactStatOutput> {
-  const startedAtMs = dependencies.now().getTime();
+  const startedAtMs = performance.now();
+  let runtimeContext: ArtifactInspectorTrustedContext | null = null;
   const emit = (resultClass: 'success' | ArtifactInspectionErrorCode) => {
     emitEventSafely(dependencies, {
       operation: 'artifact_stat',
       resultClass,
-      ...(context.requestCorrelationId === undefined
+      ...(runtimeContext?.requestCorrelationId === undefined
         ? {}
-        : { requestCorrelationId: context.requestCorrelationId }),
-      elapsedMs: Math.max(0, dependencies.now().getTime() - startedAtMs),
+        : { requestCorrelationId: runtimeContext.requestCorrelationId }),
+      elapsedMs: Math.max(0, performance.now() - startedAtMs),
     });
   };
 
@@ -543,28 +722,39 @@ export async function artifactStat(
     return createArtifactInspectionError('INVALID_REQUEST');
   }
 
-  const resolved = await resolveArtifact(dependencies, context, input.data.artifactId);
+  runtimeContext = validateRuntimeContext(context);
+  if (runtimeContext === null) {
+    emit('INTERNAL_ERROR');
+    return createArtifactInspectionError('INTERNAL_ERROR');
+  }
+  const nowIso = readClockIso(dependencies);
+  if (nowIso === null) {
+    emit('INTERNAL_ERROR');
+    return createArtifactInspectionError('INTERNAL_ERROR');
+  }
+
+  const resolved = await resolveArtifact(
+    dependencies,
+    runtimeContext,
+    input.data.artifactId,
+    nowIso,
+  );
   if (resolved.kind === 'unavailable') {
     emit('RESOURCE_UNAVAILABLE');
     return publicArtifactInspectionUnavailable('missing');
   }
 
-  const recordedAt = dependencies.now().toISOString();
-  const receiptOptions: ReceiptOptions = {
-    context,
-    record: resolved.record,
-    artifactId: input.data.artifactId,
-    recordedAt,
-  };
-
   if (resolved.kind === 'internal_error') {
-    emitReceiptSafely(
-      dependencies,
-      buildStatReceipt({ ...receiptOptions, errorClass: 'INTERNAL_ERROR' }),
-    );
     emit('INTERNAL_ERROR');
     return createArtifactInspectionError('INTERNAL_ERROR');
   }
+
+  const receiptOptions: ReceiptOptions = {
+    context: runtimeContext,
+    record: resolved.record,
+    artifactId: input.data.artifactId,
+    recordedAt: nowIso,
+  };
 
   const { record, manifest } = resolved;
   const chunkHashes =
@@ -620,7 +810,10 @@ export async function artifactStat(
     return createArtifactInspectionError('INTERNAL_ERROR');
   }
 
-  emitReceiptSafely(dependencies, buildStatReceipt(receiptOptions));
+  if (!emitReceiptSafely(dependencies, buildStatReceipt(receiptOptions))) {
+    emit('INTERNAL_ERROR');
+    return createArtifactInspectionError('INTERNAL_ERROR');
+  }
   emit('success');
   return deepFreeze(validated.data);
 }
@@ -634,7 +827,8 @@ export async function artifactReadRange(
   context: ArtifactInspectorTrustedContext,
   rawInput: unknown,
 ): Promise<ArtifactReadRangeOutput> {
-  const startedAtMs = dependencies.now().getTime();
+  const startedAtMs = performance.now();
+  let runtimeContext: ArtifactInspectorTrustedContext | null = null;
   const emit = (
     resultClass: 'success' | ArtifactInspectionErrorCode,
     byteCounts?: ArtifactInspectorOperationalEvent['byteCounts'],
@@ -642,10 +836,10 @@ export async function artifactReadRange(
     emitEventSafely(dependencies, {
       operation: 'artifact_read_range',
       resultClass,
-      ...(context.requestCorrelationId === undefined
+      ...(runtimeContext?.requestCorrelationId === undefined
         ? {}
-        : { requestCorrelationId: context.requestCorrelationId }),
-      elapsedMs: Math.max(0, dependencies.now().getTime() - startedAtMs),
+        : { requestCorrelationId: runtimeContext.requestCorrelationId }),
+      elapsedMs: Math.max(0, performance.now() - startedAtMs),
       ...(byteCounts === undefined ? {} : { byteCounts }),
     });
   };
@@ -657,17 +851,32 @@ export async function artifactReadRange(
   }
   const { artifactId, offset, length } = input.data;
 
-  const resolved = await resolveArtifact(dependencies, context, artifactId);
+  runtimeContext = validateRuntimeContext(context);
+  if (runtimeContext === null) {
+    emit('INTERNAL_ERROR', { requested: length });
+    return createArtifactInspectionError('INTERNAL_ERROR');
+  }
+  const nowIso = readClockIso(dependencies);
+  if (nowIso === null) {
+    emit('INTERNAL_ERROR', { requested: length });
+    return createArtifactInspectionError('INTERNAL_ERROR');
+  }
+
+  const resolved = await resolveArtifact(dependencies, runtimeContext, artifactId, nowIso);
   if (resolved.kind === 'unavailable') {
     emit('RESOURCE_UNAVAILABLE', { requested: length });
     return publicArtifactInspectionUnavailable('missing');
   }
+  if (resolved.kind === 'internal_error') {
+    emit('INTERNAL_ERROR', { requested: length });
+    return createArtifactInspectionError('INTERNAL_ERROR');
+  }
 
   const receiptOptions: ReceiptOptions = {
-    context,
+    context: runtimeContext,
     record: resolved.record,
     artifactId,
-    recordedAt: dependencies.now().toISOString(),
+    recordedAt: nowIso,
   };
   const placeholderReturnedRange = { offset: 0, length: 0 };
 
@@ -685,10 +894,6 @@ export async function artifactReadRange(
     return createArtifactInspectionError(errorClass);
   };
 
-  if (resolved.kind === 'internal_error') {
-    return failClosed('INTERNAL_ERROR');
-  }
-
   const { record, manifest } = resolved;
 
   if (offset >= record.byteLength || offset + length > record.byteLength) {
@@ -705,16 +910,25 @@ export async function artifactReadRange(
     return failClosed('RESPONSE_LIMIT_EXCEEDED');
   }
 
-  let readResult: ReadVersionedRangeResult;
+  let rawReadResult: unknown;
   try {
-    readResult = await dependencies.readVersionedRange(
-      context,
+    rawReadResult = await dependencies.readVersionedRange(
+      runtimeContext,
       record.internalLocator,
       record.objectVersionRef,
       coveringOffset,
       coveringLength,
     );
   } catch {
+    return failClosed('INTERNAL_ERROR');
+  }
+
+  if (rawReadResult === null) {
+    emit('RESOURCE_UNAVAILABLE', { requested: length });
+    return publicArtifactInspectionUnavailable('missing');
+  }
+  const readResult = parseReadResult(rawReadResult);
+  if (readResult === null) {
     return failClosed('INTERNAL_ERROR');
   }
 
@@ -803,10 +1017,15 @@ export async function artifactReadRange(
     return failClosed('INTERNAL_ERROR');
   }
 
-  emitReceiptSafely(
-    dependencies,
-    buildRangeReceipt(receiptOptions, { offset, length }, returnedRange, returnedByteSha256),
-  );
+  if (
+    !emitReceiptSafely(
+      dependencies,
+      buildRangeReceipt(receiptOptions, { offset, length }, returnedRange, returnedByteSha256),
+    )
+  ) {
+    emit('INTERNAL_ERROR', { requested: length, covering: coveringLength });
+    return createArtifactInspectionError('INTERNAL_ERROR');
+  }
   emit('success', { requested: length, covering: coveringLength, returned: length });
   return deepFreeze(validated.data);
 }
@@ -825,7 +1044,8 @@ export async function artifactReadLines(
   context: ArtifactInspectorTrustedContext,
   rawInput: unknown,
 ): Promise<ArtifactReadLinesOutput> {
-  const startedAtMs = dependencies.now().getTime();
+  const startedAtMs = performance.now();
+  let runtimeContext: ArtifactInspectorTrustedContext | null = null;
   const emit = (
     resultClass: 'success' | ArtifactInspectionErrorCode,
     byteCounts?: ArtifactInspectorOperationalEvent['byteCounts'],
@@ -833,10 +1053,10 @@ export async function artifactReadLines(
     emitEventSafely(dependencies, {
       operation: 'artifact_read_lines',
       resultClass,
-      ...(context.requestCorrelationId === undefined
+      ...(runtimeContext?.requestCorrelationId === undefined
         ? {}
-        : { requestCorrelationId: context.requestCorrelationId }),
-      elapsedMs: Math.max(0, dependencies.now().getTime() - startedAtMs),
+        : { requestCorrelationId: runtimeContext.requestCorrelationId }),
+      elapsedMs: Math.max(0, performance.now() - startedAtMs),
       ...(byteCounts === undefined ? {} : { byteCounts }),
     });
   };
@@ -848,17 +1068,32 @@ export async function artifactReadLines(
   }
   const { artifactId, startLine, count } = input.data;
 
-  const resolved = await resolveArtifact(dependencies, context, artifactId);
+  runtimeContext = validateRuntimeContext(context);
+  if (runtimeContext === null) {
+    emit('INTERNAL_ERROR');
+    return createArtifactInspectionError('INTERNAL_ERROR');
+  }
+  const nowIso = readClockIso(dependencies);
+  if (nowIso === null) {
+    emit('INTERNAL_ERROR');
+    return createArtifactInspectionError('INTERNAL_ERROR');
+  }
+
+  const resolved = await resolveArtifact(dependencies, runtimeContext, artifactId, nowIso);
   if (resolved.kind === 'unavailable') {
     emit('RESOURCE_UNAVAILABLE');
     return publicArtifactInspectionUnavailable('missing');
   }
+  if (resolved.kind === 'internal_error') {
+    emit('INTERNAL_ERROR');
+    return createArtifactInspectionError('INTERNAL_ERROR');
+  }
 
   const receiptOptions: ReceiptOptions = {
-    context,
+    context: runtimeContext,
     record: resolved.record,
     artifactId,
-    recordedAt: dependencies.now().toISOString(),
+    recordedAt: nowIso,
   };
   const placeholderReturnedRange = { offset: 0, length: 0 };
 
@@ -876,10 +1111,6 @@ export async function artifactReadLines(
     return createArtifactInspectionError(errorClass);
   };
 
-  if (resolved.kind === 'internal_error') {
-    return failClosed('INTERNAL_ERROR');
-  }
-
   const { record, manifest } = resolved;
 
   if (!isSupportedLineMediaType(record.mediaType)) {
@@ -890,16 +1121,25 @@ export async function artifactReadLines(
     return failClosed('RESPONSE_LIMIT_EXCEEDED');
   }
 
-  let readResult: ReadVersionedRangeResult;
+  let rawReadResult: unknown;
   try {
-    readResult = await dependencies.readVersionedRange(
-      context,
+    rawReadResult = await dependencies.readVersionedRange(
+      runtimeContext,
       record.internalLocator,
       record.objectVersionRef,
       0,
       record.byteLength,
     );
   } catch {
+    return failClosed('INTERNAL_ERROR');
+  }
+
+  if (rawReadResult === null) {
+    emit('RESOURCE_UNAVAILABLE');
+    return publicArtifactInspectionUnavailable('missing');
+  }
+  const readResult = parseReadResult(rawReadResult);
+  if (readResult === null) {
     return failClosed('INTERNAL_ERROR');
   }
 
@@ -973,15 +1213,20 @@ export async function artifactReadLines(
     if (!validated.success) {
       return failClosed('INTERNAL_ERROR');
     }
-    emitReceiptSafely(
-      dependencies,
-      buildLinesReceipt(
-        receiptOptions,
-        { startLine, count },
-        returnedRange,
-        EMPTY_BYTES_SHA256_HEX,
-      ),
-    );
+    if (
+      !emitReceiptSafely(
+        dependencies,
+        buildLinesReceipt(
+          receiptOptions,
+          { startLine, count },
+          returnedRange,
+          EMPTY_BYTES_SHA256_HEX,
+        ),
+      )
+    ) {
+      emit('INTERNAL_ERROR');
+      return createArtifactInspectionError('INTERNAL_ERROR');
+    }
     emit('success', { returned: 0 });
     return deepFreeze(validated.data);
   }
@@ -1065,10 +1310,15 @@ export async function artifactReadLines(
     return failClosed('INTERNAL_ERROR');
   }
 
-  emitReceiptSafely(
-    dependencies,
-    buildLinesReceipt(receiptOptions, { startLine, count }, returnedRange, returnedByteSha256),
-  );
+  if (
+    !emitReceiptSafely(
+      dependencies,
+      buildLinesReceipt(receiptOptions, { startLine, count }, returnedRange, returnedByteSha256),
+    )
+  ) {
+    emit('INTERNAL_ERROR', { returned: dataByteLength });
+    return createArtifactInspectionError('INTERNAL_ERROR');
+  }
   emit('success', { returned: dataByteLength });
   return deepFreeze(validated.data);
 }

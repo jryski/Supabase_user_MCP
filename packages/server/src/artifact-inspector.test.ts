@@ -8,9 +8,14 @@ import {
   MAX_INLINE_CHUNK_HASHES,
   MAX_RANGE_BYTES,
 } from '@supabase-user-mcp/contracts';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
-import { type AllowedChunkSize, buildArtifactChunkManifest } from './artifact-chunk-manifest.js';
+import {
+  type AllowedChunkSize,
+  buildArtifactChunkManifest,
+  buildArtifactChunkProof,
+  verifyArtifactChunkProof,
+} from './artifact-chunk-manifest.js';
 import {
   ARTIFACT_INSPECTOR_PROFILE_VERSION,
   type ArtifactInspectorDependencies,
@@ -56,6 +61,7 @@ const OTHER_ARTIFACT_ID = 'art_0000000000000000000002';
 const OBJECT_VERSION_REF = 'ov_0000000000000000000001';
 const DRIFTED_OBJECT_VERSION_REF = 'ov_0000000000000000000099';
 const CHUNK_HASHES_REF = 'chr_0000000000000000000001';
+const CAPABILITY_GRANT_REF = 'grant-1';
 const GIT_COORDINATE = 'ab'.repeat(20);
 
 /** Distinctive sentinel that must never leak into any public output,
@@ -69,7 +75,10 @@ const INTERNAL_LOCATOR_SENTINEL = {
 const DEFAULT_CONTEXT_INPUT = {
   principalRef: 'principal-ok',
   inspectorClientRef: 'client-ok',
-  inspectorCapabilityRef: 'artifact:inspect' as const,
+  inspectorCapabilityRef: {
+    capability: 'artifact:inspect' as const,
+    ref: CAPABILITY_GRANT_REF,
+  },
   verifierAudience: 'audience-1',
   policyVersion: 'policy-2026.06.01',
   inspectorDeploymentGitCoordinate: GIT_COORDINATE,
@@ -79,6 +88,10 @@ function makeContext(
   overrides: Partial<{
     principalRef: string;
     inspectorClientRef: string;
+    inspectorCapabilityRef: {
+      capability: 'artifact:inspect';
+      ref: string;
+    };
     verifierAudience: string;
     policyVersion: string;
     inspectorDeploymentGitCoordinate: string;
@@ -214,7 +227,11 @@ describe('trusted context', () => {
   it('accepts a well-formed context and freezes it', () => {
     const context = makeContext();
     expect(Object.isFrozen(context)).toBe(true);
-    expect(context.inspectorCapabilityRef).toBe('artifact:inspect');
+    expect(Object.isFrozen(context.inspectorCapabilityRef)).toBe(true);
+    expect(context.inspectorCapabilityRef).toEqual({
+      capability: 'artifact:inspect',
+      ref: CAPABILITY_GRANT_REF,
+    });
   });
 
   it('rejects an unknown field', () => {
@@ -227,12 +244,18 @@ describe('trusted context', () => {
     expect(() =>
       createArtifactInspectorTrustedContext({
         ...DEFAULT_CONTEXT_INPUT,
-        inspectorCapabilityRef: 'artifact:write',
+        inspectorCapabilityRef: {
+          capability: 'artifact:write',
+          ref: CAPABILITY_GRANT_REF,
+        },
       }),
     ).toThrow();
     const result = ArtifactInspectorTrustedContextSchema.safeParse({
       ...DEFAULT_CONTEXT_INPUT,
-      inspectorCapabilityRef: 'artifact:write',
+      inspectorCapabilityRef: {
+        capability: 'artifact:write',
+        ref: CAPABILITY_GRANT_REF,
+      },
     });
     expect(result.success).toBe(false);
   });
@@ -565,7 +588,9 @@ describe('artifact_read_range', () => {
       if (output.ok) throw new Error('expected error');
       expect(output.error.code).toBe('INTERNAL_ERROR');
       expect(readCalls).toHaveLength(0);
-      expect(receipts).toHaveLength(1);
+      // Malformed registry records have no validated source coordinates from
+      // which a receipt may be constructed.
+      expect(receipts).toHaveLength(0);
     }
   });
 
@@ -866,14 +891,17 @@ describe('authorization and non-enumeration', () => {
   });
 
   it('acceptance 9: missing/wrong capability (adapter-side grant denial)', async () => {
-    const deniedClients = new Set(['client-no-capability']);
+    const deniedGrantRefs = new Set(['grant-denied']);
     const { dependencies } = trackDeps({
       resolveAuthorizedArtifact: async (context) =>
-        deniedClients.has(context.inspectorClientRef) ? null : record,
+        deniedGrantRefs.has(context.inspectorCapabilityRef.ref) ? null : record,
     });
     const output = await artifactStat(
       dependencies,
-      makeContext({ inspectorClientRef: 'client-no-capability' }),
+      makeContext({
+        inspectorClientRef: 'client-ok',
+        inspectorCapabilityRef: { capability: 'artifact:inspect', ref: 'grant-denied' },
+      }),
       { artifactId: ARTIFACT_ID },
     );
     expect(output.ok).toBe(false);
@@ -901,6 +929,10 @@ describe('authorization and non-enumeration', () => {
       resolveAuthorizedArtifact: async (context) =>
         context.principalRef === 'principal-ok' ? record : null,
     }).dependencies;
+    const exactVersionUnavailableDeps = trackDeps({
+      resolveAuthorizedArtifact: resolverFor(record),
+      readVersionedRange: async () => null,
+    }).dependencies;
 
     const outputs = await Promise.all([
       artifactStat(missingDeps, makeContext(), { artifactId: ARTIFACT_ID }),
@@ -924,6 +956,16 @@ describe('authorization and non-enumeration', () => {
         count: 1,
       }),
       artifactReadLines(expiredDeps, makeContext(), {
+        artifactId: ARTIFACT_ID,
+        startLine: 1,
+        count: 1,
+      }),
+      artifactReadRange(exactVersionUnavailableDeps, makeContext(), {
+        artifactId: ARTIFACT_ID,
+        offset: 0,
+        length: 1,
+      }),
+      artifactReadLines(exactVersionUnavailableDeps, makeContext(), {
         artifactId: ARTIFACT_ID,
         startLine: 1,
         count: 1,
@@ -1113,6 +1155,441 @@ describe('errors and receipts', () => {
 });
 
 // ---------------------------------------------------------------------------
+// Injected dependency and runtime-record boundaries
+// ---------------------------------------------------------------------------
+
+describe('injected dependency boundaries', () => {
+  const source = new TextEncoder().encode('alpha\nbeta\ngamma\n');
+  const record = buildRecord(source, { chunkSize: 1024, mediaType: 'text/plain' });
+
+  it('normalizes and redacts a resolver exception without retrying', async () => {
+    let calls = 0;
+    const { dependencies, events, receipts, readCalls } = trackDeps({
+      resolveAuthorizedArtifact: async () => {
+        calls += 1;
+        throw new Error('resolver-secret-sentinel');
+      },
+    });
+    const output = await artifactStat(dependencies, makeContext(), { artifactId: ARTIFACT_ID });
+    expect(output).toEqual({
+      ok: false,
+      error: {
+        code: 'INTERNAL_ERROR',
+        message: 'Request could not be completed.',
+        retryable: false,
+      },
+    });
+    expect(calls).toBe(1);
+    expect(events).toHaveLength(1);
+    expect(definedAt(events[0]).resultClass).toBe('INTERNAL_ERROR');
+    expect(receipts).toHaveLength(0);
+    expect(readCalls).toHaveLength(0);
+    expect(JSON.stringify({ output, events, receipts })).not.toContain('resolver-secret-sentinel');
+  });
+
+  it.each([
+    [
+      'a clock exception',
+      () => {
+        throw new Error('clock-secret-sentinel');
+      },
+    ],
+    ['an invalid clock Date', () => new Date(Number.NaN)],
+  ])('normalizes %s before resolution', async (_label, now) => {
+    let resolverCalls = 0;
+    const { dependencies, events, receipts, readCalls } = trackDeps({
+      resolveAuthorizedArtifact: async () => {
+        resolverCalls += 1;
+        return record;
+      },
+      now,
+    });
+    const output = await artifactStat(dependencies, makeContext(), { artifactId: ARTIFACT_ID });
+    expect(output.ok).toBe(false);
+    if (output.ok) throw new Error('expected error');
+    expect(output.error.code).toBe('INTERNAL_ERROR');
+    expect(resolverCalls).toBe(0);
+    expect(readCalls).toHaveLength(0);
+    expect(receipts).toHaveLength(0);
+    expect(events).toHaveLength(1);
+    expect(JSON.stringify({ output, events })).not.toContain('clock-secret-sentinel');
+  });
+
+  it('normalizes and redacts a byte-reader exception without retrying', async () => {
+    let calls = 0;
+    const { dependencies, events, receipts } = trackDeps({
+      resolveAuthorizedArtifact: resolverFor(record),
+      readVersionedRange: async () => {
+        calls += 1;
+        throw new Error('read-secret-sentinel');
+      },
+    });
+    const output = await artifactReadRange(dependencies, makeContext(), {
+      artifactId: ARTIFACT_ID,
+      offset: 0,
+      length: 5,
+    });
+    expect(output.ok).toBe(false);
+    if (output.ok) throw new Error('expected error');
+    expect(output.error.code).toBe('INTERNAL_ERROR');
+    expect(calls).toBe(1);
+    expect(events).toHaveLength(1);
+    expect(receipts).toHaveLength(1);
+    expect(JSON.stringify({ output, events, receipts })).not.toContain('read-secret-sentinel');
+  });
+
+  it('maps exact immutable-version disappearance to the byte-identical unavailable result for range and lines', async () => {
+    const range = trackDeps({
+      resolveAuthorizedArtifact: resolverFor(record),
+      readVersionedRange: async () => null,
+    });
+    const lines = trackDeps({
+      resolveAuthorizedArtifact: resolverFor(record),
+      readVersionedRange: async () => null,
+    });
+    const missing = trackDeps({ resolveAuthorizedArtifact: async () => null });
+
+    const rangeOutput = await artifactReadRange(range.dependencies, makeContext(), {
+      artifactId: ARTIFACT_ID,
+      offset: 0,
+      length: 5,
+    });
+    const linesOutput = await artifactReadLines(lines.dependencies, makeContext(), {
+      artifactId: ARTIFACT_ID,
+      startLine: 1,
+      count: 1,
+    });
+    const missingOutput = await artifactStat(missing.dependencies, makeContext(), {
+      artifactId: ARTIFACT_ID,
+    });
+
+    expect(rangeOutput).toBe(missingOutput);
+    expect(linesOutput).toBe(missingOutput);
+    expect(range.receipts).toHaveLength(0);
+    expect(lines.receipts).toHaveLength(0);
+    expect(range.readCalls).toHaveLength(1);
+    expect(lines.readCalls).toHaveLength(1);
+    expect(definedAt(range.events[0]).resultClass).toBe('RESOURCE_UNAVAILABLE');
+    expect(definedAt(lines.events[0]).resultClass).toBe('RESOURCE_UNAVAILABLE');
+  });
+
+  it.each([
+    ['a malformed read-result object', {}],
+    [
+      'non-Uint8Array bytes',
+      { bytes: [97, 108, 112, 104, 97], objectVersionRef: OBJECT_VERSION_REF },
+    ],
+    ['a malformed returned objectVersionRef', { bytes: source, objectVersionRef: 'bad' }],
+  ])('fails closed with INTERNAL_ERROR for %s', async (_label, malformedResult) => {
+    const { dependencies, events } = trackDeps({
+      resolveAuthorizedArtifact: resolverFor(record),
+      readVersionedRange: async () => malformedResult as never,
+    });
+    const output = await artifactReadRange(dependencies, makeContext(), {
+      artifactId: ARTIFACT_ID,
+      offset: 0,
+      length: 5,
+    });
+    expect(output.ok).toBe(false);
+    if (output.ok) throw new Error('expected error');
+    expect(output.error.code).toBe('INTERNAL_ERROR');
+    expect(events).toHaveLength(1);
+  });
+
+  it('retains Buffer compatibility as a Uint8Array subtype', async () => {
+    const { dependencies } = trackDeps({
+      resolveAuthorizedArtifact: resolverFor(record),
+      readVersionedRange: async (_context, _locator, versionRef, offset, length) => ({
+        bytes: Buffer.from(source.subarray(offset, offset + length)),
+        objectVersionRef: versionRef,
+      }),
+    });
+    const output = await artifactReadRange(dependencies, makeContext(), {
+      artifactId: ARTIFACT_ID,
+      offset: 0,
+      length: 5,
+    });
+    expect(output.ok).toBe(true);
+  });
+
+  it('does not leak dependency or locator sentinels through outputs, receipts, events, thrown errors, stdout, or stderr', async () => {
+    const stdout = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    const observed: unknown[] = [];
+    try {
+      const resolverFailure = trackDeps({
+        resolveAuthorizedArtifact: async () => {
+          throw new Error('resolver-secret-sentinel');
+        },
+      });
+      observed.push(
+        await artifactStat(resolverFailure.dependencies, makeContext(), {
+          artifactId: ARTIFACT_ID,
+        }),
+        resolverFailure.events,
+        resolverFailure.receipts,
+      );
+
+      const readFailure = trackDeps({
+        resolveAuthorizedArtifact: resolverFor(
+          buildRecord(source, { internalLocator: 'locator-secret-sentinel' }),
+        ),
+        readVersionedRange: async () => {
+          throw new Error('read-secret-sentinel locator-secret-sentinel');
+        },
+      });
+      observed.push(
+        await artifactReadRange(readFailure.dependencies, makeContext(), {
+          artifactId: ARTIFACT_ID,
+          offset: 0,
+          length: 5,
+        }),
+        readFailure.events,
+        readFailure.receipts,
+      );
+
+      const clockFailure = trackDeps({
+        resolveAuthorizedArtifact: resolverFor(record),
+        now: () => {
+          throw new Error('clock-secret-sentinel');
+        },
+      });
+      observed.push(
+        await artifactStat(clockFailure.dependencies, makeContext(), { artifactId: ARTIFACT_ID }),
+        clockFailure.events,
+        clockFailure.receipts,
+      );
+    } finally {
+      const writes = [...stdout.mock.calls, ...stderr.mock.calls];
+      stdout.mockRestore();
+      stderr.mockRestore();
+      observed.push(writes);
+    }
+    const serialized = JSON.stringify(observed);
+    for (const sentinel of [
+      'resolver-secret-sentinel',
+      'read-secret-sentinel',
+      'clock-secret-sentinel',
+      'locator-secret-sentinel',
+    ]) {
+      expect(serialized).not.toContain(sentinel);
+    }
+  });
+});
+
+describe('strict resolved-record validation', () => {
+  const source = new TextEncoder().encode('validated source\n');
+  const baseRecord = buildRecord(source, { chunkSize: 1024, mediaType: 'text/plain' });
+
+  it('rejects requested artifact A / returned record B before any byte read', async () => {
+    const mismatched = { ...baseRecord, artifactId: OTHER_ARTIFACT_ID };
+    const { dependencies, events, receipts, readCalls } = trackDeps({
+      resolveAuthorizedArtifact: async () => mismatched,
+      readVersionedRange: sourceBackedRead(source),
+    });
+    const output = await artifactReadRange(dependencies, makeContext(), {
+      artifactId: ARTIFACT_ID,
+      offset: 0,
+      length: 5,
+    });
+    expect(output.ok).toBe(false);
+    if (output.ok) throw new Error('expected error');
+    expect(output.error.code).toBe('INTERNAL_ERROR');
+    expect(readCalls).toHaveLength(0);
+    expect(receipts).toHaveLength(0);
+    expect(events).toHaveLength(1);
+    expect(definedAt(events[0]).resultClass).toBe('INTERNAL_ERROR');
+  });
+
+  it('rejects a malformed objectVersionRef before any byte read or receipt', async () => {
+    const malformed = { ...baseRecord, objectVersionRef: 'bad' };
+    const { dependencies, receipts, readCalls } = trackDeps({
+      resolveAuthorizedArtifact: async () => malformed,
+      readVersionedRange: sourceBackedRead(source),
+    });
+    const output = await artifactReadRange(dependencies, makeContext(), {
+      artifactId: ARTIFACT_ID,
+      offset: 0,
+      length: 5,
+    });
+    expect(output.ok).toBe(false);
+    if (output.ok) throw new Error('expected error');
+    expect(output.error.code).toBe('INTERNAL_ERROR');
+    expect(readCalls).toHaveLength(0);
+    expect(receipts).toHaveLength(0);
+  });
+
+  it('rejects malformed identity, digest, media, time, chunk-ref, array, and geometry fields before read or receipt', async () => {
+    const badDigest = 'A'.repeat(64);
+    const malformedRecords: ReadonlyArray<readonly [string, unknown]> = [
+      ['artifactId grammar', { ...baseRecord, artifactId: 'bad' }],
+      ['source hash', { ...baseRecord, sourceSha256: badDigest }],
+      ['root hash', { ...baseRecord, merkleRoot: badDigest }],
+      ['raw chunk hash', { ...baseRecord, chunkSha256s: [badDigest] }],
+      ['leaf hash', { ...baseRecord, merkleLeafSha256s: [badDigest] }],
+      ['empty media type', { ...baseRecord, mediaType: '' }],
+      ['oversized media type', { ...baseRecord, mediaType: 'x'.repeat(256) }],
+      ['createdAt without offset', { ...baseRecord, createdAt: '2026-01-01T00:00:00' }],
+      ['invalid expiresAt', { ...baseRecord, expiresAt: 'not-a-date' }],
+      ['chunkHashesRef grammar', { ...baseRecord, chunkHashesRef: 'bad' }],
+      ['unsupported chunk size', { ...baseRecord, chunkSize: 2048 }],
+      ['negative chunk count', { ...baseRecord, chunkCount: -1 }],
+      ['chunk-count ceiling', { ...baseRecord, chunkCount: 4097 }],
+      ['source byte ceiling', { ...baseRecord, byteLength: 1_048_577 }],
+      ['array length mismatch', { ...baseRecord, chunkSha256s: [] }],
+      [
+        'array-length ceiling',
+        {
+          ...baseRecord,
+          chunkSha256s: Array.from({ length: 4097 }, () => baseRecord.sourceSha256),
+        },
+      ],
+      ['geometry mismatch', { ...baseRecord, byteLength: baseRecord.byteLength + 1024 }],
+    ];
+
+    for (const [label, malformed] of malformedRecords) {
+      const { dependencies, events, receipts, readCalls } = trackDeps({
+        resolveAuthorizedArtifact: async () => malformed as AuthorizedArtifactRecord,
+        readVersionedRange: sourceBackedRead(source),
+      });
+      const output = await artifactReadRange(dependencies, makeContext(), {
+        artifactId: ARTIFACT_ID,
+        offset: 0,
+        length: 5,
+      });
+      expect(output.ok, label).toBe(false);
+      if (output.ok) throw new Error(`expected error for ${label}`);
+      expect(output.error.code, label).toBe('INTERNAL_ERROR');
+      expect(readCalls, label).toHaveLength(0);
+      expect(receipts, label).toHaveLength(0);
+      expect(events, label).toHaveLength(1);
+      expect(definedAt(events[0]).resultClass, label).toBe('INTERNAL_ERROR');
+    }
+  });
+
+  it('passes the internal locator opaquely by reference without freezing or exposing it', async () => {
+    const internalLocator = { secret: 'locator-secret-sentinel', nested: { mutable: true } };
+    const record = buildRecord(source, { internalLocator });
+    let receivedLocator: unknown;
+    const { dependencies, events, receipts } = trackDeps({
+      resolveAuthorizedArtifact: resolverFor(record),
+      readVersionedRange: async (_context, locator, versionRef, offset, length) => {
+        receivedLocator = locator;
+        return {
+          bytes: source.subarray(offset, offset + length),
+          objectVersionRef: versionRef,
+        };
+      },
+    });
+    const output = await artifactReadRange(dependencies, makeContext(), {
+      artifactId: ARTIFACT_ID,
+      offset: 0,
+      length: 5,
+    });
+    expect(output.ok).toBe(true);
+    expect(receivedLocator).toBe(internalLocator);
+    expect(Object.isFrozen(internalLocator)).toBe(false);
+    expect(Object.isFrozen(internalLocator.nested)).toBe(false);
+    expect(JSON.stringify({ output, events, receipts })).not.toContain('locator-secret-sentinel');
+  });
+});
+
+describe('capability and receipt custody', () => {
+  const source = new TextEncoder().encode('one\ntwo\n');
+  const record = buildRecord(source, { chunkSize: 1024, mediaType: 'text/plain' });
+
+  it('keeps the client and capability-grant refs distinct and independently bound', async () => {
+    const { dependencies, receipts } = trackDeps({
+      resolveAuthorizedArtifact: resolverFor(record),
+    });
+    const context = makeContext({
+      inspectorClientRef: 'client-distinct',
+      inspectorCapabilityRef: { capability: 'artifact:inspect', ref: 'grant-distinct' },
+    });
+    const output = await artifactStat(dependencies, context, { artifactId: ARTIFACT_ID });
+    expect(output.ok).toBe(true);
+    expect(receipts).toHaveLength(1);
+    expect(definedAt(receipts[0]).inspectorClientRef).toBe('client-distinct');
+    expect(definedAt(receipts[0]).inspectorCapabilityRef).toEqual({
+      capability: 'artifact:inspect',
+      ref: 'grant-distinct',
+    });
+  });
+
+  it('emits exactly one deeply immutable schema-valid receipt for successful stat, range, and lines operations', async () => {
+    const tracked = trackDeps({
+      resolveAuthorizedArtifact: resolverFor(record),
+      readVersionedRange: sourceBackedRead(source),
+    });
+    const context = makeContext();
+    const outputs = await Promise.all([
+      artifactStat(tracked.dependencies, context, { artifactId: ARTIFACT_ID }),
+      artifactReadRange(tracked.dependencies, context, {
+        artifactId: ARTIFACT_ID,
+        offset: 0,
+        length: 3,
+      }),
+      artifactReadLines(tracked.dependencies, context, {
+        artifactId: ARTIFACT_ID,
+        startLine: 1,
+        count: 1,
+      }),
+    ]);
+    expect(outputs.every((output) => output.ok)).toBe(true);
+    expect(tracked.receipts).toHaveLength(3);
+    expect(tracked.receipts.map((receipt) => receipt.operationDetail.operation).sort()).toEqual(
+      ['artifact_read_lines', 'artifact_read_range', 'artifact_stat'].sort(),
+    );
+    for (const receipt of tracked.receipts) {
+      expect(ArtifactInspectionReceiptSchema.safeParse(receipt).success).toBe(true);
+      expect(Object.isFrozen(receipt)).toBe(true);
+      expect(Object.isFrozen(receipt.inspectorCapabilityRef)).toBe(true);
+      expect(Object.isFrozen(receipt.operationDetail)).toBe(true);
+      expect(Object.isFrozen(receipt.resultOrErrorClass)).toBe(true);
+    }
+  });
+
+  it('never returns success when trusted receipt coordinates are malformed at runtime', async () => {
+    const malformedContext = {
+      ...DEFAULT_CONTEXT_INPUT,
+      inspectorCapabilityRef: 'artifact:inspect',
+    } as unknown as ArtifactInspectorTrustedContext;
+    const { dependencies, events, receipts } = trackDeps({
+      resolveAuthorizedArtifact: resolverFor(record),
+    });
+    const output = await artifactStat(dependencies, malformedContext, { artifactId: ARTIFACT_ID });
+    expect(output.ok).toBe(false);
+    if (output.ok) throw new Error('expected error');
+    expect(output.error.code).toBe('INTERNAL_ERROR');
+    expect(receipts).toHaveLength(0);
+    expect(events).toHaveLength(1);
+  });
+});
+
+describe('proof mutation coverage', () => {
+  it('rejects a directly mutated S1b proof sibling using the unchanged builder/verifier primitive', () => {
+    const source = new TextEncoder().encode(deterministicAsciiText(3000, 41));
+    const manifest = buildArtifactChunkManifest(source, 1024);
+    const proof = buildArtifactChunkProof(manifest, 0);
+    const firstSibling = definedAt(proof.proof[0]);
+    const mutatedSibling = `${firstSibling.siblingSha256.slice(0, 63)}${
+      firstSibling.siblingSha256.endsWith('0') ? '1' : '0'
+    }`;
+    const mutatedProof = {
+      ...proof,
+      proof: [{ ...firstSibling, siblingSha256: mutatedSibling }, ...proof.proof.slice(1)],
+    };
+    const firstChunk = definedAt(manifest.chunks[0]);
+    const chunkBytes = source.subarray(
+      firstChunk.byteStart,
+      firstChunk.byteStart + firstChunk.byteLength,
+    );
+    expect(verifyArtifactChunkProof(chunkBytes, proof, manifest.merkleRoot)).toBe(true);
+    expect(verifyArtifactChunkProof(chunkBytes, mutatedProof, manifest.merkleRoot)).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Operational events
 // ---------------------------------------------------------------------------
 
@@ -1204,44 +1681,17 @@ describe('acceptance 34: complete wire response exact boundary and one over', ()
     expect(output.integrity.verifiedChunks.length).toBeLessThanOrEqual(16);
   });
 
-  it('the response-budget check, at its true boundary, distinguishes "at or under" from "one byte over"', async () => {
-    // mediaType is the one field this module passes through from the
-    // registry record without its own independent size ceiling at the
-    // TypeScript/interface level (the S0 output schema caps it at 255
-    // characters, but that is a separate, later check) -- padding it is
-    // therefore the only way to reach the wire ceiling at all, and it is
-    // used here purely to drive the budget CHECK to its true boundary, not
-    // to claim this is a realistic request shape.
+  it('the direct response-budget primitive distinguishes "at or under" from "one byte over"', () => {
+    // A schema-valid S2 runtime output cannot reach this ceiling because its
+    // component bounds are tighter. Exercise the unchanged S0 byte-counting
+    // primitive directly rather than misreporting a structurally impossible
+    // runtime scenario as executed.
     function byteLengthForPadding(paddingLength: number): number {
-      const source = new TextEncoder().encode(deterministicAsciiText(3000, 50));
-      const record = buildRecord(source, {
-        chunkSize: 1024,
-        mediaType: `text/plain+${'x'.repeat(paddingLength)}`,
-      });
       const candidate = {
         ok: true as const,
-        artifact: {
-          artifactId: record.artifactId,
-          objectVersionRef: record.objectVersionRef,
-          sourceSha256: record.sourceSha256,
-          byteLength: record.byteLength,
-          chunkSize: record.chunkSize,
-          chunkCount: record.chunkCount,
-          chunkHashes: { kind: 'inline' as const, hashes: [...record.chunkSha256s] },
-          merkleRoot: record.merkleRoot,
-          mediaType: record.mediaType,
-          analyzerProfileSupport: 'unsupported' as const,
-          createdAt: record.createdAt,
-        },
+        padding: 'x'.repeat(paddingLength),
       };
       return artifactInspectionResponseByteLength(null, candidate);
-    }
-    function recordForPadding(paddingLength: number): AuthorizedArtifactRecord {
-      const source = new TextEncoder().encode(deterministicAsciiText(3000, 50));
-      return buildRecord(source, {
-        chunkSize: 1024,
-        mediaType: `text/plain+${'x'.repeat(paddingLength)}`,
-      });
     }
 
     let low = 0;
@@ -1258,25 +1708,6 @@ describe('acceptance 34: complete wire response exact boundary and one over', ()
     // over the ceiling; `low - 1` is at or under it.
     expect(byteLengthForPadding(low)).toBeGreaterThan(MAX_ARTIFACT_RESPONSE_BYTES);
     expect(byteLengthForPadding(low - 1)).toBeLessThanOrEqual(MAX_ARTIFACT_RESPONSE_BYTES);
-
-    const { dependencies: overDeps } = trackDeps({
-      resolveAuthorizedArtifact: resolverFor(recordForPadding(low)),
-    });
-    const overOutput = await artifactStat(overDeps, makeContext(), { artifactId: ARTIFACT_ID });
-    expect(overOutput.ok).toBe(false);
-    if (overOutput.ok) throw new Error('expected error');
-    expect(overOutput.error.code).toBe('RESPONSE_LIMIT_EXCEEDED');
-
-    const { dependencies: underDeps } = trackDeps({
-      resolveAuthorizedArtifact: resolverFor(recordForPadding(low - 1)),
-    });
-    const underOutput = await artifactStat(underDeps, makeContext(), { artifactId: ARTIFACT_ID });
-    // The over-length mediaType may separately violate the S0 schema's own
-    // 255-character field ceiling once under budget; only the specific
-    // RESPONSE_LIMIT_EXCEEDED code is asserted against here.
-    if (!underOutput.ok) {
-      expect(underOutput.error.code).not.toBe('RESPONSE_LIMIT_EXCEEDED');
-    }
   });
 });
 
@@ -1392,7 +1823,7 @@ describe('TOCTOU: authorization and returned bytes bind the same immutable objec
     expect(output.ok).toBe(false);
   });
 
-  it('fails closed when the old version disappears (adapter throws)', async () => {
+  it('normalizes an adapter throw separately from exact-version unavailability', async () => {
     const { dependencies } = trackDeps({
       resolveAuthorizedArtifact: resolverFor(record),
       readVersionedRange: async () => {
@@ -1407,6 +1838,25 @@ describe('TOCTOU: authorization and returned bytes bind the same immutable objec
     expect(output.ok).toBe(false);
     if (output.ok) throw new Error('expected error');
     expect(output.error.code).toBe('INTERNAL_ERROR');
+
+    const unavailable = trackDeps({
+      resolveAuthorizedArtifact: resolverFor(record),
+      readVersionedRange: async () => null,
+    });
+    const unavailableOutput = await artifactReadRange(unavailable.dependencies, makeContext(), {
+      artifactId: ARTIFACT_ID,
+      offset: 0,
+      length: 10,
+    });
+    expect(unavailableOutput).toEqual({
+      ok: false,
+      error: {
+        code: 'RESOURCE_UNAVAILABLE',
+        message: 'Artifact is unavailable.',
+        retryable: false,
+      },
+    });
+    expect(unavailable.receipts).toHaveLength(0);
   });
 
   it('fails closed when bytes change without a version-string change', async () => {

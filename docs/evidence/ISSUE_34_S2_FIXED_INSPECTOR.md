@@ -1,6 +1,6 @@
 # Issue #34 S2: one fixed, synthetic/local, read-only artifact inspector
 
-- **Status:** Unmerged draft candidate evidence
+- **Status:** S2 complete for the synthetic/local fixed-inspector library scope only
 - **Candidate base:** `374473bc0700e30649f63d1db164f64c0aab3dee`
 - **Candidate branch:** `feat/34-s2-fixed-artifact-inspector`
 - **Scope:** one pure TypeScript implementation seam that resolves an authorized, immutable
@@ -15,7 +15,7 @@ Issue #34's roadmap runs S0 through S9. S0 (`packages/contracts/src/artifact-ins
 defines the MCP capability surface -- input/output shapes, the error vocabulary, source and
 partial-read integrity metadata, and the inspection-receipt shape -- without implementing any of
 it. S1b (`packages/server/src/artifact-chunk-manifest.ts`) defines and calibrates the exact
-chunk/Merkle hash algorithm those S0 shapes assume. S2 is the first place in this repository those
+chunk/Merkle hash algorithm those S0 shapes assume. S2 is the place in this repository those
 two pieces are wired together into a working (synthetic/local) inspector: given a trusted request
 context and a caller's opaque `artifactId`, it resolves an authorized registry record through an
 injected dependency, validates that record's S1b manifest, and answers `artifact_stat`,
@@ -25,9 +25,9 @@ runtime registration, and not a deployment.
 
 ## Trusted context vs. tool input
 
-`ArtifactInspectorTrustedContext` (`.strict()`, Zod-validated, frozen on construction) carries
-exactly six fields: `principalRef`, `inspectorClientRef`, `inspectorCapabilityRef` (fixed to the
-literal `'artifact:inspect'`), `verifierAudience`, `policyVersion`, and
+`ArtifactInspectorTrustedContext` (`.strict()`, Zod-validated, deeply frozen on construction)
+carries `principalRef`, `inspectorClientRef`, `inspectorCapabilityRef` (the strict immutable object
+`{capability: 'artifact:inspect', ref: <authorization identifier>}`), `verifierAudience`, `policyVersion`, and
 `inspectorDeploymentGitCoordinate` (an exact 40-hex-character Git commit SHA), plus an optional
 `requestCorrelationId`. This is supplied by the trusted server layer and is never derived from tool
 input. Every operation's tool input is parsed through the unmodified, accepted S0 input schema
@@ -47,8 +47,9 @@ observers:
   client, or a missing capability; the inspector treats all of these identically and never inspects
   *why* a resolution failed.
 - `readVersionedRange(context, internalLocator, objectVersionRef, offset, length)` -- reads exactly
-  `length` bytes of one immutable object version. `internalLocator` is opaque (`unknown`) trusted
-  adapter data and is never read, logged, or serialized by this module.
+  `length` bytes of one immutable object version, or returns `null` when that exact version is no
+  longer available. `internalLocator` is opaque (`unknown`) trusted adapter data and is passed back
+  by reference without traversal, parsing, serialization, or freezing.
 - `now()` -- a deterministic clock, injected for reproducible expiry tests.
 - `emitOperationalEvent?` / `emitInspectionReceipt?` -- optional redacted observers (see below).
 
@@ -68,9 +69,10 @@ operations, and never accompanied by an S0 inspection receipt. No byte read occu
 unavailable resolution: the unavailable branch returns before `readVersionedRange` is ever called,
 for all three operations.
 
-"Object version no longer available" is expressed as `readVersionedRange` throwing (there is no
-separate null-return variant in its contract); this module catches that and fails closed with
-`INTERNAL_ERROR` (see Error-code mapping below) rather than retrying or returning partial content.
+"Object version no longer available" is expressed only by `readVersionedRange` returning `null`.
+It produces the same frozen `RESOURCE_UNAVAILABLE` singleton, one redacted event, no receipt, and no
+retry. A thrown adapter exception is a distinct dependency failure normalized to fixed
+`INTERNAL_ERROR`; exception text is never exposed.
 
 ## STAT
 
@@ -99,6 +101,15 @@ that manifest is perfectly consistent, so the empty-artifact case is validated d
 validation resolves to `internal_error` -- a registry-data-corruption class, distinct from a
 byte-level integrity failure detected against live bytes (see the mutation-class discussion below).
 
+Before manifest construction, receipt construction, or byte access, S2 validates the resolved
+record at runtime rather than trusting its TypeScript interface. The requested and returned opaque
+artifact IDs must be equal; artifact/version/chunk-reference identifiers, lowercase SHA-256 fields,
+media type, offset-bearing timestamps, allowed S1b chunk size, S1b source/chunk ceilings, exact hash
+array lengths, and byte/chunk geometry must all validate. The resulting manifest must then close its
+declared leaves to its root. A malformed or cross-artifact record produces fixed `INTERNAL_ERROR`,
+zero byte reads, one redacted event, and no receipt. `internalLocator` remains opaque and is excluded
+from that metadata projection.
+
 ## Byte-range inspection
 
 `artifact_read_range` follows the exact steps this candidate was scoped to: parse input, resolve
@@ -124,6 +135,11 @@ attack has no external trigger point in this architecture: a caller cannot hand 
 tampered proof, because it never accepts one. What a caller (or a compromised registry/byte layer)
 *can* do is tamper with the registry record's own declared fields, which this module handles as
 follows, verified by dedicated tests:
+
+The test suite also exercises the unchanged S1b primitive directly: it builds a real proof with
+`buildArtifactChunkProof`, mutates one sibling hash, and proves
+`verifyArtifactChunkProof` returns false. This is direct delegated-primitive coverage, not an
+invented external proof-input seam for S2.
 
 - **Mutating the raw `chunkSha256` field alone** (`chunkSha256s[i]`) leaves the manifest's own
   leaf-to-root closure untouched (the raw hash is not part of that closure), so resolution succeeds;
@@ -191,8 +207,9 @@ Every byte read passes the *exact* `objectVersionRef` resolved during authorizat
 is trusted. Verified directly by test, for both `artifact_read_range` and `artifact_read_lines`:
 version drift before the read, the byte adapter returning a different version than requested, bytes
 changing without a version-string change (still caught, because the Merkle proof / full-source
-verification checks the *bytes themselves*, not merely the version label), the old version
-"disappearing" (the adapter throws; caught and reported as `INTERNAL_ERROR`, never retried), and a
+verification checks the *bytes themselves*, not merely the version label), the exact old version
+disappearing (`null`; reported as the byte-identical `RESOURCE_UNAVAILABLE`, never retried), a
+thrown reader exception (fixed `INTERNAL_ERROR`), and a
 manifest whose declared root disagrees with a manifest built from unrelated content (caught at
 resolution as `INTERNAL_ERROR` before any read is attempted). Every one of these fails closed:
 none returns unverified content, and the exact fail-closed code (`INTEGRITY_FAILURE` for a
@@ -204,7 +221,8 @@ detected before any read) is chosen by the same principle described above for mu
 Every field the task requires is bound: `receiptSchemaVersion` (S0's own
 `ARTIFACT_INSPECTION_RECEIPT_SCHEMA_VERSION`), `verifierAudience`, `principalRef`
 (`principalBinding: 'session_derived'`), `inspectorClientRef` (`inspectorClientBinding: 'approved'`),
-`inspectorCapabilityRef` (`{capability: 'artifact:inspect', ref: context.inspectorClientRef}`),
+`inspectorCapabilityRef` (an exact copy of the independently validated
+`context.inspectorCapabilityRef`, never derived from `inspectorClientRef`),
 `artifactId`, `objectVersionRef`, `sourceSha256`, `merkleRoot`, `analyzerProfileId` /
 `analyzerProfileVersion` (this module's own fixed deterministic-profile identity,
 `ARTIFACT_INSPECTOR_PROFILE_VERSION = 'artifact-inspector-s2-0.1'` -- S2 performs no semantic
@@ -212,11 +230,11 @@ analysis and defines no per-media-type analyzer version of its own), `policyVers
 `inspectorDeploymentGitCoordinate`, `recordedAt`, operation-specific `operationDetail`, and
 `resultOrErrorClass`.
 
-A receipt is evidence, not authorization, exactly as S0 states. A receipt is emitted **only after**
-an artifact has been authorized-resolved -- never for a pre-resolution outcome
-(`INVALID_REQUEST` from schema parsing, or `RESOURCE_UNAVAILABLE`). Every post-resolution outcome,
-success or error, does emit one, including `INTERNAL_ERROR`/`INTEGRITY_FAILURE`/`UNSUPPORTED`/
-`RESPONSE_LIMIT_EXCEEDED` -- because at that point the receipt's coordinates (`objectVersionRef`,
+A receipt is evidence, not authorization, exactly as S0 states. A receipt is emitted **only after** an artifact record has been authorized, runtime-validated, and
+bound to the requested ID -- never for invalid input, unavailable resolution, malformed/mismatched
+records, clock failure, resolver failure, or exact-version disappearance. Other post-validation
+outcomes emit one, including reader `INTERNAL_ERROR`, `INTEGRITY_FAILURE`, `UNSUPPORTED`, and
+`RESPONSE_LIMIT_EXCEEDED`, because at that point the receipt's coordinates (`objectVersionRef`,
 `sourceSha256`, `merkleRoot`) are real, authorized values, not invented ones. Every range/lines
 detail schema requires `returnedRange` and `returnedByteSha256` unconditionally (there is no
 optional variant for an error outcome), so an error receipt for those two operations uses a fixed,
@@ -265,18 +283,21 @@ comfortably under `MAX_ARTIFACT_RESPONSE_BYTES` (65,536) using the accepted seri
 the wire ceiling through any single, schema-legitimate S2 request therefore appears to be
 unreachable given this exact combination of S0 and S1b constants -- the same class of finding as
 S1b's own documented `CHUNK_COUNT_EXCEEDED`/`PROOF_DEPTH_EXCEEDED` unreachability. The enforcement
-code is kept regardless, as defense-in-depth using the exact accepted serializer, and its true
-boundary behavior (at-or-under vs. one-byte-over, using the identical `artifactInspectionResponseByteLength`
-measurement the schema itself performs) is verified directly in the test suite by driving the one
-registry field with no independent length ceiling of its own (`mediaType`) to that exact boundary.
+code is kept regardless, as defense-in-depth using the exact accepted serializer. The suite
+separates (1) schema-valid runtime scenarios, which remain below the ceiling, from (2) a direct
+`artifactInspectionResponseByteLength` primitive check at the exact boundary and one byte over, and
+from (3) the structural arithmetic explaining why a runtime one-over is unreachable. It does not
+claim the direct primitive probe is a schema-valid S2 runtime output.
 
 **On the 16,384-byte covering-fetch ceiling specifically:** given `MAX_RANGE_BYTES` (8,192) and the
 S1b allowed chunk sizes `{1024, 4096, 8192}`, the worst-case misaligned covering fetch is
-`(ceil(length / chunkSize) + 1) * chunkSize`, which is maximized at `chunkSize = 8192`:
+at most `(ceil(length / chunkSize) + 1) * chunkSize`, which is maximized at `chunkSize = 8192`:
 `(ceil(8192/8192)+1)*8192 = 16,384` -- exactly the chosen ceiling, and never over it, for every
 allowed chunk size. Exceeding this ceiling is therefore also unreachable through any schema-valid
 `artifact_read_range` request; the check is kept as defense-in-depth, and the test suite verifies it
-correctly accepts (does not falsely reject) the true worst case.
+correctly accepts (does not falsely reject) the true worst case. An external 16,385-byte covering
+fetch is structurally unreachable while `MAX_RANGE_BYTES = 8,192` and the allowed S1b chunk sizes
+remain `{1,024, 4,096, 8,192}`.
 
 ## Synthetic adapter tests
 
@@ -291,19 +312,24 @@ every output/receipt/event/error; unsupported media type; invalid UTF-8; over-li
 the covering-fetch and text-source-scan ceilings; short/long reads; object-version mismatch; mutated
 chunk bytes/raw hash/leaf/root; a source mutation outside the returned line range; the full source
 buffer left untouched; no automatic retry; receipts and errors carrying no secret/existence detail;
-error paths never inventing a receipt; a successful receipt passing the accepted schema; wire-ceiling
-boundary behavior; concurrent independent reads never cross-contaminating; and every public
-output/receipt/event being frozen) using mutation-sensitive assertions throughout, not only
-happy-path schema parsing.
+malformed/cross-artifact records rejected before reads or receipts; malformed read results and
+dependency/clock exceptions normalized without sentinel leakage; exact-version `null` included in
+the byte-identical unavailable matrix; client and capability-grant references independently bound;
+successful stat/range/lines each emitting one schema-valid deeply immutable receipt; a directly
+mutated S1b proof sibling rejected; wire-ceiling runtime/direct-primitive/structural categories;
+concurrent independent reads never cross-contaminating; and every public output/receipt/event being
+frozen) using mutation-sensitive assertions throughout, not only happy-path schema parsing.
 
 ## Claim limits
 
-This candidate is a synthetic/local implementation seam only. It is not: an Edge Function; a hosted
+S2 is complete only as this synthetic/local implementation seam. It is not: an Edge Function; a hosted
 deployment; a Storage or database mutation of any kind; MCP runtime registration; a signed-URL
 issuer; a user of `service_role`; a source of caller-selected Storage coordinates (every byte-custody
 fact is resolved by the injected adapter, never accepted from tool input); an artifact-ingest path; a
 Markdown heading index (`artifact_read_heading` is not implemented in S2); an exact-search
 implementation (`artifact_search_exact` is not implemented in S2); semantic analysis of any kind; a
-writer of any state anywhere; and it makes no production-readiness claim. `packages/contracts/**`
+writer of any state anywhere; a reader of private/production data; and it makes no
+production-readiness claim. S3 MCP registration and Storage containment closure is next and was not
+started here. `packages/contracts/**`
 and `packages/server/src/artifact-chunk-manifest.ts` are both untouched by this candidate, by
 construction (outside its authorized write paths) -- S2 consumes both unmodified.
