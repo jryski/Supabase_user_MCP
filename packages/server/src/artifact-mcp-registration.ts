@@ -5,6 +5,7 @@ import {
   ARTIFACT_READ_LINES_TOOL,
   ARTIFACT_READ_RANGE_TOOL,
   ARTIFACT_STAT_TOOL,
+  type ArtifactInspectionOperation,
   createArtifactInspectionError,
   createArtifactInspectionMcpResult,
   MAX_ARTIFACT_REQUEST_ID_BYTES,
@@ -16,6 +17,8 @@ import {
 
 import {
   type ArtifactInspectorDependencies,
+  type ArtifactInspectorOperationalEvent,
+  type ArtifactInspectorTrustedContext,
   createArtifactInspector,
   createArtifactInspectorTrustedContext,
 } from './artifact-inspector.js';
@@ -305,6 +308,122 @@ export async function executeArtifactOperationWithDeadline<T>(
   }
 }
 
+interface OperationScopedObserverGate {
+  readonly dependencies: ArtifactInspectorDependencies;
+  close(): void;
+}
+
+function createOperationScopedObserverGate(
+  dependencies: ArtifactInspectorDependencies,
+): OperationScopedObserverGate {
+  let open = true;
+  const gatedDependencies: ArtifactInspectorDependencies = {
+    resolveAuthorizedArtifact: (...args) => dependencies.resolveAuthorizedArtifact(...args),
+    readVersionedRange: (...args) => dependencies.readVersionedRange(...args),
+    now: () => dependencies.now(),
+    ...(dependencies.emitOperationalEvent === undefined
+      ? {}
+      : {
+          emitOperationalEvent: (event: ArtifactInspectorOperationalEvent): void => {
+            if (!open) return;
+            try {
+              dependencies.emitOperationalEvent?.(event);
+            } catch {
+              // Observer failures must never affect the registered operation.
+            }
+          },
+        }),
+    ...(dependencies.emitInspectionReceipt === undefined
+      ? {}
+      : {
+          emitInspectionReceipt: (
+            receipt: Parameters<
+              NonNullable<ArtifactInspectorDependencies['emitInspectionReceipt']>
+            >[0],
+          ): void => {
+            if (!open) return;
+            try {
+              dependencies.emitInspectionReceipt?.(receipt);
+            } catch {
+              // Observer failures must never affect the registered operation.
+            }
+          },
+        }),
+  };
+  return {
+    dependencies: gatedDependencies,
+    close(): void {
+      open = false;
+    },
+  };
+}
+
+function isFixedDeadlineExceededOutput(value: unknown): boolean {
+  if (value === null || typeof value !== 'object') return false;
+  const candidate = value as {
+    readonly ok?: unknown;
+    readonly error?: {
+      readonly code?: unknown;
+      readonly message?: unknown;
+      readonly retryable?: unknown;
+    };
+  };
+  const fixed = createArtifactInspectionError('DEADLINE_EXCEEDED');
+  return (
+    candidate.ok === fixed.ok &&
+    candidate.error?.code === fixed.error.code &&
+    candidate.error.message === fixed.error.message &&
+    candidate.error.retryable === fixed.error.retryable
+  );
+}
+
+function emitRegistrationDeadlineEvent(
+  dependencies: ArtifactInspectorDependencies,
+  operation: ArtifactInspectionOperation,
+  context: ArtifactInspectorTrustedContext,
+  startedAtMs: number,
+): void {
+  const measuredElapsedMs = performance.now() - startedAtMs;
+  const elapsedMs = Number.isFinite(measuredElapsedMs)
+    ? Math.min(MAX_ARTIFACT_TOOL_EXECUTION_MS, Math.max(0, measuredElapsedMs))
+    : 0;
+  const event: ArtifactInspectorOperationalEvent = Object.freeze({
+    operation,
+    resultClass: 'DEADLINE_EXCEEDED',
+    ...(context.requestCorrelationId === undefined
+      ? {}
+      : { requestCorrelationId: context.requestCorrelationId }),
+    elapsedMs,
+  });
+  try {
+    dependencies.emitOperationalEvent?.(event);
+  } catch {
+    // Registration telemetry must never affect the fixed deadline output.
+  }
+}
+
+async function executeRegisteredArtifactOperation<T>(
+  dependencies: ArtifactInspectorDependencies,
+  operation: ArtifactInspectionOperation,
+  context: ArtifactInspectorTrustedContext,
+  signal: AbortSignal,
+  inspect: (inspector: ReturnType<typeof createArtifactInspector>) => Promise<T>,
+): Promise<T | ReturnType<typeof createArtifactInspectionError>> {
+  const startedAtMs = performance.now();
+  const gate = createOperationScopedObserverGate(dependencies);
+  let output: T | ReturnType<typeof createArtifactInspectionError>;
+  try {
+    const inspector = createArtifactInspector(gate.dependencies);
+    output = await executeArtifactOperationWithDeadline(() => inspect(inspector), signal);
+  } finally {
+    gate.close();
+  }
+  if (isFixedDeadlineExceededOutput(output)) {
+    emitRegistrationDeadlineEvent(dependencies, operation, context, startedAtMs);
+  }
+  return output;
+}
+
 export interface PreparedArtifactMcpRegistration {
   register(server: McpServer): void;
 }
@@ -316,7 +435,6 @@ export function prepareArtifactMcpRegistration(
   assertArtifactTransportLimits();
   assertArtifactStorageClosureManifest(ARTIFACT_STORAGE_CLOSURE_MANIFEST);
   const config = validateConfig(rawConfig, principalRef);
-  const inspector = createArtifactInspector(config.dependencies);
   const registeredOperations = new Set<string>();
 
   const trustedContext = (requestId: string | number) =>
@@ -349,13 +467,18 @@ export function prepareArtifactMcpRegistration(
                 outputSchema: ARTIFACT_STAT_TOOL.outputSchema,
                 annotations: READ_ONLY_ANNOTATIONS,
               },
-              async (input, context) =>
-                createArtifactInspectionMcpResult(
-                  await executeArtifactOperationWithDeadline(
-                    () => inspector.artifactStat(trustedContext(context.mcpReq.id), input),
+              async (input, context) => {
+                const operationContext = trustedContext(context.mcpReq.id);
+                return createArtifactInspectionMcpResult(
+                  await executeRegisteredArtifactOperation(
+                    config.dependencies,
+                    'artifact_stat',
+                    operationContext,
                     context.mcpReq.signal,
+                    (inspector) => inspector.artifactStat(operationContext, input),
                   ),
-                ),
+                );
+              },
             );
             break;
           case 'artifact_read_range':
@@ -369,13 +492,18 @@ export function prepareArtifactMcpRegistration(
                 outputSchema: ARTIFACT_READ_RANGE_TOOL.outputSchema,
                 annotations: READ_ONLY_ANNOTATIONS,
               },
-              async (input, context) =>
-                createArtifactInspectionMcpResult(
-                  await executeArtifactOperationWithDeadline(
-                    () => inspector.artifactReadRange(trustedContext(context.mcpReq.id), input),
+              async (input, context) => {
+                const operationContext = trustedContext(context.mcpReq.id);
+                return createArtifactInspectionMcpResult(
+                  await executeRegisteredArtifactOperation(
+                    config.dependencies,
+                    'artifact_read_range',
+                    operationContext,
                     context.mcpReq.signal,
+                    (inspector) => inspector.artifactReadRange(operationContext, input),
                   ),
-                ),
+                );
+              },
             );
             break;
           case 'artifact_read_lines':
@@ -389,13 +517,18 @@ export function prepareArtifactMcpRegistration(
                 outputSchema: ARTIFACT_READ_LINES_TOOL.outputSchema,
                 annotations: READ_ONLY_ANNOTATIONS,
               },
-              async (input, context) =>
-                createArtifactInspectionMcpResult(
-                  await executeArtifactOperationWithDeadline(
-                    () => inspector.artifactReadLines(trustedContext(context.mcpReq.id), input),
+              async (input, context) => {
+                const operationContext = trustedContext(context.mcpReq.id);
+                return createArtifactInspectionMcpResult(
+                  await executeRegisteredArtifactOperation(
+                    config.dependencies,
+                    'artifact_read_lines',
+                    operationContext,
                     context.mcpReq.signal,
+                    (inspector) => inspector.artifactReadLines(operationContext, input),
                   ),
-                ),
+                );
+              },
             );
             break;
         }

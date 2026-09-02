@@ -1,5 +1,5 @@
 import { Client } from '@modelcontextprotocol/client';
-import type { JSONRPCMessage } from '@modelcontextprotocol/server';
+import type { JSONRPCMessage, McpServer } from '@modelcontextprotocol/server';
 import { StreamTransport } from '@supabase/mcp-utils';
 import {
   ARTIFACT_INSPECTION_UNTRUSTED_CONTENT_PREFIX,
@@ -9,17 +9,18 @@ import {
   artifactInspectionResponseByteLength,
   MAX_ARTIFACT_REQUEST_ID_BYTES,
   MAX_ARTIFACT_RESPONSE_BYTES,
+  MAX_ARTIFACT_TOOL_EXECUTION_MS,
   MAX_REQUEST_ID_BYTES,
   MAX_RESPONSE_BYTES,
 } from '@supabase-user-mcp/contracts';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import {
   type ArtifactMcpRegistrationConfig,
   ARTIFACT_STORAGE_CLOSURE_MANIFEST,
   assertArtifactStorageClosureManifest,
   createArtifactRequestCorrelationRef,
-  executeArtifactOperationWithDeadline,
+  prepareArtifactMcpRegistration,
 } from './artifact-mcp-registration.js';
 import { buildArtifactChunkManifest } from './artifact-chunk-manifest.js';
 import type {
@@ -141,6 +142,49 @@ function artifactOptions(
   return {
     client: emptyClient(principalId),
     artifactRegistration: validConfig(dependencies, overrides),
+  };
+}
+
+type CapturedArtifactHandler = (
+  input: unknown,
+  context: {
+    readonly mcpReq: {
+      readonly id: string | number;
+      readonly signal: AbortSignal;
+    };
+  },
+) => Promise<{ readonly structuredContent: unknown }>;
+
+function captureArtifactHandler(
+  dependencies: ArtifactInspectorDependencies,
+  toolName: 'artifact_stat' | 'artifact_read_range' | 'artifact_read_lines' = 'artifact_stat',
+): CapturedArtifactHandler {
+  let captured: CapturedArtifactHandler | undefined;
+  const server = {
+    registerTool(name: string, _definition: unknown, handler: unknown): void {
+      if (name === toolName) captured = handler as CapturedArtifactHandler;
+    },
+  } as unknown as McpServer;
+  prepareArtifactMcpRegistration(validConfig(dependencies), PRINCIPAL_ID).register(server);
+  if (captured === undefined) throw new TypeError(`Expected ${toolName} to be registered.`);
+  return captured;
+}
+
+function deferred<T>(): {
+  readonly promise: Promise<T>;
+  readonly resolve: (value: T) => void;
+  readonly reject: (reason: unknown) => void;
+} {
+  let resolvePromise: ((value: T) => void) | undefined;
+  let rejectPromise: ((reason: unknown) => void) | undefined;
+  const promise = new Promise<T>((resolve, reject) => {
+    resolvePromise = resolve;
+    rejectPromise = reject;
+  });
+  return {
+    promise,
+    resolve: (value) => resolvePromise?.(value),
+    reject: (reason) => rejectPromise?.(reason),
   };
 }
 
@@ -508,54 +552,191 @@ describe('optional artifact MCP registration', () => {
     });
   });
 
-  it('returns DEADLINE_EXCEEDED after 2,000 ms, never retries, and handles a late rejection', async () => {
-    let calls = 0;
-    let rejectUnderlying: ((reason: Error) => void) | undefined;
+  it('suppresses late S2 success evidence after timeout and emits one redacted deadline event', async () => {
+    vi.useFakeTimers();
+    const resolution = deferred<AuthorizedArtifactRecord | null>();
+    const events: ArtifactInspectorOperationalEvent[] = [];
+    const receipts: unknown[] = [];
+    let resolverCalls = 0;
+    const dependencies: ArtifactInspectorDependencies = {
+      resolveAuthorizedArtifact: async () => {
+        resolverCalls += 1;
+        return resolution.promise;
+      },
+      readVersionedRange: async () => null,
+      now: () => new Date('2026-09-02T00:00:00.000Z'),
+      emitOperationalEvent: (event) => events.push(event),
+      emitInspectionReceipt: (receipt) => receipts.push(receipt),
+    };
+    try {
+      const handler = captureArtifactHandler(dependencies);
+      const pending = handler(
+        { artifactId: ARTIFACT_ID },
+        { mcpReq: { id: HOSTILE_REQUEST_ID, signal: new AbortController().signal } },
+      );
+      await Promise.resolve();
+      expect(resolverCalls).toBe(1);
+
+      await vi.advanceTimersByTimeAsync(MAX_ARTIFACT_TOOL_EXECUTION_MS);
+      const result = await pending;
+      expect(result.structuredContent).toMatchObject({
+        ok: false,
+        error: { code: 'DEADLINE_EXCEEDED', retryable: false },
+      });
+      expect(receipts).toEqual([]);
+      expect(events).toHaveLength(1);
+      expect(events[0]).toMatchObject({
+        operation: 'artifact_stat',
+        resultClass: 'DEADLINE_EXCEEDED',
+        requestCorrelationId: createArtifactRequestCorrelationRef(HOSTILE_REQUEST_ID),
+      });
+      expect(events[0]?.elapsedMs).toBeGreaterThanOrEqual(0);
+      expect(events[0]?.elapsedMs).toBeLessThanOrEqual(MAX_ARTIFACT_TOOL_EXECUTION_MS);
+      const evidence = scan({ events, receipts });
+      for (const forbidden of [
+        ARTIFACT_ID,
+        INTERNAL_LOCATOR.bucket,
+        INTERNAL_LOCATOR.path,
+        INTERNAL_LOCATOR.signedUrl,
+        INTERNAL_LOCATOR.token,
+        SOURCE_TEXT,
+        HOSTILE_REQUEST_ID,
+      ]) {
+        expect(evidence).not.toContain(forbidden);
+      }
+
+      resolution.resolve(buildRecord());
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(resolverCalls).toBe(1);
+      expect(receipts).toEqual([]);
+      expect(events.map((event) => event.resultClass)).toEqual(['DEADLINE_EXCEEDED']);
+    } finally {
+      resolution.resolve(null);
+      vi.useRealTimers();
+    }
+  });
+
+  it('suppresses late S2 success evidence after abort and emits one redacted deadline event', async () => {
+    const resolution = deferred<AuthorizedArtifactRecord | null>();
+    const events: ArtifactInspectorOperationalEvent[] = [];
+    const receipts: unknown[] = [];
+    let resolverCalls = 0;
+    const dependencies: ArtifactInspectorDependencies = {
+      resolveAuthorizedArtifact: async () => {
+        resolverCalls += 1;
+        return resolution.promise;
+      },
+      readVersionedRange: async () => null,
+      now: () => new Date('2026-09-02T00:00:00.000Z'),
+      emitOperationalEvent: (event) => events.push(event),
+      emitInspectionReceipt: (receipt) => receipts.push(receipt),
+    };
+    const controller = new AbortController();
+    const handler = captureArtifactHandler(dependencies);
+    const pending = handler(
+      { artifactId: ARTIFACT_ID },
+      { mcpReq: { id: HOSTILE_REQUEST_ID, signal: controller.signal } },
+    );
+    await Promise.resolve();
+    expect(resolverCalls).toBe(1);
+
+    controller.abort();
+    const result = await pending;
+    expect(result.structuredContent).toMatchObject({
+      ok: false,
+      error: { code: 'DEADLINE_EXCEEDED', retryable: false },
+    });
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({
+      operation: 'artifact_stat',
+      resultClass: 'DEADLINE_EXCEEDED',
+      requestCorrelationId: createArtifactRequestCorrelationRef(HOSTILE_REQUEST_ID),
+    });
+    expect(events[0]?.elapsedMs).toBeGreaterThanOrEqual(0);
+    expect(events[0]?.elapsedMs).toBeLessThanOrEqual(MAX_ARTIFACT_TOOL_EXECUTION_MS);
+    expect(receipts).toEqual([]);
+    expect(scan({ events, receipts })).not.toContain(HOSTILE_REQUEST_ID);
+
+    resolution.resolve(buildRecord());
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(resolverCalls).toBe(1);
+    expect(receipts).toEqual([]);
+    expect(events.map((event) => event.resultClass)).toEqual(['DEADLINE_EXCEEDED']);
+  });
+
+  it('suppresses late rejection evidence after timeout without an unhandled rejection', async () => {
+    vi.useFakeTimers();
+    const resolution = deferred<AuthorizedArtifactRecord | null>();
+    const events: ArtifactInspectorOperationalEvent[] = [];
+    const receipts: unknown[] = [];
     const unhandled: unknown[] = [];
     const onUnhandled = (reason: unknown) => unhandled.push(reason);
     process.on('unhandledRejection', onUnhandled);
     const dependencies: ArtifactInspectorDependencies = {
-      ...unavailableDependencies(),
-      resolveAuthorizedArtifact: async () => {
-        calls += 1;
-        return new Promise<null>((_resolve, reject) => {
-          rejectUnderlying = reject;
-        });
+      resolveAuthorizedArtifact: async () => resolution.promise,
+      readVersionedRange: async () => null,
+      now: () => new Date('2026-09-02T00:00:00.000Z'),
+      emitOperationalEvent: (event) => {
+        events.push(event);
+        throw new Error('observer-secret-SENTINEL');
       },
+      emitInspectionReceipt: (receipt) => receipts.push(receipt),
     };
     try {
-      await withClient(artifactOptions(dependencies), async (client) => {
-        const result = await client.callTool({
-          name: 'artifact_stat',
-          arguments: { artifactId: ARTIFACT_ID },
-        });
-        expect(result.structuredContent).toMatchObject({
-          ok: false,
-          error: { code: 'DEADLINE_EXCEEDED', retryable: false },
-        });
-        expect(calls).toBe(1);
-        rejectUnderlying?.(new Error('late-secret-SENTINEL'));
-        await new Promise((resolve) => setTimeout(resolve, 10));
+      const handler = captureArtifactHandler(dependencies);
+      const pending = handler(
+        { artifactId: ARTIFACT_ID },
+        { mcpReq: { id: HOSTILE_REQUEST_ID, signal: new AbortController().signal } },
+      );
+      await Promise.resolve();
+      await vi.advanceTimersByTimeAsync(MAX_ARTIFACT_TOOL_EXECUTION_MS);
+      const result = await pending;
+      expect(result.structuredContent).toMatchObject({
+        ok: false,
+        error: { code: 'DEADLINE_EXCEEDED', retryable: false },
       });
+
+      resolution.reject(new Error('late-secret-SENTINEL'));
+      await Promise.resolve();
+      await Promise.resolve();
       expect(unhandled).toEqual([]);
+      expect(receipts).toEqual([]);
+      expect(events.map((event) => event.resultClass)).toEqual(['DEADLINE_EXCEEDED']);
     } finally {
       process.off('unhandledRejection', onUnhandled);
+      resolution.resolve(null);
+      vi.useRealTimers();
     }
-  }, 5_000);
+  });
 
-  it('maps the MCP request AbortSignal to DEADLINE_EXCEEDED without retry', async () => {
-    let calls = 0;
-    const controller = new AbortController();
-    const pending = executeArtifactOperationWithDeadline(async () => {
-      calls += 1;
-      return new Promise<null>(() => undefined);
-    }, controller.signal);
-    controller.abort();
-    await expect(pending).resolves.toMatchObject({
-      ok: false,
-      error: { code: 'DEADLINE_EXCEEDED', retryable: false },
+  it('keeps one original S2 receipt and success event for a normal operation', async () => {
+    const events: ArtifactInspectorOperationalEvent[] = [];
+    const receipts: Array<{ readonly resultOrErrorClass: { readonly kind: string } }> = [];
+    const dependencies: ArtifactInspectorDependencies = {
+      resolveAuthorizedArtifact: async () => buildRecord(),
+      readVersionedRange: async () => null,
+      now: () => new Date('2026-09-02T00:00:00.000Z'),
+      emitOperationalEvent: (event) => events.push(event),
+      emitInspectionReceipt: (receipt) => receipts.push(receipt),
+    };
+    const handler = captureArtifactHandler(dependencies);
+    const result = await handler(
+      { artifactId: ARTIFACT_ID },
+      { mcpReq: { id: HOSTILE_REQUEST_ID, signal: new AbortController().signal } },
+    );
+
+    expect(result.structuredContent).toMatchObject({ ok: true });
+    expect(receipts).toHaveLength(1);
+    expect(receipts[0]?.resultOrErrorClass).toEqual({ kind: 'result' });
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({
+      operation: 'artifact_stat',
+      resultClass: 'success',
+      requestCorrelationId: createArtifactRequestCorrelationRef(HOSTILE_REQUEST_ID),
     });
-    expect(calls).toBe(1);
+    expect(events.some((event) => event.resultClass === 'DEADLINE_EXCEEDED')).toBe(false);
   });
 
   it('matches the accepted artifact estimator to the captured SDK frame including newline', async () => {

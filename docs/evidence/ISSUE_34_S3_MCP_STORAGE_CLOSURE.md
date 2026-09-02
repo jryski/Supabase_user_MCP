@@ -40,11 +40,16 @@ single untrusted-content prefix.
 
 The registration enforces the accepted fixed 2,000 ms ceiling by racing each operation against one
 deadline and the MCP request `AbortSignal`. Timeout and abort normalize to the accepted
-`DEADLINE_EXCEEDED` artifact output. There is no retry. The losing operation promise always has a
-rejection handler, so a late adapter rejection cannot become unhandled. This is a local execution
-ceiling, not proof of remote cancellation: an injected adapter must enforce its own bounded I/O and
-honor cancellation where its underlying API supports it. S2 remains read-only even if an adapter
-finishes after the MCP result has been closed.
+`DEADLINE_EXCEEDED` artifact output. There is no retry, and the losing operation promise always has a
+rejection handler so a late adapter rejection cannot become unhandled. The adapter dependency
+interface has no cancellation seam, so remote work may continue after the MCP result closes.
+
+Each call creates an operation-scoped wrapper around the fixed S2 dependencies and a per-call S2
+inspector. The wrapper closes as soon as MCP execution returns and suppresses every late S2 receipt or
+operational event. After closure, registration emits exactly one redacted `DEADLINE_EXCEEDED` event
+with the matching operation, bounded elapsed time, and `mcp_req:<sha256>` correlation. It issues no
+source-bound receipt for a registration timeout or abort because source/version integrity may not
+have been established. This remains read-only and does not prove remote cancellation.
 
 ## Complete-wire containment
 
