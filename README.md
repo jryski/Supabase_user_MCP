@@ -91,7 +91,9 @@ Current `main` contains the reviewed local foundation and merged principal-bound
 - environment-only verified read-only stdio startup plus operator, revoke, and rollback guidance;
 - a synthetic Storage/RLS artifact registry laboratory;
 - the accepted Governed Artifact Inspection S0 capability, receipt, and integrity contracts; and
-- deterministic S1b source-manifest, chunk, and Merkle-proof calibration.
+- deterministic S1b source-manifest, chunk, and Merkle-proof calibration; and
+- an S2 synthetic/local fixed inspector library for `artifact_stat`, bounded byte ranges, and
+  bounded UTF-8 line reads through injected authorization and immutable-version dependencies.
 
 The consolidated read path merged through
 [PR #38](https://github.com/jryski/Supabase_user_MCP/pull/38) at
@@ -168,18 +170,22 @@ The current design keeps:
 - Postgres/RLS as authorization;
 - Storage as byte custody.
 
-Current merged evidence includes:
+Current repository evidence includes:
 
 - **S0:** strict capability, complete-wire, integrity, derivation, and receipt contracts;
 - **synthetic S1:** immutable artifact registry, derivation tables, approved-client policy, and
   Storage RLS laboratory; and
 - **S1b:** deterministic raw/source hashes, domain-separated Merkle leaves, bounded proofs,
-  full-source verification, and mutation-sensitive calibration.
+  full-source verification, and mutation-sensitive calibration; and
+- **S2:** a pure TypeScript synthetic/local fixed inspector library with strict runtime adapter
+  validation, distinct client/capability-grant custody, exact-version disappearance handling,
+  redacted dependency failures, and schema-valid immutable receipts.
 
 The M1 non-service user/client identity prerequisite is satisfied by the accepted v0.1 read path.
-The next gate is **S2**, a fixed synthetic/local read-only inspector implementing `artifact_stat`
-plus bounded range and text reads. No Edge deployment, hosted resource, MCP registration, signed URL,
-`service_role`, caller-selected Storage coordinate, ingest, or semantic analysis is accepted yet.
+S2 is complete only for that synthetic/local library scope. The next gate is **S3 MCP registration
+and Storage containment closure**; S2 itself registers no MCP tool. No Edge or hosted deployment,
+Storage/database mutation, signed URL, `service_role`, caller-selected Storage coordinate, ingest,
+semantic analysis, search, write, private-data access, or production-readiness claim is accepted.
 
 ## Roadmap
 
@@ -193,7 +199,7 @@ plus bounded range and text reads. No Edge deployment, hosted resource, MCP regi
 | M5 | Operations/adversarial hardening | Future |
 | M6 | Stable v1 contract | Future |
 
-The active extension is issue #34 S2 fixed artifact inspection. Detailed sequencing and claim limits
+The active extension is issue #34 S3 MCP registration and Storage containment closure. Detailed sequencing and claim limits
 live in [docs/ROADMAP.md](docs/ROADMAP.md); the completed v0.1 execution baseline remains archived in
 [epic #19](https://github.com/jryski/Supabase_user_MCP/issues/19).
 
@@ -223,6 +229,7 @@ private, restricted, customer, or production project.
 - [Experimental local stdio operator guide](docs/evidence/ISSUE_18_OPERATOR_RELEASE.md)
 - [Governed Artifact Inspection S0 contract](docs/evidence/ISSUE_34_S0_ARTIFACT_CONTRACT.md)
 - [S1b chunk/Merkle calibration](docs/evidence/ISSUE_34_S1B_CHUNK_MERKLE_CALIBRATION.md)
+- [S2 synthetic/local fixed inspector](docs/evidence/ISSUE_34_S2_FIXED_INSPECTOR.md)
 - [Architecture decisions](docs/decisions/README.md)
 - [Program context and plane ownership](docs/PROGRAM_CONTEXT.md)
 - [Evidence index](docs/evidence/README.md)

@@ -1,7 +1,7 @@
 # Feature Catalog
 
 - **Status:** Mixed — merged local contracts and factories; later capabilities proposed
-- **Last reviewed:** 2026-09-01
+- **Last reviewed:** 2026-09-02
 
 This catalog defines both merged foundations and the intended product surface. Each section's
 status governs its named scope. `Implemented` or `Partially implemented` does not mean that a
@@ -244,12 +244,16 @@ Merged foundations:
 - synthetic S1 artifact registry, chunk and derivation tables, approved inspector-client policy,
   and Storage RLS laboratory; and
 - S1b deterministic source manifests, distinct raw and domain-separated chunk hashes, canonical
-  Merkle proofs, full-source verification, and mutation-sensitive calibration.
+  Merkle proofs, full-source verification, and mutation-sensitive calibration; and
+- S2 synthetic/local fixed inspector library for `artifact_stat`, bounded byte ranges, and bounded
+  UTF-8 line reads, with runtime record/read validation, distinct client and capability-grant
+  references, exact-version unavailability, redacted dependency failures, and immutable receipts.
 
-The next gate is S2 fixed read-only inspection: `artifact_stat` plus bounded range and UTF-8 text
-reads behind injected caller-context authorization and immutable artifact identity. S2 is not yet
-an MCP-registered tool or deployed Edge Function. No caller may select a bucket, object path, URL,
-origin, method, schema, table, RPC, parser, or privileged credential.
+S2 is complete only as that pure TypeScript synthetic/local library. It registers no MCP tool and is
+not an Edge or hosted deployment. The next gate is S3 MCP registration and Storage containment
+closure. No caller may select a bucket, object path, URL, origin, method, schema, table, RPC, parser,
+or privileged credential. S2 makes no Storage/database mutation, signed-URL, `service_role`, ingest,
+search, semantic-analysis, write, private-data, or production-readiness claim.
 
 Later heading/search indexing, durable operational adoption, semantic analysis, and any write or
 derived-artifact publication remain separate stages.

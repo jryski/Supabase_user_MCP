@@ -1,7 +1,7 @@
 # Architecture
 
 - **Status:** Mixed — local foundation implemented; remote and write profiles proposed or blocked
-- **Last reviewed:** 2026-09-01
+- **Last reviewed:** 2026-09-02
 
 Implemented behavior is linked through the [evidence index](evidence/README.md). Target
 components and profiles remain design requirements until their named acceptance gates pass.
@@ -107,11 +107,15 @@ turning Storage into a generic model-facing file system. It separates four surfa
 - Postgres/RLS authorizes opaque artifact identity under the current principal and approved client;
 - Storage retains byte custody behind internal locators that callers never select.
 
-Merged `main` includes the S0 contract, synthetic S1 registry/RLS laboratory, and S1b deterministic
-source-manifest/chunk/Merkle profile. The next gate, S2, is a synthetic/local fixed inspector for
-`artifact_stat` and bounded range/text reads. It remains unregistered with MCP and undeployed to
-Edge. Generic Storage access, signed URLs, `service_role`, caller-selected paths, ingest, semantic
-analysis, and writes remain outside the accepted architecture.
+The repository includes the S0 contract, synthetic S1 registry/RLS laboratory, S1b deterministic
+source-manifest/chunk/Merkle profile, and an S2 pure TypeScript synthetic/local fixed inspector
+library for `artifact_stat` and bounded range/text reads. S2 validates every injected record and
+byte-result boundary at runtime, keeps client identity distinct from the capability grant reference,
+and treats exact-version disappearance as non-enumerating unavailability. It registers no MCP tool
+and is not an Edge or hosted deployment. S3 MCP registration and Storage containment closure is the
+next gate. Generic Storage access, Storage/database mutation, signed URLs, `service_role`,
+caller-selected paths, ingest, search, semantic analysis, writes, private-data use, and production
+readiness remain outside the accepted architecture.
 
 ### Audit layer
 

@@ -1,16 +1,42 @@
 export {
+  ARTIFACT_INSPECTOR_PROFILE_VERSION,
+  type ArtifactInspector,
+  type ArtifactInspectorDependencies,
+  type ArtifactInspectorOperationalEvent,
+  type ArtifactInspectorTrustedContext,
+  ArtifactInspectorTrustedContextSchema,
+  type AuthorizedArtifactRecord,
+  artifactReadLines,
+  artifactReadRange,
+  artifactStat,
+  createArtifactInspector,
+  createArtifactInspectorTrustedContext,
+  MAX_COVERING_FETCH_BYTES,
+  MAX_LINE_SOURCE_SCAN_BYTES,
+  type ReadVersionedRangeResult,
+} from './artifact-inspector.js';
+export {
   createFixedSupabaseClient,
-  type FixedSupabaseClient,
-  type FixedSupabaseClientConfig,
-  type VerifiedFixedSupabaseClient,
-  type VerifiedUserIdentity,
-  FixedSupabaseClientError,
-  type FixedSupabaseClientErrorCode,
-  type FixedMemorySearchResult,
-  type FixedMemorySearchRow,
   type FixedMemoryGetRow,
   type FixedMemoryListRecentResult,
+  type FixedMemorySearchResult,
+  type FixedMemorySearchRow,
+  type FixedSupabaseClient,
+  type FixedSupabaseClientConfig,
+  FixedSupabaseClientError,
+  type FixedSupabaseClientErrorCode,
+  type VerifiedFixedSupabaseClient,
+  type VerifiedUserIdentity,
 } from './fixed-supabase-client.js';
+export {
+  LocalCredentialError,
+  type LocalCredentialErrorCode,
+  type LocalCredentialLoaderOptions,
+  type LocalCredentials,
+  loadLocalCredentials,
+  type PermissionInspection,
+  type PermissionInspector,
+} from './local-credential-loader.js';
 export { createMemoryGet, type MemoryGetOptions } from './memory-get.js';
 export {
   createMemoryListRecent,
@@ -25,15 +51,6 @@ export {
   type ReadToolInvocationContext,
   type ReadToolOperationalEvent,
 } from './read-tool-governor.js';
-export {
-  LocalCredentialError,
-  type LocalCredentialErrorCode,
-  type LocalCredentialLoaderOptions,
-  type LocalCredentials,
-  loadLocalCredentials,
-  type PermissionInspection,
-  type PermissionInspector,
-} from './local-credential-loader.js';
 export {
   createReadOnlyServer,
   type ReadOnlyServer,
