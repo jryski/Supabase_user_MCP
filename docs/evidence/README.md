@@ -29,15 +29,15 @@ Draft candidates are listed separately and must not be described as merged or ac
 | Governed Artifact Inspection S0 contract | [Issue #34 S0 evidence](ISSUE_34_S0_ARTIFACT_CONTRACT.md) | `packages/contracts/src/artifact-inspection.test.ts` | `6bff150d673055028e19e2202875b8f7d27f4782` |
 | S1b deterministic chunk/Merkle calibration | [Issue #34 S1b evidence](ISSUE_34_S1B_CHUNK_MERKLE_CALIBRATION.md) | `packages/server/src/artifact-chunk-manifest.test.ts` and `npm run artifact:calibrate` | `e36418d812a7004f5b9cf1ef14070375cfed7493` |
 | S2 fixed read-only artifact inspector | [Issue #34 S2 evidence](ISSUE_34_S2_FIXED_INSPECTOR.md) | `packages/server/src/artifact-inspector.test.ts` | `57ebbf5d836835a7fe8cd2330e46c2696aa1162b` |
+| S3 optional MCP registration and Storage closure | [Issue #34 S3 evidence](ISSUE_34_S3_MCP_STORAGE_CLOSURE.md) | `packages/server/src/artifact-mcp-registration.test.ts` | `ee72f5d4faf80c380474d64fdb33628eb631899e` |
 
 ## Unmerged candidate evidence
 
 | Candidate | Coordinate/evidence source | What it may support | Open limits |
 | --- | --- | --- | --- |
-| Issue #34 S4 deterministic text-index spike | [Draft PR #51](https://github.com/jryski/Supabase_user_MCP/pull/51), exact reviewed head `52037d40f2336f4444746d85a7c6c8f6ea505372` | Pure in-memory UTF-8 line and Markdown ATX-heading index primitive | Technically accepted only as an isolated spike; remains draft and blocked on S3, then requires rebase and fresh exact-head review |
+| Issue #34 S4 deterministic text-index spike | [Draft PR #51](https://github.com/jryski/Supabase_user_MCP/pull/51), pre-rebase reviewed head `52037d40f2336f4444746d85a7c6c8f6ea505372` | Pure in-memory UTF-8 line and Markdown ATX-heading index primitive | S2/S3 dependencies are merged; candidate remains draft and must be rebased onto current `main`, rerun through exact-head CI, and freshly reviewed before merge consideration |
 
-Issue #34 S3 MCP registration and Storage containment closure is the next dependency-ready stage. No
-S3 implementation branch or PR exists at this documentation coordinate.
+Issue #34 S4 deterministic Markdown text indexing is the next dependency-ready stage.
 
 Green CI on a draft coordinate proves only that the named workflow passed for that source.
 It does not merge the code, satisfy independent review, authorize deployment, or establish
