@@ -2,13 +2,18 @@
 
 - **Status:** Active — merged foundations and future evidence gates are distinguished below
 - **Planning horizon:** M0 through v1
-- **Last reviewed:** 2026-08-30
+- **Last reviewed:** 2026-09-01
 
 ## Active execution slice
 
-The immediate build target is the local-stdio, read-only v0.1 pilot described in [IMPLEMENTATION_PLAN.md](IMPLEMENTATION_PLAN.md) and tracked by [epic #19](https://github.com/jryski/Supabase_user_MCP/issues/19).
+The local-stdio, read-only v0.1 pilot described in
+[IMPLEMENTATION_PLAN.md](IMPLEMENTATION_PLAN.md) is complete for its experimental synthetic profile;
+[epic #19](https://github.com/jryski/Supabase_user_MCP/issues/19) is closed.
 
-That plan turns the remaining M0, M1, and M2 work into dependency-ordered contributor packages. M3–M6 remain valid later roadmap gates but do not block evaluating the read-only pilot.
+The active extension is [issue #34](https://github.com/jryski/Supabase_user_MCP/issues/34),
+Governed Artifact Inspection. S0 contracts, the synthetic S1 Storage/RLS laboratory, S1b
+chunk/Merkle calibration, and the M1 identity prerequisite are complete. The next gate is S2 fixed
+read-only inspection. M3–M6 remain separate product roadmap gates.
 
 ## How milestones work
 
@@ -129,6 +134,36 @@ readiness claim.
 
 Publish only as an experimental local-development release. It is not a hosted or
 production-ready release.
+
+### Current disposition
+
+M2 is complete for the experimental local-stdio, read-only, synthetic-only profile. The accepted
+path includes official Auth sign-in in tests, principal/client-bound Data API and RLS acceptance,
+three fixed MCP read tools, complete wire budgets, environment-only startup, and operator
+revoke/rollback guidance. Remote OAuth, production data, and writes remain outside this completion
+claim.
+
+## Governed Artifact Inspection extension
+
+**Goal:** inspect immutable Storage-backed artifacts through opaque IDs and caller-context
+authorization without exposing a generic Storage or file-download tool.
+
+| Stage | State | Accepted scope / next gate |
+| --- | --- | --- |
+| S0 capability, integrity, derivation, and receipt contract | Complete | Strict contracts and mutation-sensitive tests on `main` |
+| Synthetic S1 artifact registry and Storage RLS laboratory | Complete | Local synthetic schema/policy evidence only |
+| S1b chunk/Merkle worker calibration | Complete | Deterministic in-memory manifests, source verification, bounded proofs, and calibration only |
+| M1 non-service user/client identity prerequisite | Complete | Merged principal/client-bound v0.1 read path |
+| S2 fixed read-only inspector | **Next** | `artifact_stat` plus bounded range/text inspection in synthetic/local tests |
+| S3 MCP registration and Storage containment closure | Future | Starts only after S2 acceptance |
+| S4 Markdown structure/index extraction | Future | One approved synthetic artifact profile |
+| S5 exact search and durable inspection receipts | Future | Operational adoption remains separate |
+| S6–S9 semantic, async, vector, and write/publication stages | Future | Separate authority and deployment reviews required |
+
+S2 must preserve caller context, resolve Storage coordinates internally from opaque IDs, verify the
+accepted S1b manifest/proof profile, return non-enumerating errors, and remain bounded/read-only.
+It may not deploy Edge, create hosted resources, use `service_role`, accept caller-selected paths,
+register MCP tools, ingest artifacts, or enable semantic analysis.
 
 ## M3 — Safe writes and human authority
 

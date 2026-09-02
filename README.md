@@ -9,7 +9,10 @@
 Supabase User MCP is an independent, security-first data-plane MCP server for applications built on Supabase. It is designed to let AI clients work with application data as a specific user or agent while PostgreSQL Row Level Security (RLS) remains the final authorization authority.
 
 > [!WARNING]
-> This repository is still pre-release. The local policy laboratory, credential/fixed-client seam, bounded read contracts, catalog lint, and governed read factories are implemented and tested, but the real end-to-end user-context path is not yet accepted. Do not connect this project to production data merely because local tests are green.
+> This repository is still pre-release. The experimental local-stdio, read-only, synthetic-only
+> user-context path is implemented and accepted on `main`; production deployment, remote OAuth,
+> writes, hosted artifact inspection, and privileged credentials remain unsupported. Do not connect
+> this project to production data merely because the local and CI acceptance suites are green.
 
 ## Why this exists
 
@@ -84,8 +87,11 @@ Current `main` contains the reviewed local foundation and merged principal-bound
 - verified Auth identity before read-only server registration;
 - exact principal-scoped limiter and operational-event attribution;
 - complete dual-representation JSON-RPC frame and request-ID ceilings;
-- real MCP client -> fixed Data API -> PostgreSQL RLS acceptance; and
-- a real local Storage/RLS artifact lab used by the Governed Artifact Inspection design work.
+- real MCP client -> fixed Data API -> PostgreSQL RLS acceptance;
+- environment-only verified read-only stdio startup plus operator, revoke, and rollback guidance;
+- a synthetic Storage/RLS artifact registry laboratory;
+- the accepted Governed Artifact Inspection S0 capability, receipt, and integrity contracts; and
+- deterministic S1b source-manifest, chunk, and Merkle-proof calibration.
 
 The consolidated read path merged through
 [PR #38](https://github.com/jryski/Supabase_user_MCP/pull/38) at
@@ -103,13 +109,13 @@ oversized inbound or outbound frames before dispatch/send, including denial path
 request IDs. Serialized request IDs are separately capped at 1,024 bytes so bounded errors can echo
 them safely. Exact-head and post-merge Build/M2/Markdown/Links workflows passed.
 
-The experimental local pilot is still not closed. Issue #44's official Auth test reuse and
-non-model-facing authenticated PostgREST OpenAPI census merged at
-`7f2a3fa955a811f97ed4f88e4cfa50ad7e3aa4d4`. The current issue #18 candidate changes `npm start`
-from the compatibility probe to environment-only verified read-only stdio startup and adds operator,
-revoke, rollback, and release guidance. It remains unmerged until exact-head CI, review, and
-clean-room reproduction pass. The original K1/K2 acceptance criteria remain in the
-[public PR #38 finding record](https://github.com/jryski/Supabase_user_MCP/pull/38#issuecomment-5472417281).
+The experimental local v0.1 pilot is complete. Official Auth test reuse and the authenticated
+PostgREST OpenAPI census merged through [PR #45](https://github.com/jryski/Supabase_user_MCP/pull/45),
+and the executable environment-only stdio/operator package merged through
+[PR #46](https://github.com/jryski/Supabase_user_MCP/pull/46). `npm start` launches the verified
+read-only stdio server; `npm run start:compatibility` retains the no-data M0 probe. Exact-head and
+post-merge Build, M2, Markdown, and Links checks passed. This is an experimental local-development
+profile, not a production or hosted deployment claim.
 
 The intended local path is:
 
@@ -151,7 +157,9 @@ Later governed write capabilities are planned separately, including append-only 
 
 ### Governed Artifact Inspection
 
-Issue #34 tracks a related Storage/Edge capability: agents inspect durable artifacts through opaque IDs, caller-context RLS, bounded reads, integrity/provenance receipts, and a small supported-profile registry rather than receiving generic Storage access.
+Issue #34 tracks a related Storage/Edge capability: agents inspect durable artifacts through opaque
+IDs, caller-context RLS, bounded reads, integrity/provenance receipts, and a small supported-profile
+registry rather than receiving generic Storage access.
 
 The current design keeps:
 
@@ -160,7 +168,18 @@ The current design keeps:
 - Postgres/RLS as authorization;
 - Storage as byte custody.
 
-This is proposed work. Hosted adoption remains gated by a verified non-service user/client identity path and by remediation of dangerous default Storage privileges before any user token is issued.
+Current merged evidence includes:
+
+- **S0:** strict capability, complete-wire, integrity, derivation, and receipt contracts;
+- **synthetic S1:** immutable artifact registry, derivation tables, approved-client policy, and
+  Storage RLS laboratory; and
+- **S1b:** deterministic raw/source hashes, domain-separated Merkle leaves, bounded proofs,
+  full-source verification, and mutation-sensitive calibration.
+
+The M1 non-service user/client identity prerequisite is satisfied by the accepted v0.1 read path.
+The next gate is **S2**, a fixed synthetic/local read-only inspector implementing `artifact_stat`
+plus bounded range and text reads. No Edge deployment, hosted resource, MCP registration, signed URL,
+`service_role`, caller-selected Storage coordinate, ingest, or semantic analysis is accepted yet.
 
 ## Roadmap
 
@@ -168,13 +187,15 @@ This is proposed work. Hosted adoption remains gated by a verified non-service u
 | --- | --- | --- |
 | M0 | Protocol/policy/repository foundation | Foundation landed |
 | M1 | Local Auth/RLS policy laboratory | Complete for the synthetic reference profile |
-| M2 | Read-only stdio reference server | **Active critical path** — merged principal/RLS path; executable operator candidate remains unmerged |
+| M2 | Read-only stdio reference server | Complete for the experimental local synthetic profile |
 | M3 | Idempotent writes and canonical approval | Future |
 | M4 | Remote HTTP/OAuth profile | Future; downstream-token/audience proof required |
 | M5 | Operations/adversarial hardening | Future |
 | M6 | Stable v1 contract | Future |
 
-Detailed sequencing and claim limits live in [docs/ROADMAP.md](docs/ROADMAP.md) and [epic #19](https://github.com/jryski/Supabase_user_MCP/issues/19).
+The active extension is issue #34 S2 fixed artifact inspection. Detailed sequencing and claim limits
+live in [docs/ROADMAP.md](docs/ROADMAP.md); the completed v0.1 execution baseline remains archived in
+[epic #19](https://github.com/jryski/Supabase_user_MCP/issues/19).
 
 ## Local development
 
@@ -200,6 +221,8 @@ private, restricted, customer, or production project.
 - [Implementation plan](docs/IMPLEMENTATION_PLAN.md)
 - [Development guide](docs/DEVELOPMENT.md)
 - [Experimental local stdio operator guide](docs/evidence/ISSUE_18_OPERATOR_RELEASE.md)
+- [Governed Artifact Inspection S0 contract](docs/evidence/ISSUE_34_S0_ARTIFACT_CONTRACT.md)
+- [S1b chunk/Merkle calibration](docs/evidence/ISSUE_34_S1B_CHUNK_MERKLE_CALIBRATION.md)
 - [Architecture decisions](docs/decisions/README.md)
 - [Program context and plane ownership](docs/PROGRAM_CONTEXT.md)
 - [Evidence index](docs/evidence/README.md)

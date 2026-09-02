@@ -1,7 +1,8 @@
 # Development Guide
 
-**Status:** Implemented through the merged synthetic M2 principal-bound read path; executable
-local-stdio operator packaging remains experimental.
+**Status:** Implemented through the accepted experimental local-stdio M2 path and deterministic S1b
+artifact chunk/Merkle calibration. Production, hosted, remote, write, and inspector deployment
+profiles remain unsupported.
 
 ## Engineering posture
 
@@ -46,6 +47,10 @@ Individual checks are available as `npm run format:check`, `npm run lint`, `npm 
 stdio server. `npm run start:compatibility` runs the M0 no-data probe. Both communicate over
 stdin/stdout; human diagnostics go to stderr so they cannot corrupt JSON-RPC messages.
 
+`npm run artifact:calibrate` builds and runs the deterministic synthetic S1b chunk/Merkle matrix.
+It accepts no source path or network input and does not ingest or deploy artifacts. The command
+prints a stable machine-readable receipt for the accepted calibration profile.
+
 The read-only server accepts no command arguments. It requires
 `SUPABASE_USER_MCP_ORIGIN` and `SUPABASE_USER_MCP_CREDENTIAL_FILE`. See the
 [experimental operator guide](evidence/ISSUE_18_OPERATOR_RELEASE.md).
@@ -75,8 +80,9 @@ The read-only server accepts no command arguments. It requires
 ```
 
 Only directories required by completed or active milestones are created. M0 through the synthetic
-M2 read path are represented in the current repository; later write, remote, and fleet profiles are
-not implemented.
+M2 read path and issue #34 S0/S1/S1b foundations are represented in the current repository. The
+next gate is S2 fixed read-only inspection; later writes, remote access, and fleet profiles are not
+implemented.
 
 ## Configuration principles
 
@@ -94,7 +100,9 @@ not implemented.
 ## Database workflow
 
 The pinned synthetic lifecycle is available through `npm run test:m2`; focused policy checks are
-available through the `policy-lab:*` scripts.
+available through the `policy-lab:*` scripts. The artifact registry/Storage laboratory is exercised
+through `npm run test:s1`, while `npm run artifact:calibrate` exercises deterministic manifest and
+Merkle-proof behavior without Storage or hosted access.
 
 Required workflow properties:
 

@@ -1,11 +1,11 @@
 # v0.1 read-only implementation plan
 
-- **Status:** Active planning baseline
+- **Status:** Completed experimental v0.1 baseline
 - **Tracking epic:** [#19](https://github.com/jryski/Supabase_user_MCP/issues/19)
 - **Scope:** local stdio, read-only, synthetic acceptance
 - **Historical planning baseline:** `e3b1af371bd0e231376d32efe1623ed32c011fb3`
-- **Last reconciled main:** `f691b1a49cabfc6bcf86f6011509db10a7496f90`
-- **Last reviewed:** 2026-08-30
+- **Last reconciled main:** `e36418d812a7004f5b9cf1ef14070375cfed7493`
+- **Last reviewed:** 2026-09-01
 
 ## Outcome
 
@@ -64,13 +64,17 @@ M2
 
 ### Current execution order
 
-As of 2026-09-01, issues #11 and #17 are closed after the principal-bound path merged through PR #38,
-and issue #44's official-upstream alignment merged through PR #45. The remaining M2 order is:
+As of 2026-09-01, every v0.1 work package is merged and epic #19 is closed:
 
-1. Complete issue #18's executable environment-only stdio entrypoint, synthetic client example,
-   operator guide, revoke/rollback procedure, and experimental release checklist.
-2. Run exact-head Build/M2/Markdown/Links plus independent review and clean-room reproduction.
-3. Reconcile epic #19 and release only with local-stdio/read-only/synthetic-only claim limits.
+1. PR #38 merged the principal/client-bound MCP/Data API/RLS read path.
+2. PR #45 merged official Auth test reuse and the authenticated PostgREST surface census.
+3. PR #46 merged executable environment-only stdio startup, synthetic client configuration,
+   operator guidance, revoke/rollback procedure, and experimental release checklist.
+4. Exact-head and post-merge Build/M2/Markdown/Links plus independent review passed.
+
+The active repository extension is issue #34 Governed Artifact Inspection. S0, synthetic S1, S1b,
+and its M1 identity prerequisite are complete; S2 fixed read-only inspection is next. That extension
+does not reopen or broaden the completed v0.1 pilot.
 
 Use the upstream Auth plus `StreamTransport` test topology selected by
 [ADR-0004](decisions/0004-narrow-upstream-mcp-reuse.md). Do not import the generic PostgREST MCP
@@ -100,13 +104,15 @@ runtime or its caller-selected request tools.
 
 | Issue/PR | Current state | Next gate |
 | --- | --- | --- |
-| [#18](https://github.com/jryski/Supabase_user_MCP/issues/18) | In progress on merged principal/upstream foundation | Exact-head CI, independent review, and clean-room operator reproduction |
+| [#19](https://github.com/jryski/Supabase_user_MCP/issues/19) | Closed complete | Preserve experimental local-stdio/read-only/synthetic-only claim limits |
+| [#34](https://github.com/jryski/Supabase_user_MCP/issues/34) | S0, synthetic S1, S1b, and M1 prerequisite complete | Implement and review S2 fixed read-only inspector |
 
 ## Parallel work lanes
 
-The remaining critical path is issue #18 only. Avoid reopening merged work packages or starting
-remote/write surfaces around it. Small independent documentation, denial-test, and evidence-index
-fixes may proceed when they do not change the active authority boundary.
+The completed v0.1 baseline has no remaining work package. The active lane is issue #34 S2 only.
+Avoid reopening merged work packages or starting remote/write/semantic surfaces around it. Small
+documentation, denial-test, and evidence-index fixes may proceed when they do not change the active
+authority boundary.
 
 ## Contributor workflow
 
@@ -137,9 +143,10 @@ npm ci
 npm run check
 ```
 
-At reconciled main `7f2a3fa…`, `npm run check` passes 22 test files and 194 tests with four
+At reconciled main `e36418d…`, `npm run check` passes 27 test files and 534 tests with four
 intentional non-harness skips after exact lockfile installation. Exact M2 CI separately proves the
-synthetic Auth/PostgREST/RLS boundary at that coordinate.
+synthetic Auth/PostgREST/RLS boundary. `npm run artifact:calibrate` reproduces the accepted S1b
+24-case deterministic chunk/Merkle calibration.
 
 ## Pull-request acceptance
 
@@ -158,6 +165,10 @@ Every implementation PR must:
 
 ## Definition of done
 
+**Disposition:** satisfied for the experimental local-stdio, read-only, synthetic-only v0.1 profile.
+This does not imply production, hosted, remote OAuth, write, or artifact-inspector deployment
+readiness.
+
 The v0.1 read-only pilot is done only when:
 
 1. all issues in epic #19 are closed through reviewed PRs;
@@ -172,4 +183,6 @@ The v0.1 read-only pilot is done only when:
 
 ## Later work
 
-M3 governed writes, M4 remote HTTP/OAuth, M5 fleet hardening, and M6 stable v1 remain in `docs/ROADMAP.md`. They do not block delivering or evaluating this local read-only pilot.
+Issue #34 S2 fixed artifact inspection is the active extension. M3 governed writes, M4 remote
+HTTP/OAuth, M5 fleet hardening, and M6 stable v1 remain in `docs/ROADMAP.md`. They do not alter the
+completed v0.1 baseline and require their own acceptance gates.
