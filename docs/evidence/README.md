@@ -31,15 +31,15 @@ Draft candidates are listed separately and must not be described as merged or ac
 | S2 fixed read-only artifact inspector | [Issue #34 S2 evidence](ISSUE_34_S2_FIXED_INSPECTOR.md) | `packages/server/src/artifact-inspector.test.ts` | `57ebbf5d836835a7fe8cd2330e46c2696aa1162b` |
 | S3 optional MCP registration and Storage closure | [Issue #34 S3 evidence](ISSUE_34_S3_MCP_STORAGE_CLOSURE.md) | `packages/server/src/artifact-mcp-registration.test.ts` | `ee72f5d4faf80c380474d64fdb33628eb631899e` |
 | S4 deterministic text-index primitive | [Issue #34 S4 primitive evidence](ISSUE_34_S4_TEXT_INDEX_SPIKE.md) | `packages/server/src/artifact-text-index.test.ts` | `7a592731fbf41a75f20a1f90b0fb27898d04be11` |
+| S4 Markdown inspector/MCP integration and synthetic SDK demo | [Issue #34 S4 integration evidence](ISSUE_34_S4_MARKDOWN_INTEGRATION.md) | `packages/server/src/artifact-inspector.test.ts` and `packages/server/src/artifact-mcp-registration.test.ts` | `a86bd3c6a236def43f71d03005a0b0541614af04` |
 
 ## Unmerged candidate evidence
 
-There is no unmerged candidate at this documentation coordinate. The remaining S4 integration/demo
-must connect the deterministic primitive to the bounded S2/S3 seam and exercise one approved
-synthetic Markdown artifact before S4 can be called complete.
+There is no unmerged candidate at this documentation coordinate. S4 is complete only for the
+synthetic/local deterministic per-read line/heading integration and the fixed synthetic Markdown SDK
+demo recorded above.
 
-Issue #34 S4 bounded integration and synthetic Markdown demonstration is the next dependency-ready
-stage.
+Issue #34 S5 exact search and durable operational adoption is the next dependency-ready stage.
 
 Green CI on a draft coordinate proves only that the named workflow passed for that source.
 It does not merge the code, satisfy independent review, authorize deployment, or establish
