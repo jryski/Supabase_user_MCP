@@ -108,21 +108,22 @@ turning Storage into a generic model-facing file system. It separates four surfa
 - Storage retains byte custody behind internal locators that callers never select.
 
 The repository includes the S0 contract, synthetic S1 registry/RLS laboratory, S1b deterministic
-source-manifest/chunk/Merkle profile, and an S2 pure TypeScript synthetic/local fixed inspector
-library for `artifact_stat` and bounded range/text reads. S2 validates every injected record and
-byte-result boundary at runtime, keeps client identity distinct from the capability grant reference,
-and treats exact-version disappearance as non-enumerating unavailability. S3 adds only optional
-synthetic/local MCP registration for stat/range/lines and a machine-readable, deeply frozen Storage
-closure manifest consumed by registration. It derives artifact principal context from the verified
-server identity, fixes approved client/capability/audience/policy/deployment coordinates, enforces
-the accepted deadline and shared complete-frame limits, and records zero/one/one byte-read classes.
-Default CLI/stdio startup stays memory-only because no real Storage/network adapter or activation is
-added. The isolated S4 primitive deterministically indexes in-memory UTF-8 line boundaries and
-Markdown ATX headings without I/O or models, but it is not yet exported, connected to S2/S3, run on
-ingest, or demonstrated against an approved artifact. Generic Storage access, Edge/hosted deployment,
-Storage/database mutation, signed URLs, `service_role`, caller-selected paths, listing, ingest, exact
-search, semantic analysis, writes, private-data use, and production readiness remain outside the
-accepted architecture.
+source-manifest/chunk/Merkle profile, and an S2 pure TypeScript synthetic/local fixed inspector.
+S2 validates every injected record and byte-result boundary at runtime, keeps client identity distinct
+from the capability grant reference, and treats exact-version disappearance as non-enumerating
+unavailability. S3 provides optional synthetic/local MCP registration and a machine-readable, deeply
+frozen Storage closure manifest. S4 exports the deterministic text-index primitive, builds it only in
+memory after each verified complete-source read, routes canonical line geometry through
+`readIndexedLines`, implements `artifact_read_heading` through `readIndexedHeading`, and extends the
+optional registration seam to exactly four artifact tools. One fixed synthetic Markdown fixture is
+exercised through the real MCP Client + `StreamTransport`; hostile content remains untrusted and
+fenced headings remain unavailable. Default CLI/stdio startup stays at exactly three memory tools
+because optional artifact activation still requires injected authorization and exact-version byte-read
+dependencies. S4 does not persist or publish an index or run at ingest. S5 exact search and durable
+operational adoption are next. Generic Storage access, a live adapter, ingest persistence, derived
+publication, Edge/hosted deployment, Storage/database mutation, signed URLs, `service_role`,
+caller-selected coordinates, listing, semantic analysis, writes, private-data use, and production
+readiness remain outside the accepted architecture.
 
 ### Audit layer
 

@@ -12,11 +12,10 @@ The local-stdio, read-only v0.1 pilot described in
 
 The active extension is [issue #34](https://github.com/jryski/Supabase_user_MCP/issues/34),
 Governed Artifact Inspection. S0 contracts, the synthetic S1 Storage/RLS laboratory, S1b
-chunk/Merkle calibration, the M1 identity prerequisite, and the synthetic/local S2 fixed inspector
-library are complete. S3 optional synthetic/local MCP registration and executable Storage closure
-accounting are complete. S4 deterministic Markdown text indexing is next, but draft PR #51 must be
-rebased onto the merged S3 coordinate and freshly reviewed. M3–M6 remain separate product roadmap
-gates.
+chunk/Merkle calibration, the M1 identity prerequisite, the synthetic/local S2 fixed inspector, S3
+optional MCP registration/Storage closure, and bounded S4 deterministic Markdown line/heading
+integration with one fixed synthetic SDK demo are complete at their stated local scope. S5 exact search
+and durable operational adoption are next. M3–M6 remain separate product roadmap gates.
 
 ## How milestones work
 
@@ -159,19 +158,20 @@ authorization without exposing a generic Storage or file-download tool.
 | M1 non-service user/client identity prerequisite | Complete | Merged principal/client-bound v0.1 read path |
 | S2 fixed read-only inspector | Complete | Pure TypeScript synthetic/local `artifact_stat` plus bounded range/text inspection library only; no MCP registration or deployment |
 | S3 MCP registration and Storage containment closure | Complete | Optional synthetic/local stat/range/lines registration and executable Storage closure only; default startup remains memory-only |
-| S4 Markdown structure/index extraction | In progress | Deterministic line/ATX-heading primitive implemented; bounded inspector/MCP integration and one approved synthetic artifact remain next |
-| S5 exact search and durable inspection receipts | Future | Operational adoption remains separate |
+| S4 Markdown structure/index extraction | Complete | Synthetic/local per-read line/heading integration plus one fixed synthetic Markdown real-SDK demo only; no persistence/publication |
+| S5 exact search and durable inspection receipts | Next | Exact search and durable operational adoption remain separate |
 | S6–S9 semantic, async, vector, and write/publication stages | Future | Separate authority and deployment reviews required |
 
 S3 consumes S2 through an optional fixed registration configuration, derives principal context only
 from verified server identity, and closes the Storage data plane in a versioned executable manifest.
-Its completion is limited to synthetic/local registration and accounting: default CLI/stdio startup
-remains memory-only, and it does not add a real Storage/network adapter, deploy Edge, create hosted
-resources, mutate Storage or the database, use `service_role`, issue signed URLs, accept
-caller-selected paths, list or ingest artifacts, implement exact search, enable semantic analysis,
-write state, access private data, or establish production readiness. The isolated S4 primitive adds
-no adapter, inspector, MCP, ingest, or deployment wiring; one bounded synthetic integration/demo
-remains before S4 completion.
+S4 extends that optional seam to stat/range/lines/heading and verifies one fixed synthetic Markdown
+artifact through the real MCP SDK. The canonical text index is rebuilt only in memory after each
+complete-source integrity check; it is not persisted, published, or generated at ingest. Default
+CLI/stdio startup remains exactly three memory tools, and optional artifact activation still requires
+injected dependencies. No live adapter, hosted resources, Edge deployment, Storage/database mutation,
+`service_role`, signed URL, caller-selected coordinate, listing, ingest persistence, exact search,
+semantic analysis, write/publication, private data, or production-readiness claim is included. S5
+exact search and durable operational adoption require their own evidence and authority review.
 
 ## M3 — Safe writes and human authority
 

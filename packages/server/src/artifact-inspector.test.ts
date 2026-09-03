@@ -3,6 +3,7 @@ import { createHash } from 'node:crypto';
 import {
   type ArtifactInspectionReceipt,
   ArtifactInspectionReceiptSchema,
+  ArtifactReadHeadingOutputSchema,
   artifactInspectionResponseByteLength,
   MAX_ARTIFACT_RESPONSE_BYTES,
   MAX_INLINE_CHUNK_HASHES,
@@ -23,6 +24,7 @@ import {
   type ArtifactInspectorTrustedContext,
   ArtifactInspectorTrustedContextSchema,
   type AuthorizedArtifactRecord,
+  artifactReadHeading,
   artifactReadLines,
   artifactReadRange,
   artifactStat,
@@ -756,6 +758,24 @@ describe('artifact_read_lines', () => {
     expect(receipts).toHaveLength(1);
   });
 
+  it('maps canonical text-index line-count overflow to RESPONSE_LIMIT_EXCEEDED', async () => {
+    const source = new TextEncoder().encode(`${'x\n'.repeat(10_000)}x`);
+    const record = buildRecord(source, { chunkSize: 8192, mediaType: 'text/plain' });
+    const tracked = trackDeps({
+      resolveAuthorizedArtifact: resolverFor(record),
+      readVersionedRange: sourceBackedRead(source),
+    });
+    const output = await artifactReadLines(tracked.dependencies, makeContext(), {
+      artifactId: ARTIFACT_ID,
+      startLine: 1,
+      count: 1,
+    });
+    expect(output.ok).toBe(false);
+    if (output.ok) throw new Error('expected line-index limit');
+    expect(output.error.code).toBe('RESPONSE_LIMIT_EXCEEDED');
+    expect(tracked.readCalls).toEqual([{ offset: 0, length: source.byteLength }]);
+  });
+
   it('acceptance 28: a source mutation outside the returned line range still fails closed', async () => {
     const text = `${'x'.repeat(2000)}\nTARGET LINE\n${'y'.repeat(2000)}\n`;
     const source = new TextEncoder().encode(text);
@@ -834,6 +854,391 @@ describe('artifact_read_lines', () => {
     expect(receipts).toHaveLength(1);
   });
 });
+
+// ---------------------------------------------------------------------------
+// artifact_read_heading
+// ---------------------------------------------------------------------------
+
+describe('artifact_read_heading', () => {
+  it('returns exact original heading bytes with canonical range, hashes, proofs, and receipt', async () => {
+    const text = `${'x'.repeat(1018)}\n# Boundary heading\r\nbody\n`;
+    const source = new TextEncoder().encode(text);
+    const before = Uint8Array.from(source);
+    const record = buildRecord(source, { chunkSize: 1024, mediaType: 'text/markdown' });
+    const { dependencies, receipts, readCalls, events } = trackDeps({
+      resolveAuthorizedArtifact: resolverFor(record),
+      readVersionedRange: sourceBackedRead(source),
+    });
+    const output = await artifactReadHeading(dependencies, makeContext(), {
+      artifactId: ARTIFACT_ID,
+      headingId: 'boundary-heading',
+    });
+
+    expect(output.ok).toBe(true);
+    if (!output.ok) throw new Error('expected heading success');
+    expect(output.headingId).toBe('boundary-heading');
+    expect(output.data).toBe('# Boundary heading');
+    expect(output.contentTrust).toBe('untrusted');
+    expect(output.integrity.returnedRange).toEqual({ offset: 1019, length: 18 });
+    expect(output.integrity.returnedByteSha256).toBe(
+      createHash('sha256').update('# Boundary heading', 'utf8').digest('hex'),
+    );
+    expect(output.integrity.verifiedCoveringChunkRange).toEqual({
+      startChunkIndex: 0,
+      endChunkIndex: 1,
+    });
+    expect(output.integrity.verifiedChunks).toHaveLength(2);
+    const headingManifest = buildArtifactChunkManifest(source, 1024);
+    for (const verified of output.integrity.verifiedChunks) {
+      const proof = buildArtifactChunkProof(headingManifest, verified.chunkIndex);
+      const chunk = definedAt(headingManifest.chunks[verified.chunkIndex]);
+      expect(verified).toEqual({
+        chunkIndex: proof.chunkIndex,
+        byteStart: proof.byteStart,
+        byteLength: proof.byteLength,
+        chunkSha256: proof.chunkSha256,
+        merkleProof: proof.proof,
+      });
+      expect(
+        verifyArtifactChunkProof(
+          source.subarray(chunk.byteStart, chunk.byteStart + chunk.byteLength),
+          proof,
+          record.merkleRoot,
+        ),
+      ).toBe(true);
+    }
+    const firstProof = buildArtifactChunkProof(headingManifest, 0);
+    const firstSibling = definedAt(firstProof.proof[0]);
+    const mutatedSibling = {
+      ...firstSibling,
+      siblingSha256: `${firstSibling.siblingSha256.slice(0, 63)}${
+        firstSibling.siblingSha256.endsWith('0') ? '1' : '0'
+      }`,
+    };
+    const mutatedProof = { ...firstProof, proof: [mutatedSibling, ...firstProof.proof.slice(1)] };
+    const firstChunk = definedAt(headingManifest.chunks[0]);
+    expect(
+      verifyArtifactChunkProof(
+        source.subarray(firstChunk.byteStart, firstChunk.byteStart + firstChunk.byteLength),
+        mutatedProof,
+        record.merkleRoot,
+      ),
+    ).toBe(false);
+    expect(readCalls).toEqual([{ offset: 0, length: source.byteLength }]);
+    expect(source).toEqual(before);
+    expect(receipts).toHaveLength(1);
+    expect(ArtifactInspectionReceiptSchema.safeParse(definedAt(receipts[0])).success).toBe(true);
+    expect(definedAt(receipts[0]).operationDetail).toEqual({
+      operation: 'artifact_read_heading',
+      requestedHeadingId: 'boundary-heading',
+      returnedRange: { offset: 1019, length: 18 },
+      returnedByteSha256: output.integrity.returnedByteSha256,
+    });
+    expect(definedAt(events[0]).operation).toBe('artifact_read_heading');
+    expect(definedAt(events[0]).resultClass).toBe('success');
+    expect(Object.isFrozen(definedAt(events[0]))).toBe(true);
+    expect(Object.isFrozen(definedAt(receipts[0]))).toBe(true);
+    expect(Object.isFrozen(definedAt(receipts[0]).operationDetail)).toBe(true);
+    expect(Object.isFrozen(output)).toBe(true);
+    expect(Object.isFrozen(output.integrity)).toBe(true);
+  });
+
+  it('uses deterministic duplicate and Unicode IDs and ignores headings inside fenced blocks', async () => {
+    const source = new TextEncoder().encode(
+      '# Title\n# Title\n```markdown\n# Hidden\n``` not-a-close\n# Still hidden\n````\n# Café\n',
+    );
+    const record = buildRecord(source, { mediaType: 'text/markdown' });
+    const tracked = trackDeps({
+      resolveAuthorizedArtifact: resolverFor(record),
+      readVersionedRange: sourceBackedRead(source),
+    });
+    const inspector = createArtifactInspector(tracked.dependencies);
+    const context = makeContext();
+    const duplicate = await inspector.artifactReadHeading(context, {
+      artifactId: ARTIFACT_ID,
+      headingId: 'title-2',
+    });
+    const unicode = await inspector.artifactReadHeading(context, {
+      artifactId: ARTIFACT_ID,
+      headingId: 'cafu--e9--',
+    });
+    const fenced = await inspector.artifactReadHeading(context, {
+      artifactId: ARTIFACT_ID,
+      headingId: 'hidden',
+    });
+    const stillFenced = await inspector.artifactReadHeading(context, {
+      artifactId: ARTIFACT_ID,
+      headingId: 'still-hidden',
+    });
+    if (!duplicate.ok || !unicode.ok) throw new Error('expected indexed headings');
+    expect(duplicate.data).toBe('# Title');
+    expect(unicode.data).toBe('# Café');
+    expect(fenced).toEqual(publicArtifactInspectionUnavailableForTest());
+    expect(stillFenced).toEqual(publicArtifactInspectionUnavailableForTest());
+  });
+
+  it('rejects invalid input before resolution and non-Markdown media before byte read', async () => {
+    let resolverCalls = 0;
+    const invalid = trackDeps({
+      resolveAuthorizedArtifact: async () => {
+        resolverCalls += 1;
+        return null;
+      },
+    });
+    for (const rawInput of [
+      { artifactId: ARTIFACT_ID, headingId: '' },
+      { artifactId: ARTIFACT_ID, headingId: 'bad heading' },
+      { artifactId: ARTIFACT_ID, headingId: 'title', path: '/secret' },
+    ]) {
+      const output = await artifactReadHeading(invalid.dependencies, makeContext(), rawInput);
+      expect(output.ok).toBe(false);
+      if (output.ok) throw new Error('expected invalid request');
+      expect(output.error.code).toBe('INVALID_REQUEST');
+    }
+    expect(resolverCalls).toBe(0);
+
+    const source = new TextEncoder().encode('# Title\n');
+    const record = buildRecord(source, { mediaType: 'text/plain' });
+    const unsupported = trackDeps({ resolveAuthorizedArtifact: resolverFor(record) });
+    const output = await artifactReadHeading(unsupported.dependencies, makeContext(), {
+      artifactId: ARTIFACT_ID,
+      headingId: 'title',
+    });
+    expect(output.ok).toBe(false);
+    if (output.ok) throw new Error('expected unsupported media');
+    expect(output.error.code).toBe('UNSUPPORTED');
+    expect(unsupported.readCalls).toHaveLength(0);
+  });
+
+  it('maps source and heading profile ceilings to RESPONSE_LIMIT_EXCEEDED before disclosure', async () => {
+    const oversized = new TextEncoder().encode(
+      `# Title\n${'x'.repeat(MAX_LINE_SOURCE_SCAN_BYTES)}`,
+    );
+    const oversizedRecord = buildRecord(oversized, { chunkSize: 8192, mediaType: 'text/markdown' });
+    const oversizedTracked = trackDeps({ resolveAuthorizedArtifact: resolverFor(oversizedRecord) });
+    const oversizedOutput = await artifactReadHeading(
+      oversizedTracked.dependencies,
+      makeContext(),
+      { artifactId: ARTIFACT_ID, headingId: 'title' },
+    );
+    expect(oversizedOutput.ok).toBe(false);
+    if (oversizedOutput.ok) throw new Error('expected source limit');
+    expect(oversizedOutput.error.code).toBe('RESPONSE_LIMIT_EXCEEDED');
+    expect(oversizedTracked.readCalls).toHaveLength(0);
+
+    const overlongHeading = new TextEncoder().encode(`# ${'x'.repeat(513)}\n`);
+    const overlongRecord = buildRecord(overlongHeading, { mediaType: 'text/markdown' });
+    const overlongTracked = trackDeps({
+      resolveAuthorizedArtifact: resolverFor(overlongRecord),
+      readVersionedRange: sourceBackedRead(overlongHeading),
+    });
+    const overlongOutput = await artifactReadHeading(overlongTracked.dependencies, makeContext(), {
+      artifactId: ARTIFACT_ID,
+      headingId: 'x',
+    });
+    expect(overlongOutput.ok).toBe(false);
+    if (overlongOutput.ok) throw new Error('expected heading limit');
+    expect(overlongOutput.error.code).toBe('RESPONSE_LIMIT_EXCEEDED');
+  });
+
+  it('makes unknown heading and missing/unauthorized/exact-version-unavailable byte-identical', async () => {
+    const source = new TextEncoder().encode('# Known\n');
+    const record = buildRecord(source, { mediaType: 'text/markdown' });
+    const unknown = trackDeps({
+      resolveAuthorizedArtifact: resolverFor(record),
+      readVersionedRange: sourceBackedRead(source),
+    });
+    const missing = trackDeps({ resolveAuthorizedArtifact: async () => null });
+    const exactVersionGone = trackDeps({
+      resolveAuthorizedArtifact: resolverFor(record),
+      readVersionedRange: async () => null,
+    });
+    const outputs = await Promise.all([
+      artifactReadHeading(unknown.dependencies, makeContext(), {
+        artifactId: ARTIFACT_ID,
+        headingId: 'unknown',
+      }),
+      artifactReadHeading(missing.dependencies, makeContext(), {
+        artifactId: ARTIFACT_ID,
+        headingId: 'known',
+      }),
+      artifactReadHeading(exactVersionGone.dependencies, makeContext(), {
+        artifactId: ARTIFACT_ID,
+        headingId: 'known',
+      }),
+    ]);
+    expect(outputs.map((output) => JSON.stringify(output))).toEqual(
+      Array(3).fill(JSON.stringify(outputs[0])),
+    );
+    expect(unknown.receipts).toHaveLength(0);
+    expect(missing.receipts).toHaveLength(0);
+    expect(exactVersionGone.receipts).toHaveLength(0);
+  });
+
+  it.each([
+    [
+      'version drift',
+      'INTEGRITY_FAILURE',
+      (source: Uint8Array) =>
+        sourceBackedRead(source, { versionOverride: DRIFTED_OBJECT_VERSION_REF }),
+    ],
+    [
+      'short read',
+      'INTEGRITY_FAILURE',
+      (source: Uint8Array) => async (_c: unknown, _l: unknown, version: string) => ({
+        bytes: source.subarray(0, source.byteLength - 1),
+        objectVersionRef: version,
+      }),
+    ],
+    [
+      'long read',
+      'INTEGRITY_FAILURE',
+      (source: Uint8Array) => async (_c: unknown, _l: unknown, version: string) => ({
+        bytes: Uint8Array.from([...source, 0x20]),
+        objectVersionRef: version,
+      }),
+    ],
+    ['malformed read', 'INTERNAL_ERROR', (_source: Uint8Array) => async () => ({}) as never],
+    [
+      'dependency throw',
+      'INTERNAL_ERROR',
+      (_source: Uint8Array) => async () => {
+        throw new Error('secret-reader-failure');
+      },
+    ],
+  ] as const)('fails closed on %s without retry', async (_label, expectedCode, readerFactory) => {
+    const source = new TextEncoder().encode('# Known\nbody\n');
+    const record = buildRecord(source, { mediaType: 'text/markdown' });
+    let calls = 0;
+    const reader = readerFactory(source) as ArtifactInspectorDependencies['readVersionedRange'];
+    const tracked = trackDeps({
+      resolveAuthorizedArtifact: resolverFor(record),
+      readVersionedRange: async (...args) => {
+        calls += 1;
+        return reader(...args);
+      },
+    });
+    const output = await artifactReadHeading(tracked.dependencies, makeContext(), {
+      artifactId: ARTIFACT_ID,
+      headingId: 'known',
+    });
+    expect(output.ok).toBe(false);
+    if (output.ok) throw new Error('expected failure');
+    expect(output.error.code).toBe(expectedCode);
+    expect(calls).toBe(1);
+    expect(
+      JSON.stringify({ output, events: tracked.events, receipts: tracked.receipts }),
+    ).not.toContain('secret-reader-failure');
+  });
+
+  it('fails closed for source, manifest-root, and chunk-hash mutations', async () => {
+    const source = new TextEncoder().encode('# Known\nbody\n');
+    const record = buildRecord(source, { mediaType: 'text/markdown' });
+    const changedDigest = `${record.sourceSha256.slice(0, 63)}${record.sourceSha256.endsWith('0') ? '1' : '0'}`;
+    const changedRoot = `${record.merkleRoot.slice(0, 63)}${record.merkleRoot.endsWith('0') ? '1' : '0'}`;
+    const firstChunkHash = definedAt(record.chunkSha256s[0]);
+    const changedChunkHash = `${firstChunkHash.slice(0, 63)}${firstChunkHash.endsWith('0') ? '1' : '0'}`;
+    const scenarios: AuthorizedArtifactRecord[] = [
+      { ...record, sourceSha256: changedDigest },
+      { ...record, merkleRoot: changedRoot },
+      { ...record, chunkSha256s: [changedChunkHash] },
+    ];
+    for (const mutatedRecord of scenarios) {
+      const tracked = trackDeps({
+        resolveAuthorizedArtifact: resolverFor(mutatedRecord),
+        readVersionedRange: sourceBackedRead(source),
+      });
+      const output = await artifactReadHeading(tracked.dependencies, makeContext(), {
+        artifactId: ARTIFACT_ID,
+        headingId: 'known',
+      });
+      expect(output.ok).toBe(false);
+      if (output.ok) throw new Error('expected integrity failure');
+      expect(['INTEGRITY_FAILURE', 'INTERNAL_ERROR']).toContain(output.error.code);
+    }
+  });
+
+  it('output schema catches returned hash/content mutations and the wire stays bounded', async () => {
+    const source = new TextEncoder().encode('# Known\n');
+    const record = buildRecord(source, { mediaType: 'text/markdown' });
+    const tracked = trackDeps({
+      resolveAuthorizedArtifact: resolverFor(record),
+      readVersionedRange: sourceBackedRead(source),
+    });
+    const output = await artifactReadHeading(tracked.dependencies, makeContext(), {
+      artifactId: ARTIFACT_ID,
+      headingId: 'known',
+    });
+    if (!output.ok) throw new Error('expected success');
+    expect(ArtifactReadHeadingOutputSchema.safeParse(output).success).toBe(true);
+    expect(
+      ArtifactReadHeadingOutputSchema.safeParse({ ...output, data: `${output.data}!` }).success,
+    ).toBe(false);
+    expect(
+      ArtifactReadHeadingOutputSchema.safeParse({
+        ...output,
+        integrity: { ...output.integrity, returnedByteSha256: '0'.repeat(64) },
+      }).success,
+    ).toBe(false);
+    expect(artifactInspectionResponseByteLength(null, output)).toBeLessThanOrEqual(
+      MAX_ARTIFACT_RESPONSE_BYTES,
+    );
+  });
+
+  it('keeps concurrent heading reads isolated by artifact and principal', async () => {
+    const sourceA = new TextEncoder().encode('# Alpha\n');
+    const sourceB = new TextEncoder().encode('# Beta\n');
+    const recordA = buildRecord(sourceA, {
+      artifactId: ARTIFACT_ID,
+      mediaType: 'text/markdown',
+      objectVersionRef: 'ov_aaaaaaaaaaaaaaaaaaaaaaaa',
+    });
+    const recordB = buildRecord(sourceB, {
+      artifactId: OTHER_ARTIFACT_ID,
+      mediaType: 'text/markdown',
+      objectVersionRef: 'ov_bbbbbbbbbbbbbbbbbbbbbbbb',
+    });
+    const records = new Map([
+      [ARTIFACT_ID, { record: recordA, bytes: sourceA }],
+      [OTHER_ARTIFACT_ID, { record: recordB, bytes: sourceB }],
+    ]);
+    const tracked = trackDeps({
+      resolveAuthorizedArtifact: async (_context, artifactId) =>
+        records.get(artifactId)?.record ?? null,
+      readVersionedRange: async (_context, _locator, version, offset, length) => {
+        const entry = [...records.values()].find(
+          (candidate) => candidate.record.objectVersionRef === version,
+        );
+        if (entry === undefined) return null;
+        return { bytes: entry.bytes.subarray(offset, offset + length), objectVersionRef: version };
+      },
+    });
+    const [alpha, beta] = await Promise.all([
+      artifactReadHeading(tracked.dependencies, makeContext({ principalRef: 'principal-A' }), {
+        artifactId: ARTIFACT_ID,
+        headingId: 'alpha',
+      }),
+      artifactReadHeading(tracked.dependencies, makeContext({ principalRef: 'principal-B' }), {
+        artifactId: OTHER_ARTIFACT_ID,
+        headingId: 'beta',
+      }),
+    ]);
+    if (!alpha.ok || !beta.ok) throw new Error('expected both headings');
+    expect(alpha.data).toBe('# Alpha');
+    expect(beta.data).toBe('# Beta');
+  });
+});
+
+function publicArtifactInspectionUnavailableForTest() {
+  return {
+    ok: false,
+    error: {
+      code: 'RESOURCE_UNAVAILABLE',
+      message: 'Artifact is unavailable.',
+      retryable: false,
+    },
+  } as const;
+}
 
 // ---------------------------------------------------------------------------
 // Authorization and non-enumeration

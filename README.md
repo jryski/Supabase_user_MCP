@@ -94,8 +94,9 @@ Current `main` contains the reviewed local foundation and merged principal-bound
 - deterministic S1b source-manifest, chunk, and Merkle-proof calibration; and
 - an S2 synthetic/local fixed inspector library for `artifact_stat`, bounded byte ranges, and
   bounded UTF-8 line reads through injected authorization and immutable-version dependencies; and
-- optional S3 synthetic/local MCP registration for those three operations plus a deeply frozen,
-  executable Supabase Storage containment manifest.
+- optional S3/S4 synthetic/local MCP registration for four fixed artifact operations (`artifact_stat`,
+  bounded byte ranges, bounded UTF-8 lines, and deterministic Markdown heading reads), a deeply frozen
+  executable Supabase Storage containment manifest, and one fixed synthetic Markdown real-SDK demo.
 
 The consolidated read path merged through
 [PR #38](https://github.com/jryski/Supabase_user_MCP/pull/38) at
@@ -185,18 +186,19 @@ Current repository evidence includes:
 - **S3:** optional fixed MCP registration for stat/range/lines plus executable Storage authorization,
   byte-read, immutable-version, integrity, retry, listing, credential, and write closure accounting;
   and
-- **S4 primitive:** a pure in-memory deterministic UTF-8 line and Markdown ATX-heading index with
-  exact source-byte offsets, strict consumed-index validation, bounded reads, and collision-resistant
-  heading identifiers.
+- **S4 bounded integration/demo:** the deterministic text-index primitive is exported and built in
+  memory after each complete-source S1b verification; S2 line reads consume its canonical geometry,
+  `artifact_read_heading` is registered as the fourth fixed artifact tool, and one fixed synthetic
+  Markdown artifact passes the real MCP Client + `StreamTransport` SDK seam.
 
-The M1 non-service user/client identity prerequisite is satisfied by the accepted v0.1 read path.
-S3 completes only an optional synthetic/local registration seam. The S4 primitive is also local and
-model-free: it is not exported through the server barrel, connected to the S2 inspector, registered
-through MCP, run automatically on ingest, or demonstrated against an approved artifact. The next S4
-gate is that bounded integration/demo. Default CLI/stdio startup remains memory-only. No Edge or
-hosted deployment, Storage/database mutation, signed URL, `service_role`, caller-selected Storage
-coordinate, listing, ingest, semantic analysis, exact search, write, private-data access, or
-production-readiness claim is accepted.
+S4 is complete only for that synthetic/local deterministic line/heading integration and fixed demo.
+The text index is neither persisted nor published, and it is not an ingest-time derivative. Default
+CLI/stdio startup remains exactly the three memory tools; optional artifact registration still
+requires injected authorization and exact-version byte-read dependencies. S5 exact search and durable
+operational adoption are next. No live adapter, ingest persistence, derived-artifact publication,
+Edge/hosted deployment, Storage/database mutation, signed URL, `service_role`, caller-selected Storage
+coordinate, listing, semantic analysis, write, private-data access, or production-readiness claim is
+accepted.
 
 ## Roadmap
 
@@ -210,8 +212,8 @@ production-readiness claim is accepted.
 | M5 | Operations/adversarial hardening | Future |
 | M6 | Stable v1 contract | Future |
 
-The active extension now includes the isolated S4 deterministic text-index primitive. Bounded
-inspector/MCP integration and one approved synthetic Markdown artifact remain the next S4 gate.
+The active extension has completed the bounded synthetic/local S4 line/heading integration and one fixed
+synthetic Markdown SDK demo. S5 exact search and durable operational adoption are next.
 Detailed sequencing and claim limits live in
 [docs/ROADMAP.md](docs/ROADMAP.md); the completed v0.1 execution baseline remains archived in
 [epic #19](https://github.com/jryski/Supabase_user_MCP/issues/19).
@@ -244,6 +246,7 @@ private, restricted, customer, or production project.
 - [S1b chunk/Merkle calibration](docs/evidence/ISSUE_34_S1B_CHUNK_MERKLE_CALIBRATION.md)
 - [S2 synthetic/local fixed inspector](docs/evidence/ISSUE_34_S2_FIXED_INSPECTOR.md)
 - [S3 optional MCP registration and Storage closure](docs/evidence/ISSUE_34_S3_MCP_STORAGE_CLOSURE.md)
+- [S4 bounded Markdown integration and SDK demo](docs/evidence/ISSUE_34_S4_MARKDOWN_INTEGRATION.md)
 - [Architecture decisions](docs/decisions/README.md)
 - [Program context and plane ownership](docs/PROGRAM_CONTEXT.md)
 - [Evidence index](docs/evidence/README.md)
