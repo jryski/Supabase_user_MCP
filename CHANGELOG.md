@@ -41,11 +41,17 @@ the first public package is released.
   Edge/hosted deployment, Storage/database mutation, `service_role`, signed URL, caller-selected
   coordinate, listing, ingest, semantic analysis, exact search, write, private-data, or
   production-readiness claim.
-- An isolated S4 deterministic text-index primitive for in-memory UTF-8 line records and Markdown
-  ATX headings, with exact source-byte offsets, fatal UTF-8 validation, bounded source/read counts,
-  collision-resistant heading identifiers, fenced-code exclusion, strict consumed-index validation,
-  immutable outputs, and no I/O or model execution. Inspector/MCP integration, automatic ingest, an
-  approved synthetic artifact demo, exact search, and publication remain outside this primitive.
+- An S4 deterministic text-index primitive for in-memory UTF-8 line records and Markdown ATX
+  headings, now exported and consumed after complete-source S1b verification by bounded line and
+  heading reads. Optional artifact registration exposes exactly four fixed tools, and a hardcoded
+  synthetic Markdown fixture (SHA-256
+  `262e40ee94b26db00178579e911bbd532776b532e68043026560e3dce4066cf3`) passes stat, lines,
+  heading, fenced/unknown denial, integrity-proof, receipt, untrusted-rendering, and closure checks
+  through the real MCP Client + `StreamTransport` seam. The index is rebuilt in memory per verified
+  read and is neither persisted nor published. Default CLI/stdio remains memory-only; S5 exact search
+  and durable operational adoption are next. This adds no live adapter, ingest persistence, derived
+  publication, Edge/hosted deployment, Storage/database mutation, privileged credential, signed URL,
+  caller-selected coordinate, listing, semantic analysis, write, private-data, or production claim.
 
 ### Changed
 

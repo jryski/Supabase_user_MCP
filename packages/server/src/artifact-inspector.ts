@@ -7,6 +7,9 @@ import {
   type ArtifactInspectionReceipt,
   ArtifactInspectionReceiptSchema,
   ArtifactIdSchema,
+  ArtifactReadHeadingInputSchema,
+  type ArtifactReadHeadingOutput,
+  ArtifactReadHeadingOutputSchema,
   ArtifactReadLinesInputSchema,
   type ArtifactReadLinesOutput,
   ArtifactReadLinesOutputSchema,
@@ -43,6 +46,13 @@ import {
   verifyArtifactChunkProof,
   verifyArtifactSourceManifest,
 } from './artifact-chunk-manifest.js';
+import {
+  type ArtifactTextIndex,
+  ArtifactTextIndexError,
+  buildArtifactTextIndex,
+  readIndexedHeading,
+  readIndexedLines,
+} from './artifact-text-index.js';
 
 /**
  * Issue #34 S2: one fixed, synthetic/local, read-only artifact inspector
@@ -54,13 +64,14 @@ import {
  * dependencies (`resolveAuthorizedArtifact`, `readVersionedRange`) plus a
  * deterministic clock (`now`). It registers no MCP tool and deploys
  * nothing; see `docs/evidence/ISSUE_34_S2_FIXED_INSPECTOR.md` for the
- * complete claim-limits statement.
+ * S2 base and `docs/evidence/ISSUE_34_S4_MARKDOWN_INTEGRATION.md` for the
+ * bounded line/heading integration claim limits.
  *
  * Trusted context (`ArtifactInspectorTrustedContext`) is supplied by the
- * trusted server layer, never derived from tool input. The three operation
- * entry points (`artifactStat`, `artifactReadRange`, `artifactReadLines`)
- * each accept that context and the raw (untrusted) tool input as separate
- * parameters; unknown input fields and any caller-selected
+ * trusted server layer, never derived from tool input. The four operation
+ * entry points (`artifactStat`, `artifactReadRange`, `artifactReadLines`,
+ * `artifactReadHeading`) each accept that context and the raw (untrusted)
+ * tool input as separate parameters; unknown input fields and any caller-selected
  * principal/client/capability value are rejected by the accepted S0 input
  * schema before any dependency is called.
  *
@@ -103,6 +114,28 @@ type SupportedLineMediaType = (typeof SUPPORTED_LINE_MEDIA_TYPES)[number];
 
 function isSupportedLineMediaType(mediaType: string): mediaType is SupportedLineMediaType {
   return (SUPPORTED_LINE_MEDIA_TYPES as readonly string[]).includes(mediaType);
+}
+
+function mapArtifactTextIndexError(error: unknown): ArtifactInspectionErrorCode {
+  if (!(error instanceof ArtifactTextIndexError)) return 'INTERNAL_ERROR';
+  switch (error.code) {
+    case 'UNSUPPORTED_MEDIA_TYPE':
+      return 'UNSUPPORTED';
+    case 'SOURCE_TOO_LARGE':
+    case 'TOO_MANY_LINES':
+    case 'TOO_MANY_HEADINGS':
+    case 'RESPONSE_LIMIT_EXCEEDED':
+      return 'RESPONSE_LIMIT_EXCEEDED';
+    case 'SOURCE_MISMATCH':
+    case 'INCONSISTENT_INDEX':
+    case 'INVALID_UTF8':
+      return 'INTEGRITY_FAILURE';
+    case 'INVALID_LINE_RANGE':
+      return 'INVALID_REQUEST';
+    case 'INVALID_INPUT_TYPE':
+    case 'INVALID_HEADING_ID':
+      return 'INTERNAL_ERROR';
+  }
 }
 
 const EMPTY_BYTES_SHA256_HEX = createHash('sha256').update(Buffer.alloc(0)).digest('hex');
@@ -604,6 +637,20 @@ function buildLinesReceipt(
   });
 }
 
+function buildHeadingReceipt(
+  options: ReceiptOptions,
+  requestedHeadingId: string,
+  returnedRange: { readonly offset: number; readonly length: number },
+  returnedByteSha256: string,
+): ArtifactInspectionReceipt {
+  return buildReceiptBase(options, {
+    operation: 'artifact_read_heading',
+    requestedHeadingId,
+    returnedRange,
+    returnedByteSha256,
+  });
+}
+
 function buildReceiptBase(
   options: ReceiptOptions,
   operationDetail: ArtifactInspectionReceipt['operationDetail'],
@@ -1034,11 +1081,6 @@ export async function artifactReadRange(
 // artifact_read_lines
 // ---------------------------------------------------------------------------
 
-function splitPreservingNewlines(text: string): string[] {
-  if (text.length === 0) return [];
-  return text.split(/(?<=\n)/);
-}
-
 export async function artifactReadLines(
   dependencies: ArtifactInspectorDependencies,
   context: ArtifactInspectorTrustedContext,
@@ -1154,17 +1196,16 @@ export async function artifactReadLines(
     return failClosed('INTEGRITY_FAILURE');
   }
 
-  let text: string;
+  let textIndex: ArtifactTextIndex;
   try {
-    text = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(readResult.bytes);
-  } catch {
-    return failClosed('INTEGRITY_FAILURE');
+    textIndex = buildArtifactTextIndex(readResult.bytes, record.mediaType);
+  } catch (error) {
+    return failClosed(mapArtifactTextIndexError(error));
   }
 
-  const lines = splitPreservingNewlines(text);
   const startIndex = startLine - 1;
 
-  if (startIndex >= lines.length) {
+  if (startIndex >= textIndex.lineCount) {
     if (manifest.chunkCount === 0) {
       // No content and no chunk exists to anchor a schema-valid successful
       // empty result against -- the fixed non-enumerating/invalid-request
@@ -1231,11 +1272,21 @@ export async function artifactReadLines(
     return deepFreeze(validated.data);
   }
 
-  const selected = lines.slice(startIndex, startIndex + count);
-  const data = selected.join('');
-  const prefix = lines.slice(0, startIndex).join('');
-  const byteOffset = new TextEncoder().encode(prefix).byteLength;
-  const dataByteLength = new TextEncoder().encode(data).byteLength;
+  const returnedLineCount = Math.min(count, textIndex.lineCount - startIndex);
+  let data: string;
+  try {
+    data = readIndexedLines(readResult.bytes, textIndex, startLine, returnedLineCount).text;
+  } catch (error) {
+    return failClosed(mapArtifactTextIndexError(error));
+  }
+  const firstLine = definedAt(textIndex.lines[startIndex]);
+  const lastLine = definedAt(textIndex.lines[startIndex + returnedLineCount - 1]);
+  const byteOffset = firstLine.byteStart;
+  const dataByteLength =
+    lastLine.byteStart +
+    lastLine.contentByteLength +
+    lastLine.newlineByteLength -
+    firstLine.byteStart;
 
   // Unlike artifact_read_range, the selected line span has no per-request
   // caller-supplied byte-length ceiling (only the whole-source scan ceiling
@@ -1275,7 +1326,7 @@ export async function artifactReadLines(
   const candidate = {
     ok: true as const,
     data,
-    returnedLineCount: selected.length,
+    returnedLineCount,
     contentTrust: 'untrusted' as const,
     integrity: {
       requestedRange: { kind: 'line_range' as const, startLine, count },
@@ -1324,11 +1375,204 @@ export async function artifactReadLines(
 }
 
 // ---------------------------------------------------------------------------
+// artifact_read_heading
+// ---------------------------------------------------------------------------
+
+export async function artifactReadHeading(
+  dependencies: ArtifactInspectorDependencies,
+  context: ArtifactInspectorTrustedContext,
+  rawInput: unknown,
+): Promise<ArtifactReadHeadingOutput> {
+  const startedAtMs = performance.now();
+  let runtimeContext: ArtifactInspectorTrustedContext | null = null;
+  const emit = (
+    resultClass: 'success' | ArtifactInspectionErrorCode,
+    byteCounts?: ArtifactInspectorOperationalEvent['byteCounts'],
+  ) => {
+    emitEventSafely(dependencies, {
+      operation: 'artifact_read_heading',
+      resultClass,
+      ...(runtimeContext?.requestCorrelationId === undefined
+        ? {}
+        : { requestCorrelationId: runtimeContext.requestCorrelationId }),
+      elapsedMs: Math.max(0, performance.now() - startedAtMs),
+      ...(byteCounts === undefined ? {} : { byteCounts }),
+    });
+  };
+
+  const input = ArtifactReadHeadingInputSchema.safeParse(rawInput);
+  if (!input.success) {
+    emit('INVALID_REQUEST');
+    return createArtifactInspectionError('INVALID_REQUEST');
+  }
+  const { artifactId, headingId } = input.data;
+
+  runtimeContext = validateRuntimeContext(context);
+  if (runtimeContext === null) {
+    emit('INTERNAL_ERROR');
+    return createArtifactInspectionError('INTERNAL_ERROR');
+  }
+  const nowIso = readClockIso(dependencies);
+  if (nowIso === null) {
+    emit('INTERNAL_ERROR');
+    return createArtifactInspectionError('INTERNAL_ERROR');
+  }
+
+  const resolved = await resolveArtifact(dependencies, runtimeContext, artifactId, nowIso);
+  if (resolved.kind === 'unavailable') {
+    emit('RESOURCE_UNAVAILABLE');
+    return publicArtifactInspectionUnavailable('missing');
+  }
+  if (resolved.kind === 'internal_error') {
+    emit('INTERNAL_ERROR');
+    return createArtifactInspectionError('INTERNAL_ERROR');
+  }
+
+  const receiptOptions: ReceiptOptions = {
+    context: runtimeContext,
+    record: resolved.record,
+    artifactId,
+    recordedAt: nowIso,
+  };
+  const placeholderReturnedRange = { offset: 0, length: 0 };
+  const failClosed = (errorClass: ArtifactInspectionErrorCode) => {
+    emitReceiptSafely(
+      dependencies,
+      buildHeadingReceipt(
+        { ...receiptOptions, errorClass },
+        headingId,
+        placeholderReturnedRange,
+        EMPTY_BYTES_SHA256_HEX,
+      ),
+    );
+    emit(errorClass);
+    return createArtifactInspectionError(errorClass);
+  };
+
+  const { record, manifest } = resolved;
+  if (record.mediaType !== 'text/markdown') return failClosed('UNSUPPORTED');
+  if (record.byteLength > MAX_LINE_SOURCE_SCAN_BYTES) {
+    return failClosed('RESPONSE_LIMIT_EXCEEDED');
+  }
+
+  let rawReadResult: unknown;
+  try {
+    rawReadResult = await dependencies.readVersionedRange(
+      runtimeContext,
+      record.internalLocator,
+      record.objectVersionRef,
+      0,
+      record.byteLength,
+    );
+  } catch {
+    return failClosed('INTERNAL_ERROR');
+  }
+  if (rawReadResult === null) {
+    emit('RESOURCE_UNAVAILABLE');
+    return publicArtifactInspectionUnavailable('missing');
+  }
+  const readResult = parseReadResult(rawReadResult);
+  if (readResult === null) return failClosed('INTERNAL_ERROR');
+  if (
+    readResult.objectVersionRef !== record.objectVersionRef ||
+    readResult.bytes.byteLength !== record.byteLength
+  ) {
+    return failClosed('INTEGRITY_FAILURE');
+  }
+  if (!verifyArtifactSourceManifest(readResult.bytes, manifest)) {
+    return failClosed('INTEGRITY_FAILURE');
+  }
+
+  let textIndex: ArtifactTextIndex;
+  try {
+    textIndex = buildArtifactTextIndex(readResult.bytes, 'text/markdown');
+  } catch (error) {
+    return failClosed(mapArtifactTextIndexError(error));
+  }
+
+  let data: string;
+  try {
+    data = readIndexedHeading(readResult.bytes, textIndex, headingId).text;
+  } catch (error) {
+    if (error instanceof ArtifactTextIndexError && error.code === 'INVALID_HEADING_ID') {
+      emit('RESOURCE_UNAVAILABLE');
+      return publicArtifactInspectionUnavailable('missing');
+    }
+    return failClosed(mapArtifactTextIndexError(error));
+  }
+  const heading = textIndex.headings.find((candidate) => candidate.headingId === headingId);
+  if (heading === undefined) {
+    emit('RESOURCE_UNAVAILABLE');
+    return publicArtifactInspectionUnavailable('missing');
+  }
+  const returnedRange = { offset: heading.byteStart, length: heading.byteLength };
+  if (returnedRange.length > MAX_RANGE_BYTES) {
+    return failClosed('RESPONSE_LIMIT_EXCEEDED');
+  }
+  const startChunkIndex = Math.floor(returnedRange.offset / record.chunkSize);
+  const endChunkIndex = Math.floor(
+    (returnedRange.offset + returnedRange.length - 1) / record.chunkSize,
+  );
+  const verifiedChunks = buildAndVerifyCoveringChunks(
+    manifest,
+    startChunkIndex,
+    endChunkIndex,
+    (chunkIndex) => {
+      const chunk = chunkAt(manifest, chunkIndex);
+      return readResult.bytes.subarray(chunk.byteStart, chunk.byteStart + chunk.byteLength);
+    },
+  );
+  if (verifiedChunks === null) return failClosed('INTEGRITY_FAILURE');
+  if (verifiedChunks.length > MAX_VERIFIED_CHUNKS_PER_READ) {
+    return failClosed('RESPONSE_LIMIT_EXCEEDED');
+  }
+  const returnedBytes = readResult.bytes.subarray(
+    returnedRange.offset,
+    returnedRange.offset + returnedRange.length,
+  );
+  const returnedByteSha256 = createHash('sha256').update(Buffer.from(returnedBytes)).digest('hex');
+  const candidate = {
+    ok: true as const,
+    headingId,
+    data,
+    contentTrust: 'untrusted' as const,
+    integrity: {
+      requestedRange: { kind: 'heading' as const, headingId },
+      verifiedCoveringChunkRange: { startChunkIndex, endChunkIndex },
+      returnedRange,
+      chunkSize: record.chunkSize,
+      chunkCount: record.chunkCount,
+      verifiedChunks,
+      merkleRoot: record.merkleRoot,
+      returnedByteSha256,
+      sourceSha256: record.sourceSha256,
+      contentTrust: 'untrusted' as const,
+    },
+  };
+  if (artifactInspectionResponseByteLength(null, candidate) > MAX_ARTIFACT_RESPONSE_BYTES) {
+    return failClosed('RESPONSE_LIMIT_EXCEEDED');
+  }
+  const validated = ArtifactReadHeadingOutputSchema.safeParse(candidate);
+  if (!validated.success) return failClosed('INTERNAL_ERROR');
+  if (
+    !emitReceiptSafely(
+      dependencies,
+      buildHeadingReceipt(receiptOptions, headingId, returnedRange, returnedByteSha256),
+    )
+  ) {
+    emit('INTERNAL_ERROR', { returned: returnedRange.length });
+    return createArtifactInspectionError('INTERNAL_ERROR');
+  }
+  emit('success', { covering: record.byteLength, returned: returnedRange.length });
+  return deepFreeze(validated.data);
+}
+
+// ---------------------------------------------------------------------------
 // Facade
 // ---------------------------------------------------------------------------
 
 /**
- * Binds one immutable `dependencies` bundle to the three S2 operations. The
+ * Binds one immutable `dependencies` bundle to the four bounded operations. The
  * returned functions hold no mutable state of their own -- every call
  * receives its own trusted context and its own raw input, so concurrent,
  * independent calls never share mutable state.
@@ -1341,6 +1585,8 @@ export function createArtifactInspector(dependencies: ArtifactInspectorDependenc
       artifactReadRange(dependencies, context, rawInput),
     artifactReadLines: (context: ArtifactInspectorTrustedContext, rawInput: unknown) =>
       artifactReadLines(dependencies, context, rawInput),
+    artifactReadHeading: (context: ArtifactInspectorTrustedContext, rawInput: unknown) =>
+      artifactReadHeading(dependencies, context, rawInput),
   };
 }
 export type ArtifactInspector = ReturnType<typeof createArtifactInspector>;

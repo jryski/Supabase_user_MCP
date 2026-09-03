@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 
 import type { McpServer } from '@modelcontextprotocol/server';
 import {
+  ARTIFACT_READ_HEADING_TOOL,
   ARTIFACT_READ_LINES_TOOL,
   ARTIFACT_READ_RANGE_TOOL,
   ARTIFACT_STAT_TOOL,
@@ -76,6 +77,7 @@ const EXPECTED_ARTIFACT_STORAGE_CLOSURE_MANIFEST = {
     { name: 'artifact_stat', byteReadClass: 'zero byte reads' },
     { name: 'artifact_read_range', byteReadClass: 'one bounded covering read' },
     { name: 'artifact_read_lines', byteReadClass: 'one bounded complete-source read' },
+    { name: 'artifact_read_heading', byteReadClass: 'one bounded complete-source read' },
   ],
   retries: 0,
   writes: 'none',
@@ -83,7 +85,6 @@ const EXPECTED_ARTIFACT_STORAGE_CLOSURE_MANIFEST = {
   signedUrls: 'none',
   privilegedCredentials: 'prohibited, including service_role',
   unregisteredOperations: [
-    'artifact_read_heading',
     'artifact_search_exact',
     'artifact_ingest',
     'artifact_semantic_analysis',
@@ -454,9 +455,9 @@ export function prepareArtifactMcpRegistration(
         if (registeredOperations.has(operation.name)) {
           throw new TypeError('Artifact tool registration may run only once.');
         }
-        registeredOperations.add(operation.name);
         switch (operation.name) {
           case 'artifact_stat':
+            registeredOperations.add(operation.name);
             server.registerTool(
               ARTIFACT_STAT_TOOL.name,
               {
@@ -482,6 +483,7 @@ export function prepareArtifactMcpRegistration(
             );
             break;
           case 'artifact_read_range':
+            registeredOperations.add(operation.name);
             server.registerTool(
               ARTIFACT_READ_RANGE_TOOL.name,
               {
@@ -507,6 +509,7 @@ export function prepareArtifactMcpRegistration(
             );
             break;
           case 'artifact_read_lines':
+            registeredOperations.add(operation.name);
             server.registerTool(
               ARTIFACT_READ_LINES_TOOL.name,
               {
@@ -526,6 +529,32 @@ export function prepareArtifactMcpRegistration(
                     operationContext,
                     context.mcpReq.signal,
                     (inspector) => inspector.artifactReadLines(operationContext, input),
+                  ),
+                );
+              },
+            );
+            break;
+          case 'artifact_read_heading':
+            registeredOperations.add(operation.name);
+            server.registerTool(
+              ARTIFACT_READ_HEADING_TOOL.name,
+              {
+                title: 'Read an artifact heading',
+                description:
+                  'Returns one exact Markdown ATX heading line after exact-version complete-source verification.',
+                inputSchema: ARTIFACT_READ_HEADING_TOOL.inputSchema,
+                outputSchema: ARTIFACT_READ_HEADING_TOOL.outputSchema,
+                annotations: READ_ONLY_ANNOTATIONS,
+              },
+              async (input, context) => {
+                const operationContext = trustedContext(context.mcpReq.id);
+                return createArtifactInspectionMcpResult(
+                  await executeRegisteredArtifactOperation(
+                    config.dependencies,
+                    'artifact_read_heading',
+                    operationContext,
+                    context.mcpReq.signal,
+                    (inspector) => inspector.artifactReadHeading(operationContext, input),
                   ),
                 );
               },
