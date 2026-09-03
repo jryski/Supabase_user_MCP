@@ -713,6 +713,135 @@ describe('optional artifact MCP registration', () => {
     });
   });
 
+  it('rejects an unpaired-surrogate MCP exact search before authorization, I/O, or journal append while scalar controls remain exact', async () => {
+    const sourceText = 'x\uFFFDy 😀';
+    const sourceBytes = new TextEncoder().encode(sourceText);
+    const manifest = buildArtifactChunkManifest(sourceBytes, 1024);
+    const locator = {
+      path: 'non-scalar-source-path-SENTINEL',
+      token: 'non-scalar-source-token-SENTINEL',
+    };
+    const record: AuthorizedArtifactRecord = {
+      artifactId: ARTIFACT_ID,
+      internalLocator: locator,
+      objectVersionRef: OBJECT_VERSION_REF,
+      sourceSha256: manifest.sourceSha256,
+      byteLength: manifest.byteLength,
+      chunkSize: manifest.chunkSize,
+      chunkCount: manifest.chunkCount,
+      chunkSha256s: manifest.chunks.map((chunk) => chunk.chunkSha256),
+      merkleLeafSha256s: manifest.chunks.map((chunk) => chunk.merkleLeafSha256),
+      merkleRoot: manifest.merkleRoot,
+      mediaType: 'text/plain',
+      createdAt: '2026-09-01T00:00:00.000Z',
+    };
+    let resolverCalls = 0;
+    let readCalls = 0;
+    let journalAppendCalls = 0;
+    const events: ArtifactInspectorOperationalEvent[] = [];
+    const forwardedReceipts: unknown[] = [];
+    const journal: ArtifactReceiptJournal = {
+      append: async (receipt, digest) => {
+        journalAppendCalls += 1;
+        expect(artifactInspectionReceiptSha256(receipt)).toBe(digest);
+        return {
+          schemaVersion: 'artifact-receipt-journal-ack/0.1',
+          receiptSha256: digest,
+          journalRef: `journal:scalar-control:${journalAppendCalls}`,
+        };
+      },
+    };
+    const dependencies: ArtifactInspectorDependencies = {
+      resolveAuthorizedArtifact: async () => {
+        resolverCalls += 1;
+        return record;
+      },
+      readVersionedRange: async (_context, receivedLocator, version, offset, length) => {
+        readCalls += 1;
+        expect(receivedLocator).toBe(locator);
+        return {
+          bytes: sourceBytes.subarray(offset, offset + length),
+          objectVersionRef: version,
+        };
+      },
+      now: () => new Date('2026-09-02T00:00:00.000Z'),
+      emitOperationalEvent: (event) => events.push(event),
+      emitInspectionReceipt: (receipt) => forwardedReceipts.push(receipt),
+    };
+
+    await withClient(artifactOptions(dependencies, { receiptJournal: journal }), async (client) => {
+      const invalidQuery = '\uD800';
+      const invalid = await client.callTool({
+        name: 'artifact_search_exact',
+        arguments: { artifactId: ARTIFACT_ID, query: invalidQuery, maxHits: 1 },
+      });
+      expect(invalid.structuredContent).toEqual({
+        ok: false,
+        error: { code: 'INVALID_REQUEST', message: 'Request is invalid.', retryable: false },
+      });
+      expect(resolverCalls).toBe(0);
+      expect(readCalls).toBe(0);
+      expect(journalAppendCalls).toBe(0);
+      expect(forwardedReceipts).toEqual([]);
+      expect(events).toHaveLength(1);
+      expect(events[0]).toMatchObject({
+        operation: 'artifact_search_exact',
+        resultClass: 'INVALID_REQUEST',
+      });
+
+      const invalidModelVisible = JSON.stringify({
+        structuredContent: invalid.structuredContent,
+        content: invalid.content,
+      });
+      expect(invalidModelVisible).not.toContain('\\ud800');
+      for (const forbidden of [sourceText, locator.path, locator.token, invalidQuery]) {
+        expect(invalidModelVisible).not.toContain(forbidden);
+      }
+
+      const replacement = await client.callTool({
+        name: 'artifact_search_exact',
+        arguments: { artifactId: ARTIFACT_ID, query: '\uFFFD', maxHits: 1 },
+      });
+      expect(replacement.structuredContent).toMatchObject({
+        ok: true,
+        hits: [
+          {
+            matchRange: { offset: 1, length: 3 },
+            snippetRange: { offset: 1, length: 3 },
+            snippet: '\uFFFD',
+            snippetSha256: '83d544ccc223c057d2bf80d3f2a32982c32c3c0db8e2674820da5064783fb097',
+          },
+        ],
+      });
+
+      const emoji = await client.callTool({
+        name: 'artifact_search_exact',
+        arguments: { artifactId: ARTIFACT_ID, query: '😀', maxHits: 1 },
+      });
+      expect(emoji.structuredContent).toMatchObject({
+        ok: true,
+        hits: [
+          {
+            matchRange: { offset: 6, length: 4 },
+            snippetRange: { offset: 6, length: 4 },
+            snippet: '😀',
+            snippetSha256: 'f0443a342c5ef54783a111b51ba56c938e474c32324d90c3a60c9c8e3a37e2d9',
+          },
+        ],
+      });
+    });
+
+    expect(resolverCalls).toBe(2);
+    expect(readCalls).toBe(2);
+    expect(journalAppendCalls).toBe(2);
+    expect(forwardedReceipts).toHaveLength(2);
+    expect(events.map((event) => event.resultClass)).toEqual([
+      'INVALID_REQUEST',
+      'success',
+      'success',
+    ]);
+  });
+
   it('derives verified principal and distinct fixed client/capability refs with redacted correlation', async () => {
     const contexts: ArtifactInspectorTrustedContext[] = [];
     const dependencies: ArtifactInspectorDependencies = {

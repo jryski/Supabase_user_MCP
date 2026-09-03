@@ -105,6 +105,28 @@ const HEX64_PATTERN = /^[0-9a-f]{64}$/;
 const OBJECT_VERSION_REF_PATTERN = /^ov_[A-Za-z0-9_-]+$/;
 const CHUNK_HASHES_REF_PATTERN = /^chr_[A-Za-z0-9_-]+$/;
 
+function encodeUnicodeScalarValueString(value: string): Uint8Array | null {
+  for (let index = 0; index < value.length; index += 1) {
+    const codeUnit = value.charCodeAt(index);
+    if (codeUnit >= 0xd800 && codeUnit <= 0xdbff) {
+      const nextCodeUnit = value.charCodeAt(index + 1);
+      if (!(nextCodeUnit >= 0xdc00 && nextCodeUnit <= 0xdfff)) return null;
+      index += 1;
+    } else if (codeUnit >= 0xdc00 && codeUnit <= 0xdfff) {
+      return null;
+    }
+  }
+
+  const bytes = new TextEncoder().encode(value);
+  let decoded: string;
+  try {
+    decoded = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(bytes);
+  } catch {
+    return null;
+  }
+  return decoded === value ? bytes : null;
+}
+
 /** This module's own fixed deterministic-profile identity, bound into every
  * receipt's `analyzerProfileVersion`. S2 performs no semantic analysis and
  * defines no per-media-type analyzer version of its own. */
@@ -1631,8 +1653,8 @@ export async function artifactSearchExact(
     return createArtifactInspectionError('INVALID_REQUEST');
   }
   const { artifactId, query, maxHits } = input.data;
-  const queryBytes = new TextEncoder().encode(query);
-  if (queryBytes.byteLength > MAX_SEARCH_QUERY_LENGTH) {
+  const queryBytes = encodeUnicodeScalarValueString(query);
+  if (queryBytes === null || queryBytes.byteLength > MAX_SEARCH_QUERY_LENGTH) {
     emit('INVALID_REQUEST');
     return createArtifactInspectionError('INVALID_REQUEST');
   }

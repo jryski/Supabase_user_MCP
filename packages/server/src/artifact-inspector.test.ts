@@ -1975,6 +1975,104 @@ describe('artifact_search_exact', () => {
     ]);
   });
 
+  it('rejects every unpaired surrogate before authorization or byte access with only a redacted event', async () => {
+    const invalidQueries = [
+      ['lone high surrogate', '\uD800'],
+      ['lone low surrogate', '\uDC00'],
+      ['high surrogate followed by a non-low surrogate', '\uD800A'],
+      ['low surrogate without a preceding high surrogate', 'A\uDC00'],
+      ['mixed valid text and an unpaired surrogate', 'valid \uD800 text'],
+    ] as const;
+
+    for (const [label, query] of invalidQueries) {
+      let resolverCalls = 0;
+      const tracked = trackDeps({
+        resolveAuthorizedArtifact: async () => {
+          resolverCalls += 1;
+          return searchRecord;
+        },
+      });
+
+      const output = await artifactSearchExact(tracked.dependencies, makeContext(), {
+        artifactId: ARTIFACT_ID,
+        query,
+        maxHits: 1,
+      });
+
+      expect(output, label).toEqual({
+        ok: false,
+        error: { code: 'INVALID_REQUEST', message: 'Request is invalid.', retryable: false },
+      });
+      expect(resolverCalls, label).toBe(0);
+      expect(tracked.readCalls, label).toEqual([]);
+      expect(tracked.receipts, label).toEqual([]);
+      expect(tracked.events, label).toHaveLength(1);
+      expect(definedAt(tracked.events[0]), label).toMatchObject({
+        operation: 'artifact_search_exact',
+        resultClass: 'INVALID_REQUEST',
+      });
+      expect(Object.keys(definedAt(tracked.events[0])).toSorted(), label).toEqual([
+        'elapsedMs',
+        'operation',
+        'resultClass',
+      ]);
+      expect(JSON.stringify(tracked.events), label).not.toContain(
+        JSON.stringify(query).slice(1, -1),
+      );
+    }
+  });
+
+  it('keeps valid U+FFFD and supplementary-plane queries distinct and byte-exact', async () => {
+    const source = new TextEncoder().encode('x\uFFFDy 😀');
+    const record = buildRecord(source, { chunkSize: 1024 });
+    const tracked = trackDeps({
+      resolveAuthorizedArtifact: resolverFor(record),
+      readVersionedRange: sourceBackedRead(source),
+    });
+
+    const replacement = await artifactSearchExact(tracked.dependencies, makeContext(), {
+      artifactId: ARTIFACT_ID,
+      query: '\uFFFD',
+      maxHits: 1,
+    });
+    const emoji = await artifactSearchExact(tracked.dependencies, makeContext(), {
+      artifactId: ARTIFACT_ID,
+      query: '😀',
+      maxHits: 1,
+    });
+
+    if (!replacement.ok || !emoji.ok) throw new Error('expected scalar-value search success');
+    expect(replacement.hits).toEqual([
+      {
+        matchRange: { offset: 1, length: 3 },
+        snippetRange: { offset: 1, length: 3 },
+        snippetSha256: '83d544ccc223c057d2bf80d3f2a32982c32c3c0db8e2674820da5064783fb097',
+        lineNumber: 1,
+        snippet: '\uFFFD',
+        contentTrust: 'untrusted',
+      },
+    ]);
+    expect(emoji.hits).toEqual([
+      {
+        matchRange: { offset: 6, length: 4 },
+        snippetRange: { offset: 6, length: 4 },
+        snippetSha256: 'f0443a342c5ef54783a111b51ba56c938e474c32324d90c3a60c9c8e3a37e2d9',
+        lineNumber: 1,
+        snippet: '😀',
+        contentTrust: 'untrusted',
+      },
+    ]);
+    expect(replacement.integrity.requestedRange).toEqual({
+      kind: 'search_exact',
+      queryLength: 3,
+    });
+    expect(emoji.integrity.requestedRange).toEqual({ kind: 'search_exact', queryLength: 4 });
+    expect(tracked.readCalls).toEqual([
+      { offset: 0, length: 10 },
+      { offset: 0, length: 10 },
+    ]);
+  });
+
   it('is case-sensitive, performs no Unicode normalization, uses non-overlapping matches, and truncates without a total', async () => {
     const tracked = trackDeps({
       resolveAuthorizedArtifact: resolverFor(searchRecord),

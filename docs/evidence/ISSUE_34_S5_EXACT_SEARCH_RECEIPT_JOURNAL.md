@@ -20,12 +20,19 @@ and receipt schemas. It:
    redacted failure, and version/length/source/manifest mismatch as `INTEGRITY_FAILURE`;
 6. verifies the complete S1b manifest and every source chunk, then builds
    `artifact-text-index/0.1` only in memory for canonical line numbers;
-7. encodes the trimmed accepted query as UTF-8 and applies an additional 256-byte query ceiling;
-8. matches raw UTF-8 bytes exactly, case-sensitively, left-to-right, without normalization, stemming,
+7. requires the parsed and trimmed query to contain only Unicode scalar values before authorization,
+   dependency calls, journal operations, or source reads; an unpaired high or low UTF-16 surrogate
+   returns the fixed `INVALID_REQUEST`, performs zero resolver/read/journal calls, emits no source
+   receipt, and emits only the existing redacted invalid-request operational event;
+8. encodes an accepted scalar-value query as UTF-8, decodes those bytes with fatal, BOM-preserving
+   UTF-8 semantics, requires exact string equality, and applies an additional 256-byte query ceiling,
+   so `TextEncoder` replacement can never become an exact match; valid U+FFFD and valid
+   supplementary-plane code points remain distinct and searchable; and
+9. matches raw UTF-8 bytes exactly, case-sensitively, left-to-right, without normalization, stemming,
    case folding, regular expressions, semantic behavior, or locale dependence;
-9. advances by the query byte length, so matches are ordered and non-overlapping, and returns only the
-   first `maxHits` without a total count or hidden-match indicator; and
-10. returns each exact match as the entire snippet, with equal match/snippet ranges, an independent
+10. advances by the query byte length, so matches are ordered and non-overlapping, and returns only the
+    first `maxHits` without a total count or hidden-match indicator; and
+11. returns each exact match as the entire snippet, with equal match/snippet ranges, an independent
     snippet SHA-256, starting canonical line number, and `contentTrust: "untrusted"`.
 
 Successful zero-hit searches still return complete-source integrity. The returned range is always
