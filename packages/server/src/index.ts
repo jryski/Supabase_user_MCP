@@ -5,6 +5,17 @@ export {
   assertArtifactStorageClosureManifest,
 } from './artifact-mcp-registration.js';
 export {
+  appendArtifactInspectionReceipt,
+  artifactInspectionReceiptSha256,
+  ARTIFACT_RECEIPT_JOURNAL_ACK_SCHEMA_VERSION,
+  ARTIFACT_RECEIPT_JOURNAL_PROFILE_VERSION,
+  type ArtifactReceiptJournal,
+  type ArtifactReceiptJournalAcknowledgement,
+  ArtifactReceiptJournalAcknowledgementSchema,
+  ArtifactReceiptJournalError,
+  canonicalArtifactInspectionReceiptBytes,
+} from './artifact-receipt-journal.js';
+export {
   ARTIFACT_INSPECTOR_PROFILE_VERSION,
   type ArtifactInspector,
   type ArtifactInspectorDependencies,
@@ -15,10 +26,12 @@ export {
   artifactReadHeading,
   artifactReadLines,
   artifactReadRange,
+  artifactSearchExact,
   artifactStat,
   createArtifactInspector,
   createArtifactInspectorTrustedContext,
   MAX_COVERING_FETCH_BYTES,
+  MAX_EXACT_SEARCH_SOURCE_BYTES,
   MAX_LINE_SOURCE_SCAN_BYTES,
   type ReadVersionedRangeResult,
 } from './artifact-inspector.js';

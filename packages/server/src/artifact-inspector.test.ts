@@ -4,10 +4,13 @@ import {
   type ArtifactInspectionReceipt,
   ArtifactInspectionReceiptSchema,
   ArtifactReadHeadingOutputSchema,
+  ArtifactSearchExactOutputSchema,
   artifactInspectionResponseByteLength,
   MAX_ARTIFACT_RESPONSE_BYTES,
   MAX_INLINE_CHUNK_HASHES,
   MAX_RANGE_BYTES,
+  MAX_SEARCH_HITS,
+  MAX_SEARCH_QUERY_LENGTH,
 } from '@supabase-user-mcp/contracts';
 import { describe, expect, it, vi } from 'vitest';
 
@@ -27,9 +30,11 @@ import {
   artifactReadHeading,
   artifactReadLines,
   artifactReadRange,
+  artifactSearchExact,
   artifactStat,
   createArtifactInspector,
   createArtifactInspectorTrustedContext,
+  MAX_EXACT_SEARCH_SOURCE_BYTES,
   MAX_LINE_SOURCE_SCAN_BYTES,
 } from './artifact-inspector.js';
 
@@ -1896,6 +1901,511 @@ describe('strict resolved-record validation', () => {
     expect(Object.isFrozen(internalLocator)).toBe(false);
     expect(Object.isFrozen(internalLocator.nested)).toBe(false);
     expect(JSON.stringify({ output, events, receipts })).not.toContain('locator-secret-sentinel');
+  });
+});
+
+describe('artifact_search_exact', () => {
+  const searchText = 'needle café\nNeedle cafe\u0301\ncafé café\nneedleneedle\n';
+  const searchBytes = new TextEncoder().encode(searchText);
+  const searchRecord = buildRecord(searchBytes, { chunkSize: 1024, mediaType: 'text/markdown' });
+
+  it('returns deterministic ASCII and multibyte exact matches with hardcoded byte offsets and hashes', async () => {
+    const tracked = trackDeps({
+      resolveAuthorizedArtifact: resolverFor(searchRecord),
+      readVersionedRange: sourceBackedRead(searchBytes),
+    });
+    const ascii = await artifactSearchExact(tracked.dependencies, makeContext(), {
+      artifactId: ARTIFACT_ID,
+      query: 'needle',
+      maxHits: 10,
+    });
+    expect(ascii.ok).toBe(true);
+    if (!ascii.ok) throw new Error('expected ASCII search success');
+    expect(ascii.hits).toEqual([
+      {
+        matchRange: { offset: 0, length: 6 },
+        snippetRange: { offset: 0, length: 6 },
+        snippetSha256: '09881f6ed93360a2f6ad81f435a8ca51ca4575d0f954f197ff8f7d16c6565562',
+        lineNumber: 1,
+        snippet: 'needle',
+        contentTrust: 'untrusted',
+      },
+      {
+        matchRange: { offset: 39, length: 6 },
+        snippetRange: { offset: 39, length: 6 },
+        snippetSha256: '09881f6ed93360a2f6ad81f435a8ca51ca4575d0f954f197ff8f7d16c6565562',
+        lineNumber: 4,
+        snippet: 'needle',
+        contentTrust: 'untrusted',
+      },
+      {
+        matchRange: { offset: 45, length: 6 },
+        snippetRange: { offset: 45, length: 6 },
+        snippetSha256: '09881f6ed93360a2f6ad81f435a8ca51ca4575d0f954f197ff8f7d16c6565562',
+        lineNumber: 4,
+        snippet: 'needle',
+        contentTrust: 'untrusted',
+      },
+    ]);
+
+    const multibyte = await artifactSearchExact(tracked.dependencies, makeContext(), {
+      artifactId: ARTIFACT_ID,
+      query: 'café',
+      maxHits: 10,
+    });
+    expect(multibyte.ok).toBe(true);
+    if (!multibyte.ok) throw new Error('expected multibyte search success');
+    expect(
+      multibyte.hits.map((hit) => [hit.matchRange.offset, hit.matchRange.length, hit.lineNumber]),
+    ).toEqual([
+      [7, 5, 1],
+      [27, 5, 3],
+      [33, 5, 3],
+    ]);
+    expect(multibyte.hits.every((hit) => hit.snippet === 'café')).toBe(true);
+    expect(
+      multibyte.hits.every(
+        (hit) =>
+          hit.snippetSha256 === '850f7dc43910ff890f8879c0ed26fe697c93a067ad93a7d50f466a7028a9bf4e',
+      ),
+    ).toBe(true);
+    expect(tracked.readCalls).toEqual([
+      { offset: 0, length: 52 },
+      { offset: 0, length: 52 },
+    ]);
+  });
+
+  it('is case-sensitive, performs no Unicode normalization, uses non-overlapping matches, and truncates without a total', async () => {
+    const tracked = trackDeps({
+      resolveAuthorizedArtifact: resolverFor(searchRecord),
+      readVersionedRange: sourceBackedRead(searchBytes),
+    });
+    const upper = await artifactSearchExact(tracked.dependencies, makeContext(), {
+      artifactId: ARTIFACT_ID,
+      query: 'Needle',
+      maxHits: 10,
+    });
+    const decomposed = await artifactSearchExact(tracked.dependencies, makeContext(), {
+      artifactId: ARTIFACT_ID,
+      query: 'cafe\u0301',
+      maxHits: 10,
+    });
+    const nonoverlapSource = new TextEncoder().encode('aaaaa');
+    const nonoverlapRecord = buildRecord(nonoverlapSource, { chunkSize: 1024 });
+    const nonoverlapDeps = trackDeps({
+      resolveAuthorizedArtifact: resolverFor(nonoverlapRecord),
+      readVersionedRange: sourceBackedRead(nonoverlapSource),
+    });
+    const nonoverlap = await artifactSearchExact(nonoverlapDeps.dependencies, makeContext(), {
+      artifactId: ARTIFACT_ID,
+      query: 'aa',
+      maxHits: 2,
+    });
+    const truncated = await artifactSearchExact(tracked.dependencies, makeContext(), {
+      artifactId: ARTIFACT_ID,
+      query: 'needle',
+      maxHits: 1,
+    });
+    if (!upper.ok || !decomposed.ok || !nonoverlap.ok || !truncated.ok) {
+      throw new Error('expected exact-search success');
+    }
+    expect(upper.hits.map((hit) => hit.matchRange.offset)).toEqual([13]);
+    expect(decomposed.hits.map((hit) => hit.matchRange.offset)).toEqual([20]);
+    expect(nonoverlap.hits.map((hit) => hit.matchRange.offset)).toEqual([0, 2]);
+    expect(truncated.hits).toHaveLength(1);
+    expect(Object.keys(truncated).toSorted()).toEqual(['hits', 'integrity', 'ok']);
+    expect(JSON.stringify(truncated)).not.toMatch(/total|more|truncat/i);
+  });
+
+  it('uses the canonical starting line for a cross-line match', async () => {
+    const tracked = trackDeps({
+      resolveAuthorizedArtifact: resolverFor(searchRecord),
+      readVersionedRange: sourceBackedRead(searchBytes),
+    });
+    const output = await artifactSearchExact(tracked.dependencies, makeContext(), {
+      artifactId: ARTIFACT_ID,
+      query: 'café\nNeedle',
+      maxHits: 10,
+    });
+    if (!output.ok) throw new Error('expected search success');
+    expect(output.hits).toHaveLength(1);
+    expect(output.hits[0]).toMatchObject({
+      matchRange: { offset: 7, length: 12 },
+      snippetRange: { offset: 7, length: 12 },
+      lineNumber: 1,
+      snippet: 'café\nNeedle',
+    });
+  });
+
+  it('returns zero hits successfully with complete-source integrity and every chunk verified', async () => {
+    const source = new TextEncoder().encode(deterministicAsciiText(2500, 77));
+    const record = buildRecord(source, { chunkSize: 1024 });
+    const tracked = trackDeps({
+      resolveAuthorizedArtifact: resolverFor(record),
+      readVersionedRange: sourceBackedRead(source),
+    });
+    const output = await artifactSearchExact(tracked.dependencies, makeContext(), {
+      artifactId: ARTIFACT_ID,
+      query: 'definitely-not-present',
+      maxHits: 5,
+    });
+    if (!output.ok) throw new Error('expected zero-hit success');
+    expect(output.hits).toEqual([]);
+    expect(output.integrity.verifiedChunks).toHaveLength(record.chunkCount);
+    expect(output.integrity.verifiedCoveringChunkRange).toEqual({
+      startChunkIndex: 0,
+      endChunkIndex: record.chunkCount - 1,
+    });
+    expect(output.integrity.returnedRange).toEqual({ offset: 0, length: source.byteLength });
+    expect(output.integrity.returnedByteSha256).toBe(record.sourceSha256);
+  });
+
+  it('returns unavailable for an empty artifact and enforces the exact source byte ceiling before reading', async () => {
+    const emptyRecord = buildRecord(new Uint8Array(0), { chunkSize: 1024 });
+    const empty = trackDeps({ resolveAuthorizedArtifact: resolverFor(emptyRecord) });
+    const emptyOutput = await artifactSearchExact(empty.dependencies, makeContext(), {
+      artifactId: ARTIFACT_ID,
+      query: 'x',
+      maxHits: 1,
+    });
+    expect(emptyOutput).toEqual({
+      ok: false,
+      error: {
+        code: 'RESOURCE_UNAVAILABLE',
+        message: 'Artifact is unavailable.',
+        retryable: false,
+      },
+    });
+    expect(empty.readCalls).toEqual([]);
+
+    const acceptedSource = new TextEncoder().encode(
+      `x${'a'.repeat(MAX_EXACT_SEARCH_SOURCE_BYTES - 1)}`,
+    );
+    const acceptedRecord = buildRecord(acceptedSource, { chunkSize: 1024 });
+    const accepted = trackDeps({
+      resolveAuthorizedArtifact: resolverFor(acceptedRecord),
+      readVersionedRange: sourceBackedRead(acceptedSource),
+    });
+    expect(
+      await artifactSearchExact(accepted.dependencies, makeContext(), {
+        artifactId: ARTIFACT_ID,
+        query: 'x',
+        maxHits: 1,
+      }),
+    ).toMatchObject({ ok: true });
+    expect(accepted.readCalls).toEqual([{ offset: 0, length: MAX_EXACT_SEARCH_SOURCE_BYTES }]);
+
+    const rejectedSource = new TextEncoder().encode('x'.repeat(MAX_EXACT_SEARCH_SOURCE_BYTES + 1));
+    const rejectedRecord = buildRecord(rejectedSource, { chunkSize: 1024 });
+    const rejected = trackDeps({
+      resolveAuthorizedArtifact: resolverFor(rejectedRecord),
+      readVersionedRange: sourceBackedRead(rejectedSource),
+    });
+    expect(
+      await artifactSearchExact(rejected.dependencies, makeContext(), {
+        artifactId: ARTIFACT_ID,
+        query: 'x',
+        maxHits: 1,
+      }),
+    ).toMatchObject({ ok: false, error: { code: 'RESPONSE_LIMIT_EXCEEDED' } });
+    expect(rejected.readCalls).toEqual([]);
+    expect(acceptedRecord.chunkCount).toBe(8);
+    expect(rejectedRecord.chunkCount).toBe(9);
+    // With the accepted 1,024-byte minimum chunk size, a 16/17-chunk
+    // search source would already exceed the stronger 8,192-byte gate.
+    expect(16 * 1024).toBeGreaterThan(MAX_EXACT_SEARCH_SOURCE_BYTES);
+  });
+
+  it('accepts a 256-byte query and rejects 257 bytes plus multibyte byte-overflow before dependencies', async () => {
+    const ascii256 = 'q'.repeat(MAX_SEARCH_QUERY_LENGTH);
+    const source = new TextEncoder().encode(ascii256);
+    const record = buildRecord(source, { chunkSize: 1024 });
+    const accepted = trackDeps({
+      resolveAuthorizedArtifact: resolverFor(record),
+      readVersionedRange: sourceBackedRead(source),
+    });
+    const output = await artifactSearchExact(accepted.dependencies, makeContext(), {
+      artifactId: ARTIFACT_ID,
+      query: ascii256,
+      maxHits: 1,
+    });
+    if (!output.ok) throw new Error('expected 256-byte query success');
+    expect(output.integrity.requestedRange).toEqual({ kind: 'search_exact', queryLength: 256 });
+
+    for (const query of ['q'.repeat(257), 'é'.repeat(129)]) {
+      let resolverCalls = 0;
+      const rejected = trackDeps({
+        resolveAuthorizedArtifact: async () => {
+          resolverCalls += 1;
+          return record;
+        },
+      });
+      const result = await artifactSearchExact(rejected.dependencies, makeContext(), {
+        artifactId: ARTIFACT_ID,
+        query,
+        maxHits: 1,
+      });
+      expect(result).toMatchObject({ ok: false, error: { code: 'INVALID_REQUEST' } });
+      expect(resolverCalls).toBe(0);
+      expect(rejected.readCalls).toEqual([]);
+    }
+    const multibyte256 = 'é'.repeat(128);
+    const multibyteSource = new TextEncoder().encode(multibyte256);
+    const multibyteRecord = buildRecord(multibyteSource, { chunkSize: 1024 });
+    const multibyte = trackDeps({
+      resolveAuthorizedArtifact: resolverFor(multibyteRecord),
+      readVersionedRange: sourceBackedRead(multibyteSource),
+    });
+    const multibyteOutput = await artifactSearchExact(multibyte.dependencies, makeContext(), {
+      artifactId: ARTIFACT_ID,
+      query: multibyte256,
+      maxHits: 1,
+    });
+    if (!multibyteOutput.ok) throw new Error('expected 256-byte multibyte query success');
+    expect(multibyteOutput.integrity.requestedRange).toEqual({
+      kind: 'search_exact',
+      queryLength: 256,
+    });
+  });
+
+  it('denies unsupported media and unavailable authorization/expiry/version without retries', async () => {
+    const unsupportedRecord = buildRecord(searchBytes, { mediaType: 'application/pdf' });
+    const unsupported = trackDeps({ resolveAuthorizedArtifact: resolverFor(unsupportedRecord) });
+    expect(
+      await artifactSearchExact(unsupported.dependencies, makeContext(), {
+        artifactId: ARTIFACT_ID,
+        query: 'needle',
+        maxHits: 1,
+      }),
+    ).toMatchObject({ ok: false, error: { code: 'UNSUPPORTED' } });
+    expect(unsupported.readCalls).toEqual([]);
+
+    const guarded = trackDeps({
+      resolveAuthorizedArtifact: async (context) =>
+        context.principalRef === 'principal-ok' &&
+        context.inspectorClientRef === 'client-ok' &&
+        context.inspectorCapabilityRef.ref === CAPABILITY_GRANT_REF
+          ? searchRecord
+          : null,
+      readVersionedRange: sourceBackedRead(searchBytes),
+    });
+    for (const context of [
+      makeContext({ principalRef: 'principal-wrong' }),
+      makeContext({ inspectorClientRef: 'client-wrong' }),
+      makeContext({
+        inspectorCapabilityRef: { capability: 'artifact:inspect', ref: 'grant-wrong' },
+      }),
+    ]) {
+      expect(
+        await artifactSearchExact(guarded.dependencies, context, {
+          artifactId: ARTIFACT_ID,
+          query: 'needle',
+          maxHits: 1,
+        }),
+      ).toMatchObject({ ok: false, error: { code: 'RESOURCE_UNAVAILABLE' } });
+    }
+
+    const expiredRecord = buildRecord(searchBytes, { expiresAt: '2026-05-31T23:59:59.000Z' });
+    const expired = trackDeps({ resolveAuthorizedArtifact: resolverFor(expiredRecord) });
+    expect(
+      await artifactSearchExact(expired.dependencies, makeContext(), {
+        artifactId: ARTIFACT_ID,
+        query: 'needle',
+        maxHits: 1,
+      }),
+    ).toMatchObject({ ok: false, error: { code: 'RESOURCE_UNAVAILABLE' } });
+
+    let readCalls = 0;
+    const unavailableVersion = trackDeps({
+      resolveAuthorizedArtifact: resolverFor(searchRecord),
+      readVersionedRange: async () => {
+        readCalls += 1;
+        return null;
+      },
+    });
+    expect(
+      await artifactSearchExact(unavailableVersion.dependencies, makeContext(), {
+        artifactId: ARTIFACT_ID,
+        query: 'needle',
+        maxHits: 1,
+      }),
+    ).toMatchObject({ ok: false, error: { code: 'RESOURCE_UNAVAILABLE' } });
+    expect(readCalls).toBe(1);
+    expect(unavailableVersion.receipts).toEqual([]);
+  });
+
+  it('fails closed for malformed, short, long, drifted-version, source, root, and proof mutations without retry', async () => {
+    const cases: Array<{
+      label: string;
+      record: AuthorizedArtifactRecord;
+      read: ArtifactInspectorDependencies['readVersionedRange'];
+      expected: 'INTERNAL_ERROR' | 'INTEGRITY_FAILURE';
+    }> = [
+      {
+        label: 'malformed result',
+        record: searchRecord,
+        read: async () => ({ nope: true }) as never,
+        expected: 'INTERNAL_ERROR',
+      },
+      {
+        label: 'short result',
+        record: searchRecord,
+        read: async (_context, _locator, version) => ({
+          bytes: searchBytes.subarray(0, searchBytes.byteLength - 1),
+          objectVersionRef: version,
+        }),
+        expected: 'INTEGRITY_FAILURE',
+      },
+      {
+        label: 'long result',
+        record: searchRecord,
+        read: async (_context, _locator, version) => ({
+          bytes: new Uint8Array(searchBytes.byteLength + 1),
+          objectVersionRef: version,
+        }),
+        expected: 'INTEGRITY_FAILURE',
+      },
+      {
+        label: 'version drift',
+        record: searchRecord,
+        read: sourceBackedRead(searchBytes, { versionOverride: DRIFTED_OBJECT_VERSION_REF }),
+        expected: 'INTEGRITY_FAILURE',
+      },
+      {
+        label: 'source mutation',
+        record: searchRecord,
+        read: async (_context, _locator, version) => ({
+          bytes: Uint8Array.from(searchBytes, (byte, index) => (index === 0 ? byte ^ 1 : byte)),
+          objectVersionRef: version,
+        }),
+        expected: 'INTEGRITY_FAILURE',
+      },
+      {
+        label: 'source hash mutation',
+        record: { ...searchRecord, sourceSha256: '9'.repeat(64) },
+        read: sourceBackedRead(searchBytes),
+        expected: 'INTEGRITY_FAILURE',
+      },
+      {
+        label: 'root mutation',
+        record: { ...searchRecord, merkleRoot: '9'.repeat(64) },
+        read: sourceBackedRead(searchBytes),
+        expected: 'INTEGRITY_FAILURE',
+      },
+      {
+        label: 'proof leaf mutation',
+        record: { ...searchRecord, merkleLeafSha256s: ['9'.repeat(64)] },
+        read: sourceBackedRead(searchBytes),
+        expected: 'INTEGRITY_FAILURE',
+      },
+    ];
+    for (const scenario of cases) {
+      let reads = 0;
+      const tracked = trackDeps({
+        resolveAuthorizedArtifact: async () => scenario.record,
+        readVersionedRange: async (...args) => {
+          reads += 1;
+          return scenario.read(...args);
+        },
+      });
+      const output = await artifactSearchExact(tracked.dependencies, makeContext(), {
+        artifactId: ARTIFACT_ID,
+        query: 'needle',
+        maxHits: 2,
+      });
+      expect(output, scenario.label).toMatchObject({
+        ok: false,
+        error: { code: scenario.expected },
+      });
+      expect(reads, scenario.label).toBeLessThanOrEqual(1);
+      expect(tracked.receipts, scenario.label).toHaveLength(1);
+    }
+  });
+
+  it('returns immutable schema- and wire-valid output plus a content-free search receipt', async () => {
+    const tracked = trackDeps({
+      resolveAuthorizedArtifact: resolverFor(searchRecord),
+      readVersionedRange: sourceBackedRead(searchBytes),
+    });
+    const output = await artifactSearchExact(
+      tracked.dependencies,
+      makeContext({ requestCorrelationId: 'correlation-safe' }),
+      { artifactId: ARTIFACT_ID, query: 'needle', maxHits: MAX_SEARCH_HITS },
+    );
+    expect(ArtifactSearchExactOutputSchema.safeParse(output).success).toBe(true);
+    expect(artifactInspectionResponseByteLength(null, output)).toBeLessThanOrEqual(
+      MAX_ARTIFACT_RESPONSE_BYTES,
+    );
+    expect(Object.isFrozen(output)).toBe(true);
+    if (!output.ok) throw new Error('expected search success');
+    expect(Object.isFrozen(output.hits)).toBe(true);
+    expect(Object.isFrozen(output.integrity.verifiedChunks)).toBe(true);
+    expect(tracked.receipts).toHaveLength(1);
+    const receipt = definedAt(tracked.receipts[0]);
+    expect(ArtifactInspectionReceiptSchema.safeParse(receipt).success).toBe(true);
+    expect(receipt.operationDetail).toEqual({
+      operation: 'artifact_search_exact',
+      queryLength: 6,
+      maxHits: MAX_SEARCH_HITS,
+      returnedHits: output.hits.map((hit) => ({
+        returnedRange: hit.snippetRange,
+        returnedByteSha256: hit.snippetSha256,
+      })),
+    });
+    const evidence = JSON.stringify({ output, receipt, events: tracked.events });
+    for (const forbidden of [
+      INTERNAL_LOCATOR_SENTINEL.bucket,
+      INTERNAL_LOCATOR_SENTINEL.path,
+      INTERNAL_LOCATOR_SENTINEL.signedUrl,
+      'source-token-SENTINEL',
+    ]) {
+      expect(evidence).not.toContain(forbidden);
+    }
+    expect(JSON.stringify(receipt)).not.toContain('needle');
+  });
+
+  it('keeps concurrent exact searches isolated', async () => {
+    const sourceA = new TextEncoder().encode('alpha alpha');
+    const sourceB = new TextEncoder().encode('beta beta');
+    const recordA = buildRecord(sourceA, {
+      artifactId: ARTIFACT_ID,
+      objectVersionRef: 'ov_aaaaaaaaaaaaaaaaaaaaaaaa',
+    });
+    const recordB = buildRecord(sourceB, {
+      artifactId: OTHER_ARTIFACT_ID,
+      objectVersionRef: 'ov_bbbbbbbbbbbbbbbbbbbbbbbb',
+    });
+    const records = new Map([
+      [ARTIFACT_ID, { record: recordA, source: sourceA }],
+      [OTHER_ARTIFACT_ID, { record: recordB, source: sourceB }],
+    ]);
+    const tracked = trackDeps({
+      resolveAuthorizedArtifact: async (_context, artifactId) =>
+        records.get(artifactId)?.record ?? null,
+      readVersionedRange: async (_context, _locator, version, offset, length) => {
+        const entry = [...records.values()].find(
+          (candidate) => candidate.record.objectVersionRef === version,
+        );
+        if (entry === undefined) return null;
+        return { bytes: entry.source.subarray(offset, offset + length), objectVersionRef: version };
+      },
+    });
+    const inspector = createArtifactInspector(tracked.dependencies);
+    const [alpha, beta] = await Promise.all([
+      inspector.artifactSearchExact(makeContext({ principalRef: 'principal-A' }), {
+        artifactId: ARTIFACT_ID,
+        query: 'alpha',
+        maxHits: 10,
+      }),
+      inspector.artifactSearchExact(makeContext({ principalRef: 'principal-B' }), {
+        artifactId: OTHER_ARTIFACT_ID,
+        query: 'beta',
+        maxHits: 10,
+      }),
+    ]);
+    if (!alpha.ok || !beta.ok) throw new Error('expected concurrent search success');
+    expect(alpha.hits.map((hit) => hit.snippet)).toEqual(['alpha', 'alpha']);
+    expect(beta.hits.map((hit) => hit.snippet)).toEqual(['beta', 'beta']);
   });
 });
 

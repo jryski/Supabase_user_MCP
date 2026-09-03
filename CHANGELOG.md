@@ -48,10 +48,25 @@ the first public package is released.
   `262e40ee94b26db00178579e911bbd532776b532e68043026560e3dce4066cf3`) passes stat, lines,
   heading, fenced/unknown denial, integrity-proof, receipt, untrusted-rendering, and closure checks
   through the real MCP Client + `StreamTransport` seam. The index is rebuilt in memory per verified
-  read and is neither persisted nor published. Default CLI/stdio remains memory-only; S5 exact search
-  and durable operational adoption are next. This adds no live adapter, ingest persistence, derived
-  publication, Edge/hosted deployment, Storage/database mutation, privileged credential, signed URL,
-  caller-selected coordinate, listing, semantic analysis, write, private-data, or production claim.
+  read and is neither persisted nor published. Default CLI/stdio remains memory-only. This adds no live
+  adapter, ingest persistence, derived publication, Edge/hosted deployment, Storage/database mutation,
+  privileged credential, signed URL, caller-selected coordinate, listing, semantic analysis, write,
+  private-data, or production claim.
+- Synthetic/local S5a deterministic `artifact_search_exact` over one at-most-8,192-byte verified source,
+  using case-sensitive raw UTF-8 byte matching, canonical line numbers, non-overlapping bounded hits,
+  complete-source S1b integrity, content-free search receipts, and no total-count disclosure. Optional
+  artifact registration now exposes exactly five artifact tools and requires an injected
+  `artifact-receipt-journal/0.1`; every source-bound receipt is digest-bound and acknowledged inside the
+  existing 2,000 ms deadline before MCP return. `artifact-storage-closure/0.2` records no artifact-data
+  writes and only acknowledged append-only operational-evidence writes. The expanded fixed Markdown
+  SDK fixture (SHA-256 `219f6d8e995539a99ffd48221e8f4357c8946f3395e03fb36f75f6d9c12c2501`)
+  proves repeated ASCII/multibyte hits, a zero-hit query, proofs, inert hostile content, deterministic
+  journal acknowledgements, unchanged source bytes, and content-free evidence. No persistent journal
+  backend or live Storage/network adapter is included; default CLI/stdio remains memory-only. Live S5
+  adoption still requires an approved real adapter and durable evidence backend, and S6 semantic
+  summaries have not started. This adds no semantic/vector search, ingest, publication, hosted
+  deployment, Storage/database mutation, `service_role`, signed URL, listing, caller-selected
+  coordinate, canonical write, private data, or production-readiness claim.
 
 ### Changed
 

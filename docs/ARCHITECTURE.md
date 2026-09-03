@@ -114,16 +114,27 @@ from the capability grant reference, and treats exact-version disappearance as n
 unavailability. S3 provides optional synthetic/local MCP registration and a machine-readable, deeply
 frozen Storage closure manifest. S4 exports the deterministic text-index primitive, builds it only in
 memory after each verified complete-source read, routes canonical line geometry through
-`readIndexedLines`, implements `artifact_read_heading` through `readIndexedHeading`, and extends the
-optional registration seam to exactly four artifact tools. One fixed synthetic Markdown fixture is
-exercised through the real MCP Client + `StreamTransport`; hostile content remains untrusted and
-fenced headings remain unavailable. Default CLI/stdio startup stays at exactly three memory tools
-because optional artifact activation still requires injected authorization and exact-version byte-read
-dependencies. S4 does not persist or publish an index or run at ingest. S5 exact search and durable
-operational adoption are next. Generic Storage access, a live adapter, ingest persistence, derived
-publication, Edge/hosted deployment, Storage/database mutation, signed URLs, `service_role`,
-caller-selected coordinates, listing, semantic analysis, writes, private-data use, and production
-readiness remain outside the accepted architecture.
+`readIndexedLines`, and implements `artifact_read_heading` through `readIndexedHeading`.
+
+S5a adds case-sensitive exact raw UTF-8 byte search over one at-most-8,192-byte fully verified source
+and extends optional registration to exactly five artifact tools. It also requires an injected
+`artifact-receipt-journal/0.1`: source-bound receipts are canonically serialized, SHA-256-bound, and
+append-acknowledged inside the same 2,000 ms operation deadline before MCP output or buffered evidence
+is returned. Journal failure discards buffered source evidence and returns one fixed internal failure;
+pre-resolution or exact-version-null unavailability has no source receipt and no journal append.
+Receipt acknowledgements are internal evidence, never tool output or authorization, and current policy
+evaluation remains mandatory.
+
+One fixed synthetic Markdown fixture is exercised through the real MCP Client + `StreamTransport` for
+line/heading reads, repeated ASCII/multibyte exact matches, a zero-hit query, proof validation,
+content-free journal receipts, and inert hostile content. Default CLI/stdio startup stays at exactly
+three memory tools because optional artifact activation still requires injected authorization,
+exact-version byte-read, and receipt-journal dependencies. The repository provides no persistent
+journal backend and no live Storage/network adapter. Live S5 adoption remains gated on approving both;
+S6 semantic summaries do not start. Generic Storage access, semantic/vector search, ingest,
+derived-artifact publication, Edge/hosted deployment, Storage/database mutation, signed URLs,
+`service_role`, caller-selected coordinates, listing, canonical writes, private-data use, and
+production readiness remain outside the accepted architecture.
 
 ### Audit layer
 
@@ -213,6 +224,10 @@ the MCP resource token. See [ADR-0002](decisions/0002-remote-identity-chain.md).
 7. Let RLS and constraints authorize the requested row operation.
 8. Normalize the result and label stored content as untrusted data.
 9. Emit redacted operational evidence and return a bounded response.
+
+For optionally configured artifact operations, step 9 first requires a valid append-only journal
+acknowledgement for every source-bound inspection receipt. Receipt durability is evidence custody, not
+a replacement for current authorization.
 
 ## Failure model
 

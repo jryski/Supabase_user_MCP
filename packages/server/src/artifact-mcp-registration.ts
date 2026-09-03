@@ -5,8 +5,10 @@ import {
   ARTIFACT_READ_HEADING_TOOL,
   ARTIFACT_READ_LINES_TOOL,
   ARTIFACT_READ_RANGE_TOOL,
+  ARTIFACT_SEARCH_EXACT_TOOL,
   ARTIFACT_STAT_TOOL,
   type ArtifactInspectionOperation,
+  type ArtifactInspectionReceipt,
   createArtifactInspectionError,
   createArtifactInspectionMcpResult,
   MAX_ARTIFACT_REQUEST_ID_BYTES,
@@ -17,6 +19,11 @@ import {
 } from '@supabase-user-mcp/contracts';
 
 import {
+  appendArtifactInspectionReceipt,
+  artifactInspectionReceiptSha256,
+  type ArtifactReceiptJournal,
+} from './artifact-receipt-journal.js';
+import {
   type ArtifactInspectorDependencies,
   type ArtifactInspectorOperationalEvent,
   type ArtifactInspectorTrustedContext,
@@ -26,6 +33,7 @@ import {
 
 export interface ArtifactMcpRegistrationConfig {
   readonly dependencies: ArtifactInspectorDependencies;
+  readonly receiptJournal: ArtifactReceiptJournal;
   readonly inspectorClientRef: string;
   readonly inspectorCapabilityRef: {
     readonly capability: 'artifact:inspect';
@@ -38,6 +46,7 @@ export interface ArtifactMcpRegistrationConfig {
 
 const ARTIFACT_REGISTRATION_CONFIG_KEYS = Object.freeze([
   'dependencies',
+  'receiptJournal',
   'inspectorClientRef',
   'inspectorCapabilityRef',
   'verifierAudience',
@@ -54,7 +63,7 @@ const ARTIFACT_DEPENDENCY_KEYS = Object.freeze([
 ] as const);
 
 const EXPECTED_ARTIFACT_STORAGE_CLOSURE_MANIFEST = {
-  version: 'artifact-storage-closure/0.1',
+  version: 'artifact-storage-closure/0.2',
   plane: 'Supabase Storage byte custody',
   authorization: {
     resolver: 'injected resolveAuthorizedArtifact',
@@ -78,18 +87,22 @@ const EXPECTED_ARTIFACT_STORAGE_CLOSURE_MANIFEST = {
     { name: 'artifact_read_range', byteReadClass: 'one bounded covering read' },
     { name: 'artifact_read_lines', byteReadClass: 'one bounded complete-source read' },
     { name: 'artifact_read_heading', byteReadClass: 'one bounded complete-source read' },
+    { name: 'artifact_search_exact', byteReadClass: 'one bounded complete-source read' },
   ],
   retries: 0,
-  writes: 'none',
+  artifactDataWrites: 'none',
+  operationalEvidenceWrites: 'acknowledged append-only inspection receipts',
+  receiptJournal: {
+    profile: 'artifact-receipt-journal/0.1',
+    acknowledgement: 'required before every source-bound MCP return',
+    unavailableWithoutSourceReceipt: 'no append',
+    role: 'evidence, not authorization',
+    currentPolicyEvaluation: 'required for every call',
+  },
   directListingEnumeration: 'none',
   signedUrls: 'none',
   privilegedCredentials: 'prohibited, including service_role',
-  unregisteredOperations: [
-    'artifact_search_exact',
-    'artifact_ingest',
-    'artifact_semantic_analysis',
-    'artifact_write',
-  ],
+  unregisteredOperations: ['artifact_ingest', 'artifact_semantic_analysis', 'artifact_write'],
 } as const;
 
 function deepFreeze<T>(value: T): T {
@@ -219,6 +232,21 @@ function validateDependencies(raw: unknown): ArtifactInspectorDependencies {
   });
 }
 
+function validateReceiptJournal(raw: unknown): ArtifactReceiptJournal {
+  if (
+    raw === null ||
+    typeof raw !== 'object' ||
+    Array.isArray(raw) ||
+    !hasExactOwnKeys(raw, ['append']) ||
+    typeof (raw as { readonly append?: unknown }).append !== 'function'
+  ) {
+    throw new TypeError('Artifact registration configuration is invalid.');
+  }
+  return Object.freeze({
+    append: (raw as ArtifactReceiptJournal).append.bind(raw),
+  });
+}
+
 function validateConfig(
   raw: ArtifactMcpRegistrationConfig,
   principalRef: string,
@@ -233,6 +261,7 @@ function validateConfig(
       throw new TypeError('invalid');
     }
     const dependencies = validateDependencies(raw.dependencies);
+    const receiptJournal = validateReceiptJournal(raw.receiptJournal);
     const context = createArtifactInspectorTrustedContext({
       principalRef,
       inspectorClientRef: raw.inspectorClientRef,
@@ -246,6 +275,7 @@ function validateConfig(
     }
     return Object.freeze({
       dependencies,
+      receiptJournal,
       inspectorClientRef: context.inspectorClientRef,
       inspectorCapabilityRef: Object.freeze({ ...context.inspectorCapabilityRef }),
       verifierAudience: context.verifierAudience,
@@ -311,6 +341,7 @@ export async function executeArtifactOperationWithDeadline<T>(
 
 interface OperationScopedObserverGate {
   readonly dependencies: ArtifactInspectorDependencies;
+  commit(receiptJournal: ArtifactReceiptJournal): Promise<void>;
   close(): void;
 }
 
@@ -318,43 +349,53 @@ function createOperationScopedObserverGate(
   dependencies: ArtifactInspectorDependencies,
 ): OperationScopedObserverGate {
   let open = true;
+  let committed = false;
+  const events: ArtifactInspectorOperationalEvent[] = [];
+  const receipts: ArtifactInspectionReceipt[] = [];
   const gatedDependencies: ArtifactInspectorDependencies = {
     resolveAuthorizedArtifact: (...args) => dependencies.resolveAuthorizedArtifact(...args),
     readVersionedRange: (...args) => dependencies.readVersionedRange(...args),
     now: () => dependencies.now(),
-    ...(dependencies.emitOperationalEvent === undefined
-      ? {}
-      : {
-          emitOperationalEvent: (event: ArtifactInspectorOperationalEvent): void => {
-            if (!open) return;
-            try {
-              dependencies.emitOperationalEvent?.(event);
-            } catch {
-              // Observer failures must never affect the registered operation.
-            }
-          },
-        }),
-    ...(dependencies.emitInspectionReceipt === undefined
-      ? {}
-      : {
-          emitInspectionReceipt: (
-            receipt: Parameters<
-              NonNullable<ArtifactInspectorDependencies['emitInspectionReceipt']>
-            >[0],
-          ): void => {
-            if (!open) return;
-            try {
-              dependencies.emitInspectionReceipt?.(receipt);
-            } catch {
-              // Observer failures must never affect the registered operation.
-            }
-          },
-        }),
+    emitOperationalEvent: (event): void => {
+      if (open && !committed) events.push(event);
+    },
+    emitInspectionReceipt: (receipt): void => {
+      if (open && !committed) receipts.push(receipt);
+    },
   };
   return {
     dependencies: gatedDependencies,
+    async commit(receiptJournal: ArtifactReceiptJournal): Promise<void> {
+      if (!open || committed || receipts.length > 1) {
+        throw new TypeError('Artifact operation evidence gate failed.');
+      }
+      if (receipts.length === 1) {
+        const receipt = receipts[0];
+        if (receipt === undefined) throw new TypeError('Artifact operation evidence gate failed.');
+        const digest = artifactInspectionReceiptSha256(receipt);
+        await appendArtifactInspectionReceipt(receiptJournal, receipt, digest);
+      }
+      if (!open) return;
+      committed = true;
+      if (receipts.length === 1) {
+        try {
+          dependencies.emitInspectionReceipt?.(receipts[0] as ArtifactInspectionReceipt);
+        } catch {
+          // A post-ack observer cannot alter the acknowledged operation result.
+        }
+      }
+      for (const event of events) {
+        try {
+          dependencies.emitOperationalEvent?.(event);
+        } catch {
+          // A post-ack observer cannot alter the acknowledged operation result.
+        }
+      }
+    },
     close(): void {
       open = false;
+      events.length = 0;
+      receipts.length = 0;
     },
   };
 }
@@ -403,8 +444,31 @@ function emitRegistrationDeadlineEvent(
   }
 }
 
+function emitRegistrationInternalErrorEvent(
+  dependencies: ArtifactInspectorDependencies,
+  operation: ArtifactInspectionOperation,
+  context: ArtifactInspectorTrustedContext,
+  startedAtMs: number,
+): void {
+  const measuredElapsedMs = performance.now() - startedAtMs;
+  const event: ArtifactInspectorOperationalEvent = Object.freeze({
+    operation,
+    resultClass: 'INTERNAL_ERROR',
+    ...(context.requestCorrelationId === undefined
+      ? {}
+      : { requestCorrelationId: context.requestCorrelationId }),
+    elapsedMs: Number.isFinite(measuredElapsedMs) ? Math.max(0, measuredElapsedMs) : 0,
+  });
+  try {
+    dependencies.emitOperationalEvent?.(event);
+  } catch {
+    // Registration telemetry must never affect the fixed internal-error output.
+  }
+}
+
 async function executeRegisteredArtifactOperation<T>(
   dependencies: ArtifactInspectorDependencies,
+  receiptJournal: ArtifactReceiptJournal,
   operation: ArtifactInspectionOperation,
   context: ArtifactInspectorTrustedContext,
   signal: AbortSignal,
@@ -412,15 +476,27 @@ async function executeRegisteredArtifactOperation<T>(
 ): Promise<T | ReturnType<typeof createArtifactInspectionError>> {
   const startedAtMs = performance.now();
   const gate = createOperationScopedObserverGate(dependencies);
+  let journalFailure = false;
   let output: T | ReturnType<typeof createArtifactInspectionError>;
   try {
     const inspector = createArtifactInspector(gate.dependencies);
-    output = await executeArtifactOperationWithDeadline(() => inspect(inspector), signal);
+    output = await executeArtifactOperationWithDeadline(async () => {
+      const operationOutput = await inspect(inspector);
+      try {
+        await gate.commit(receiptJournal);
+      } catch {
+        journalFailure = true;
+        throw new TypeError('Artifact receipt journal gate failed.');
+      }
+      return operationOutput;
+    }, signal);
   } finally {
     gate.close();
   }
   if (isFixedDeadlineExceededOutput(output)) {
     emitRegistrationDeadlineEvent(dependencies, operation, context, startedAtMs);
+  } else if (journalFailure) {
+    emitRegistrationInternalErrorEvent(dependencies, operation, context, startedAtMs);
   }
   return output;
 }
@@ -473,6 +549,7 @@ export function prepareArtifactMcpRegistration(
                 return createArtifactInspectionMcpResult(
                   await executeRegisteredArtifactOperation(
                     config.dependencies,
+                    config.receiptJournal,
                     'artifact_stat',
                     operationContext,
                     context.mcpReq.signal,
@@ -499,6 +576,7 @@ export function prepareArtifactMcpRegistration(
                 return createArtifactInspectionMcpResult(
                   await executeRegisteredArtifactOperation(
                     config.dependencies,
+                    config.receiptJournal,
                     'artifact_read_range',
                     operationContext,
                     context.mcpReq.signal,
@@ -525,6 +603,7 @@ export function prepareArtifactMcpRegistration(
                 return createArtifactInspectionMcpResult(
                   await executeRegisteredArtifactOperation(
                     config.dependencies,
+                    config.receiptJournal,
                     'artifact_read_lines',
                     operationContext,
                     context.mcpReq.signal,
@@ -551,10 +630,38 @@ export function prepareArtifactMcpRegistration(
                 return createArtifactInspectionMcpResult(
                   await executeRegisteredArtifactOperation(
                     config.dependencies,
+                    config.receiptJournal,
                     'artifact_read_heading',
                     operationContext,
                     context.mcpReq.signal,
                     (inspector) => inspector.artifactReadHeading(operationContext, input),
+                  ),
+                );
+              },
+            );
+            break;
+          case 'artifact_search_exact':
+            registeredOperations.add(operation.name);
+            server.registerTool(
+              ARTIFACT_SEARCH_EXACT_TOOL.name,
+              {
+                title: 'Search exact artifact bytes',
+                description:
+                  'Returns bounded case-sensitive exact UTF-8 matches after complete-source verification.',
+                inputSchema: ARTIFACT_SEARCH_EXACT_TOOL.inputSchema,
+                outputSchema: ARTIFACT_SEARCH_EXACT_TOOL.outputSchema,
+                annotations: READ_ONLY_ANNOTATIONS,
+              },
+              async (input, context) => {
+                const operationContext = trustedContext(context.mcpReq.id);
+                return createArtifactInspectionMcpResult(
+                  await executeRegisteredArtifactOperation(
+                    config.dependencies,
+                    config.receiptJournal,
+                    'artifact_search_exact',
+                    operationContext,
+                    context.mcpReq.signal,
+                    (inspector) => inspector.artifactSearchExact(operationContext, input),
                   ),
                 );
               },

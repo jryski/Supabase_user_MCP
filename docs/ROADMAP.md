@@ -13,9 +13,11 @@ The local-stdio, read-only v0.1 pilot described in
 The active extension is [issue #34](https://github.com/jryski/Supabase_user_MCP/issues/34),
 Governed Artifact Inspection. S0 contracts, the synthetic S1 Storage/RLS laboratory, S1b
 chunk/Merkle calibration, the M1 identity prerequisite, the synthetic/local S2 fixed inspector, S3
-optional MCP registration/Storage closure, and bounded S4 deterministic Markdown line/heading
-integration with one fixed synthetic SDK demo are complete at their stated local scope. S5 exact search
-and durable operational adoption are next. M3–M6 remain separate product roadmap gates.
+optional MCP registration/Storage closure, bounded S4 deterministic Markdown line/heading integration,
+and synthetic/local S5a deterministic exact search plus an acknowledged append-only receipt-journal
+seam are complete at their stated scope. Live S5 operational adoption remains gated on an approved
+real Storage adapter and durable evidence backend; S6 semantic summaries have not started. M3–M6
+remain separate product roadmap gates.
 
 ## How milestones work
 
@@ -159,19 +161,23 @@ authorization without exposing a generic Storage or file-download tool.
 | S2 fixed read-only inspector | Complete | Pure TypeScript synthetic/local `artifact_stat` plus bounded range/text inspection library only; no MCP registration or deployment |
 | S3 MCP registration and Storage containment closure | Complete | Optional synthetic/local stat/range/lines registration and executable Storage closure only; default startup remains memory-only |
 | S4 Markdown structure/index extraction | Complete | Synthetic/local per-read line/heading integration plus one fixed synthetic Markdown real-SDK demo only; no persistence/publication |
-| S5 exact search and durable inspection receipts | Next | Exact search and durable operational adoption remain separate |
-| S6–S9 semantic, async, vector, and write/publication stages | Future | Separate authority and deployment reviews required |
+| S5a deterministic exact search and receipt-journal seam | Complete | Synthetic/local raw UTF-8 exact search plus mandatory append acknowledgement only; no persistent backend or live adapter |
+| S5 live operational adoption | Next | Select and approve a real caller-context Storage adapter and durable evidence backend |
+| S6–S9 semantic, async, vector, and write/publication stages | Future | S6 semantic summaries have not started; separate authority and deployment reviews required |
 
 S3 consumes S2 through an optional fixed registration configuration, derives principal context only
 from verified server identity, and closes the Storage data plane in a versioned executable manifest.
 S4 extends that optional seam to stat/range/lines/heading and verifies one fixed synthetic Markdown
-artifact through the real MCP SDK. The canonical text index is rebuilt only in memory after each
-complete-source integrity check; it is not persisted, published, or generated at ingest. Default
-CLI/stdio startup remains exactly three memory tools, and optional artifact activation still requires
-injected dependencies. No live adapter, hosted resources, Edge deployment, Storage/database mutation,
-`service_role`, signed URL, caller-selected coordinate, listing, ingest persistence, exact search,
-semantic analysis, write/publication, private data, or production-readiness claim is included. S5
-exact search and durable operational adoption require their own evidence and authority review.
+artifact through the real MCP SDK. S5a adds deterministic exact UTF-8 byte search and requires every
+configured source-bound receipt to receive a digest-matching append-only journal acknowledgement
+inside the existing deadline before MCP return. The canonical text index and search scan are rebuilt
+only in memory after complete-source integrity verification; neither is persisted, published, or
+generated at ingest. Default CLI/stdio startup remains exactly three memory tools. The repository has
+no persistent receipt-journal backend or live Storage/network adapter. Live S5 adoption requires both
+to be selected and approved; S6 semantic summaries do not start here. No hosted resources, Edge
+deployment, Storage/database mutation, `service_role`, signed URL, caller-selected coordinate,
+listing, ingest persistence, semantic/vector search, canonical write/publication, private data, or
+production-readiness claim is included.
 
 ## M3 — Safe writes and human authority
 
