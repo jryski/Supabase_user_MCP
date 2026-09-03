@@ -30,14 +30,16 @@ Draft candidates are listed separately and must not be described as merged or ac
 | S1b deterministic chunk/Merkle calibration | [Issue #34 S1b evidence](ISSUE_34_S1B_CHUNK_MERKLE_CALIBRATION.md) | `packages/server/src/artifact-chunk-manifest.test.ts` and `npm run artifact:calibrate` | `e36418d812a7004f5b9cf1ef14070375cfed7493` |
 | S2 fixed read-only artifact inspector | [Issue #34 S2 evidence](ISSUE_34_S2_FIXED_INSPECTOR.md) | `packages/server/src/artifact-inspector.test.ts` | `57ebbf5d836835a7fe8cd2330e46c2696aa1162b` |
 | S3 optional MCP registration and Storage closure | [Issue #34 S3 evidence](ISSUE_34_S3_MCP_STORAGE_CLOSURE.md) | `packages/server/src/artifact-mcp-registration.test.ts` | `ee72f5d4faf80c380474d64fdb33628eb631899e` |
+| S4 deterministic text-index primitive | [Issue #34 S4 primitive evidence](ISSUE_34_S4_TEXT_INDEX_SPIKE.md) | `packages/server/src/artifact-text-index.test.ts` | `7a592731fbf41a75f20a1f90b0fb27898d04be11` |
 
 ## Unmerged candidate evidence
 
-| Candidate | Coordinate/evidence source | What it may support | Open limits |
-| --- | --- | --- | --- |
-| Issue #34 S4 deterministic text-index spike | [Draft PR #51](https://github.com/jryski/Supabase_user_MCP/pull/51), pre-rebase reviewed head `52037d40f2336f4444746d85a7c6c8f6ea505372` | Pure in-memory UTF-8 line and Markdown ATX-heading index primitive | S2/S3 dependencies are merged; candidate remains draft and must be rebased onto current `main`, rerun through exact-head CI, and freshly reviewed before merge consideration |
+There is no unmerged candidate at this documentation coordinate. The remaining S4 integration/demo
+must connect the deterministic primitive to the bounded S2/S3 seam and exercise one approved
+synthetic Markdown artifact before S4 can be called complete.
 
-Issue #34 S4 deterministic Markdown text indexing is the next dependency-ready stage.
+Issue #34 S4 bounded integration and synthetic Markdown demonstration is the next dependency-ready
+stage.
 
 Green CI on a draft coordinate proves only that the named workflow passed for that source.
 It does not merge the code, satisfy independent review, authorize deployment, or establish
