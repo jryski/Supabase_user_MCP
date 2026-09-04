@@ -1,8 +1,9 @@
 # Development Guide
 
-**Status:** Implemented through the accepted experimental local-stdio M2 path and deterministic S1b
-artifact chunk/Merkle calibration. Production, hosted, remote, write, and inspector deployment
-profiles remain unsupported.
+**Status:** Implemented through the experimental local-stdio M2 path and merged issue #34 S0
+through S4 synthetic/local artifact inspection. S5a exact search and acknowledged
+receipt-journal behavior exist only on the current draft candidate until merged. Production,
+hosted, remote, canonical-write, semantic/vector, and private-data profiles remain unsupported.
 
 ## Engineering posture
 
@@ -79,10 +80,14 @@ The read-only server accepts no command arguments. It requires
 └── README.md
 ```
 
-Only directories required by completed or active milestones are created. M0 through the synthetic
-M2 read path and issue #34 S0/S1/S1b foundations are represented in the current repository. The
-next gate is S2 fixed read-only inspection; later writes, remote access, and fleet profiles are not
-implemented.
+Only directories required by completed or active milestones are created. M0 through M2 are
+implemented for the experimental local synthetic profile. Issue #34 S0 through S4 are merged.
+S5a exact search and acknowledged receipt-journal behavior are present only on the current
+draft candidate until merged. Default CLI/stdio remains exactly three memory tools; artifact
+capabilities require injected dependencies and are not activated by default. Live
+caller-context Storage adaptation and a durable evidence backend remain separate later gates.
+Remote access, canonical writes, semantic/vector behavior, production deployment, and private
+data remain unsupported.
 
 ## Configuration principles
 
