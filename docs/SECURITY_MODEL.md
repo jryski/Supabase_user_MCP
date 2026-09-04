@@ -1,7 +1,8 @@
 # Security Model
 
-- **Status:** Mixed — accepted invariants, merged M0–M2 controls, and proposed later controls
-- **Last reviewed:** 2026-08-30
+- **Status:** Mixed — accepted invariants, merged M0–M2 controls, unmerged candidate S5a
+  evidence boundary, and proposed later controls
+- **Last reviewed:** 2026-09-04
 
 ## Objective
 
@@ -252,6 +253,27 @@ ID. The storage is private and append-only to ordinary principals.
 
 Audit retention, access, and deletion rules must be explicitly configured for the host
 application's legal and privacy requirements.
+
+## Candidate S5a operational-evidence boundary
+
+This section describes the unmerged S5a candidate on
+[PR #58](https://github.com/jryski/Supabase_user_MCP/pull/58). It is not merged evidence and
+does not broaden the capability table or claim production support.
+
+Artifact reads and exact search remain read capabilities. The receipt-journal append is an
+operational-evidence write, not an artifact, memory, or canonical-domain write. A receipt is
+evidence and never bearer authorization. Current principal, client, and capability evaluation
+remains required for every operation.
+
+Source-bound MCP returns are gated on one digest-matching append acknowledgement.
+Pre-resolution and exact-version-null unavailable outcomes create no source receipt and no
+append. Journal failure returns the fixed redacted `INTERNAL_ERROR`. Timeout or abort
+suppresses late receipt and event forwarding.
+
+The repository defines only an injected journal interface and synthetic acknowledgements. This
+candidate adds no persistent journal backend, hosted Storage adapter, `service_role`, signed
+URL, generic listing, semantic/vector search, ingest, publication, canonical write, private
+data, or production deployment.
 
 ## Security verification
 

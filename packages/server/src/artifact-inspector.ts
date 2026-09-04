@@ -16,6 +16,9 @@ import {
   ArtifactReadRangeInputSchema,
   type ArtifactReadRangeOutput,
   ArtifactReadRangeOutputSchema,
+  ArtifactSearchExactInputSchema,
+  type ArtifactSearchExactOutput,
+  ArtifactSearchExactOutputSchema,
   ArtifactStatInputSchema,
   type ArtifactStatOutput,
   ArtifactStatOutputSchema,
@@ -26,6 +29,7 @@ import {
   MAX_ARTIFACT_RESPONSE_BYTES,
   MAX_INLINE_CHUNK_HASHES,
   MAX_RANGE_BYTES,
+  MAX_SEARCH_QUERY_LENGTH,
   MAX_VERIFIED_CHUNKS_PER_READ,
   publicArtifactInspectionUnavailable,
 } from '@supabase-user-mcp/contracts';
@@ -61,16 +65,18 @@ import {
  * This module is a pure TypeScript implementation seam. It performs no
  * network, filesystem, Storage, database, or Edge access itself -- every
  * byte and every registry fact it uses comes through the two injected
- * dependencies (`resolveAuthorizedArtifact`, `readVersionedRange`) plus a
- * deterministic clock (`now`). It registers no MCP tool and deploys
- * nothing; see `docs/evidence/ISSUE_34_S2_FIXED_INSPECTOR.md` for the
- * S2 base and `docs/evidence/ISSUE_34_S4_MARKDOWN_INTEGRATION.md` for the
- * bounded line/heading integration claim limits.
+ * exact-version dependencies (`resolveAuthorizedArtifact`, `readVersionedRange`) plus a
+ * deterministic clock (`now`). It deploys nothing; see
+ * `docs/evidence/ISSUE_34_S2_FIXED_INSPECTOR.md` for the S2 base,
+ * `docs/evidence/ISSUE_34_S4_MARKDOWN_INTEGRATION.md` for the bounded
+ * line/heading integration, and
+ * `docs/evidence/ISSUE_34_S5_EXACT_SEARCH_RECEIPT_JOURNAL.md` for S5a exact
+ * search and receipt-journal claim limits.
  *
  * Trusted context (`ArtifactInspectorTrustedContext`) is supplied by the
- * trusted server layer, never derived from tool input. The four operation
+ * trusted server layer, never derived from tool input. The five operation
  * entry points (`artifactStat`, `artifactReadRange`, `artifactReadLines`,
- * `artifactReadHeading`) each accept that context and the raw (untrusted)
+ * `artifactReadHeading`, `artifactSearchExact`) each accept that context and
  * tool input as separate parameters; unknown input fields and any caller-selected
  * principal/client/capability value are rejected by the accepted S0 input
  * schema before any dependency is called.
@@ -99,6 +105,28 @@ const HEX64_PATTERN = /^[0-9a-f]{64}$/;
 const OBJECT_VERSION_REF_PATTERN = /^ov_[A-Za-z0-9_-]+$/;
 const CHUNK_HASHES_REF_PATTERN = /^chr_[A-Za-z0-9_-]+$/;
 
+function encodeUnicodeScalarValueString(value: string): Uint8Array | null {
+  for (let index = 0; index < value.length; index += 1) {
+    const codeUnit = value.charCodeAt(index);
+    if (codeUnit >= 0xd800 && codeUnit <= 0xdbff) {
+      const nextCodeUnit = value.charCodeAt(index + 1);
+      if (!(nextCodeUnit >= 0xdc00 && nextCodeUnit <= 0xdfff)) return null;
+      index += 1;
+    } else if (codeUnit >= 0xdc00 && codeUnit <= 0xdfff) {
+      return null;
+    }
+  }
+
+  const bytes = new TextEncoder().encode(value);
+  let decoded: string;
+  try {
+    decoded = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(bytes);
+  } catch {
+    return null;
+  }
+  return decoded === value ? bytes : null;
+}
+
 /** This module's own fixed deterministic-profile identity, bound into every
  * receipt's `analyzerProfileVersion`. S2 performs no semantic analysis and
  * defines no per-media-type analyzer version of its own. */
@@ -108,6 +136,7 @@ export const ARTIFACT_INSPECTOR_PROFILE_VERSION = 'artifact-inspector-s2-0.1' as
  * are S2-specific (not part of the S0 contract's own exported ceilings). */
 export const MAX_COVERING_FETCH_BYTES = 16_384;
 export const MAX_LINE_SOURCE_SCAN_BYTES = 262_144;
+export const MAX_EXACT_SEARCH_SOURCE_BYTES = 8_192;
 
 const SUPPORTED_LINE_MEDIA_TYPES = Object.freeze(['text/plain', 'text/markdown'] as const);
 type SupportedLineMediaType = (typeof SUPPORTED_LINE_MEDIA_TYPES)[number];
@@ -498,7 +527,11 @@ function validateManifestConsistency(manifest: ArtifactChunkManifest): void {
 
 type ResolveOutcome =
   | { readonly kind: 'unavailable' }
-  | { readonly kind: 'internal_error' }
+  | {
+      readonly kind: 'internal_error';
+      readonly integrityFailure?: true;
+      readonly record?: AuthorizedArtifactRecord;
+    }
   | {
       readonly kind: 'ok';
       readonly record: AuthorizedArtifactRecord;
@@ -523,9 +556,13 @@ async function resolveArtifact(
     if (isArtifactExpired(record.expiresAt, nowIso)) {
       return { kind: 'unavailable' };
     }
-    const manifest = buildManifestFromRecord(record);
-    validateManifestConsistency(manifest);
-    return { kind: 'ok', record, manifest };
+    try {
+      const manifest = buildManifestFromRecord(record);
+      validateManifestConsistency(manifest);
+      return { kind: 'ok', record, manifest };
+    } catch {
+      return { kind: 'internal_error', integrityFailure: true, record };
+    }
   } catch {
     return { kind: 'internal_error' };
   }
@@ -648,6 +685,23 @@ function buildHeadingReceipt(
     requestedHeadingId,
     returnedRange,
     returnedByteSha256,
+  });
+}
+
+function buildSearchReceipt(
+  options: ReceiptOptions,
+  queryLength: number,
+  maxHits: number,
+  returnedHits: ReadonlyArray<{
+    readonly returnedRange: { readonly offset: number; readonly length: number };
+    readonly returnedByteSha256: string;
+  }>,
+): ArtifactInspectionReceipt {
+  return buildReceiptBase(options, {
+    operation: 'artifact_search_exact',
+    queryLength,
+    maxHits,
+    returnedHits: [...returnedHits],
   });
 }
 
@@ -1568,11 +1622,246 @@ export async function artifactReadHeading(
 }
 
 // ---------------------------------------------------------------------------
+// artifact_search_exact
+// ---------------------------------------------------------------------------
+
+export async function artifactSearchExact(
+  dependencies: ArtifactInspectorDependencies,
+  context: ArtifactInspectorTrustedContext,
+  rawInput: unknown,
+): Promise<ArtifactSearchExactOutput> {
+  const startedAtMs = performance.now();
+  let runtimeContext: ArtifactInspectorTrustedContext | null = null;
+  const emit = (
+    resultClass: 'success' | ArtifactInspectionErrorCode,
+    byteCounts?: ArtifactInspectorOperationalEvent['byteCounts'],
+  ) => {
+    emitEventSafely(dependencies, {
+      operation: 'artifact_search_exact',
+      resultClass,
+      ...(runtimeContext?.requestCorrelationId === undefined
+        ? {}
+        : { requestCorrelationId: runtimeContext.requestCorrelationId }),
+      elapsedMs: Math.max(0, performance.now() - startedAtMs),
+      ...(byteCounts === undefined ? {} : { byteCounts }),
+    });
+  };
+
+  const input = ArtifactSearchExactInputSchema.safeParse(rawInput);
+  if (!input.success) {
+    emit('INVALID_REQUEST');
+    return createArtifactInspectionError('INVALID_REQUEST');
+  }
+  const { artifactId, query, maxHits } = input.data;
+  const queryBytes = encodeUnicodeScalarValueString(query);
+  if (queryBytes === null || queryBytes.byteLength > MAX_SEARCH_QUERY_LENGTH) {
+    emit('INVALID_REQUEST');
+    return createArtifactInspectionError('INVALID_REQUEST');
+  }
+
+  runtimeContext = validateRuntimeContext(context);
+  if (runtimeContext === null) {
+    emit('INTERNAL_ERROR');
+    return createArtifactInspectionError('INTERNAL_ERROR');
+  }
+  const nowIso = readClockIso(dependencies);
+  if (nowIso === null) {
+    emit('INTERNAL_ERROR');
+    return createArtifactInspectionError('INTERNAL_ERROR');
+  }
+
+  const resolved = await resolveArtifact(dependencies, runtimeContext, artifactId, nowIso);
+  if (resolved.kind === 'unavailable') {
+    emit('RESOURCE_UNAVAILABLE');
+    return publicArtifactInspectionUnavailable('missing');
+  }
+  if (resolved.kind === 'internal_error') {
+    const errorClass = resolved.integrityFailure === true ? 'INTEGRITY_FAILURE' : 'INTERNAL_ERROR';
+    if (errorClass === 'INTEGRITY_FAILURE' && resolved.record !== undefined) {
+      emitReceiptSafely(
+        dependencies,
+        buildSearchReceipt(
+          {
+            context: runtimeContext,
+            record: resolved.record,
+            artifactId,
+            recordedAt: nowIso,
+            errorClass,
+          },
+          queryBytes.byteLength,
+          maxHits,
+          [],
+        ),
+      );
+    }
+    emit(errorClass);
+    return createArtifactInspectionError(errorClass);
+  }
+
+  const receiptOptions: ReceiptOptions = {
+    context: runtimeContext,
+    record: resolved.record,
+    artifactId,
+    recordedAt: nowIso,
+  };
+  const failClosed = (errorClass: ArtifactInspectionErrorCode) => {
+    emitReceiptSafely(
+      dependencies,
+      buildSearchReceipt({ ...receiptOptions, errorClass }, queryBytes.byteLength, maxHits, []),
+    );
+    emit(errorClass);
+    return errorClass === 'RESOURCE_UNAVAILABLE'
+      ? publicArtifactInspectionUnavailable('missing')
+      : createArtifactInspectionError(errorClass);
+  };
+
+  const { record, manifest } = resolved;
+  if (!isSupportedLineMediaType(record.mediaType)) return failClosed('UNSUPPORTED');
+  if (record.byteLength === 0) return failClosed('RESOURCE_UNAVAILABLE');
+  if (record.byteLength > MAX_EXACT_SEARCH_SOURCE_BYTES) {
+    return failClosed('RESPONSE_LIMIT_EXCEEDED');
+  }
+  if (record.chunkCount > MAX_VERIFIED_CHUNKS_PER_READ) {
+    return failClosed('RESPONSE_LIMIT_EXCEEDED');
+  }
+
+  let rawReadResult: unknown;
+  try {
+    rawReadResult = await dependencies.readVersionedRange(
+      runtimeContext,
+      record.internalLocator,
+      record.objectVersionRef,
+      0,
+      record.byteLength,
+    );
+  } catch {
+    return failClosed('INTERNAL_ERROR');
+  }
+  if (rawReadResult === null) {
+    emit('RESOURCE_UNAVAILABLE');
+    return publicArtifactInspectionUnavailable('missing');
+  }
+  const readResult = parseReadResult(rawReadResult);
+  if (readResult === null) return failClosed('INTERNAL_ERROR');
+  if (
+    readResult.objectVersionRef !== record.objectVersionRef ||
+    readResult.bytes.byteLength !== record.byteLength
+  ) {
+    return failClosed('INTEGRITY_FAILURE');
+  }
+  if (!verifyArtifactSourceManifest(readResult.bytes, manifest)) {
+    return failClosed('INTEGRITY_FAILURE');
+  }
+
+  let textIndex: ArtifactTextIndex;
+  try {
+    textIndex = buildArtifactTextIndex(readResult.bytes, record.mediaType);
+  } catch (error) {
+    return failClosed(mapArtifactTextIndexError(error));
+  }
+
+  const verifiedChunks = buildAndVerifyCoveringChunks(
+    manifest,
+    0,
+    manifest.chunkCount - 1,
+    (chunkIndex) => {
+      const chunk = chunkAt(manifest, chunkIndex);
+      return readResult.bytes.subarray(chunk.byteStart, chunk.byteStart + chunk.byteLength);
+    },
+  );
+  if (verifiedChunks === null) return failClosed('INTEGRITY_FAILURE');
+  if (verifiedChunks.length !== manifest.chunkCount) return failClosed('INTEGRITY_FAILURE');
+
+  const sourceBuffer = Buffer.from(readResult.bytes);
+  const queryBuffer = Buffer.from(queryBytes);
+  const snippetSha256 = createHash('sha256').update(queryBuffer).digest('hex');
+  const hits: Array<{
+    matchRange: { offset: number; length: number };
+    snippetRange: { offset: number; length: number };
+    snippetSha256: string;
+    lineNumber: number;
+    snippet: string;
+    contentTrust: 'untrusted';
+  }> = [];
+  let searchOffset = 0;
+  let lineIndex = 0;
+  while (
+    hits.length < maxHits &&
+    searchOffset <= sourceBuffer.byteLength - queryBuffer.byteLength
+  ) {
+    const matchOffset = sourceBuffer.indexOf(queryBuffer, searchOffset);
+    if (matchOffset < 0) break;
+    while (
+      lineIndex + 1 < textIndex.lines.length &&
+      definedAt(textIndex.lines[lineIndex + 1]).byteStart <= matchOffset
+    ) {
+      lineIndex += 1;
+    }
+    const line = definedAt(textIndex.lines[lineIndex]);
+    const range = { offset: matchOffset, length: queryBytes.byteLength };
+    hits.push({
+      matchRange: range,
+      snippetRange: { ...range },
+      snippetSha256,
+      lineNumber: line.lineNumber,
+      snippet: query,
+      contentTrust: 'untrusted',
+    });
+    searchOffset = matchOffset + queryBuffer.byteLength;
+  }
+
+  const returnedByteSha256 = createHash('sha256').update(sourceBuffer).digest('hex');
+  const candidate = {
+    ok: true as const,
+    hits,
+    integrity: {
+      requestedRange: { kind: 'search_exact' as const, queryLength: queryBytes.byteLength },
+      verifiedCoveringChunkRange: {
+        startChunkIndex: 0,
+        endChunkIndex: manifest.chunkCount - 1,
+      },
+      returnedRange: { offset: 0, length: record.byteLength },
+      chunkSize: record.chunkSize,
+      chunkCount: record.chunkCount,
+      verifiedChunks,
+      merkleRoot: record.merkleRoot,
+      returnedByteSha256,
+      sourceSha256: record.sourceSha256,
+      contentTrust: 'untrusted' as const,
+    },
+  };
+  if (artifactInspectionResponseByteLength(null, candidate) > MAX_ARTIFACT_RESPONSE_BYTES) {
+    return failClosed('RESPONSE_LIMIT_EXCEEDED');
+  }
+  const validated = ArtifactSearchExactOutputSchema.safeParse(candidate);
+  if (!validated.success) return failClosed('INTERNAL_ERROR');
+  const receiptHits = hits.map((hit) => ({
+    returnedRange: { ...hit.snippetRange },
+    returnedByteSha256: hit.snippetSha256,
+  }));
+  if (
+    !emitReceiptSafely(
+      dependencies,
+      buildSearchReceipt(receiptOptions, queryBytes.byteLength, maxHits, receiptHits),
+    )
+  ) {
+    emit('INTERNAL_ERROR', { requested: queryBytes.byteLength, covering: record.byteLength });
+    return createArtifactInspectionError('INTERNAL_ERROR');
+  }
+  emit('success', {
+    requested: queryBytes.byteLength,
+    covering: record.byteLength,
+    returned: hits.reduce((total, hit) => total + hit.snippetRange.length, 0),
+  });
+  return deepFreeze(validated.data);
+}
+
+// ---------------------------------------------------------------------------
 // Facade
 // ---------------------------------------------------------------------------
 
 /**
- * Binds one immutable `dependencies` bundle to the four bounded operations. The
+ * Binds one immutable `dependencies` bundle to the five bounded operations. The
  * returned functions hold no mutable state of their own -- every call
  * receives its own trusted context and its own raw input, so concurrent,
  * independent calls never share mutable state.
@@ -1587,6 +1876,8 @@ export function createArtifactInspector(dependencies: ArtifactInspectorDependenc
       artifactReadLines(dependencies, context, rawInput),
     artifactReadHeading: (context: ArtifactInspectorTrustedContext, rawInput: unknown) =>
       artifactReadHeading(dependencies, context, rawInput),
+    artifactSearchExact: (context: ArtifactInspectorTrustedContext, rawInput: unknown) =>
+      artifactSearchExact(dependencies, context, rawInput),
   };
 }
 export type ArtifactInspector = ReturnType<typeof createArtifactInspector>;

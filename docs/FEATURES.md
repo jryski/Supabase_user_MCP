@@ -255,15 +255,22 @@ Merged foundations:
 - S4 bounded synthetic/local integration: the exported deterministic text index is rebuilt in memory
   after each verified read, S2 lines use canonical indexed geometry, `artifact_read_heading` is the
   fourth fixed optional artifact tool, and one hardcoded Markdown artifact passes the real MCP SDK
-  seam including fenced-heading denial and proof/receipt checks.
+  seam including fenced-heading denial and proof/receipt checks; and
+- S5a deterministic exact search and receipt custody: raw UTF-8 byte matching is case-sensitive,
+  non-normalizing, ordered, non-overlapping, bounded to one at-most-8,192-byte fully verified source,
+  and returns no total count; optional registration exposes five artifact tools and requires an
+  acknowledged append-only `artifact-receipt-journal/0.1` before every source-bound MCP return.
 
-S4 is complete only for deterministic in-memory line/heading integration and that fixed synthetic
-demo. Indexes are not persisted, published, or generated at ingest. Default CLI/stdio startup remains
-the exact three memory tools because optional artifact registration requires injected dependencies. No
-caller may select a bucket, object path, URL, origin, method, schema, table, RPC, parser, or privileged
-credential. No live adapter, ingest persistence, derived publication, Edge/hosted deployment,
-Storage/database mutation, signed URL, `service_role`, listing, semantic analysis, write, private-data,
-or production-readiness claim is made. S5 exact search and durable operational adoption are next.
+S5a is complete only for synthetic/local exact search and the receipt-journal interface. The journal
+acknowledgement is internal evidence, not output or authorization; current policy evaluation remains
+required. The repository provides no persistent journal backend or live Storage/network adapter.
+Default CLI/stdio startup remains exactly three memory tools because optional artifact registration
+requires injected authorization, byte-read, and journal dependencies. No caller may select a bucket,
+object path, URL, origin, method, schema, table, RPC, parser, or privileged credential. Live S5
+operational adoption remains gated on approving a real adapter and durable evidence backend, and S6
+semantic summaries do not start. No semantic/vector search, ingest, derived publication, Edge/hosted
+deployment, Storage/database mutation, signed URL, `service_role`, listing, canonical write, private
+data, or production-readiness claim is made.
 
 ### Principal lifecycle
 

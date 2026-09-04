@@ -1,7 +1,7 @@
 # Evidence Index
 
 - **Status:** Active index of merged evidence and unmerged candidates
-- **Last reviewed:** 2026-09-01
+- **Last reviewed:** 2026-09-04
 
 This index maps public claims to exact artifacts. A commit in the merged table means the
 named artifact is present on `main`; it does not prove a larger milestone or deployment.
@@ -35,11 +35,26 @@ Draft candidates are listed separately and must not be described as merged or ac
 
 ## Unmerged candidate evidence
 
-There is no unmerged candidate at this documentation coordinate. S4 is complete only for the
-synthetic/local deterministic per-read line/heading integration and the fixed synthetic Markdown SDK
-demo recorded above.
+The current unmerged candidate is [PR #58](https://github.com/jryski/Supabase_user_MCP/pull/58).
+It records synthetic/local S5a exact search and acknowledged receipt-journal behavior only.
+See [Issue #34 S5a evidence](ISSUE_34_S5_EXACT_SEARCH_RECEIPT_JOURNAL.md). Reproduction
+surfaces are the `artifact-inspector`, `artifact-mcp-registration`, and
+`artifact-receipt-journal` tests:
 
-Issue #34 S5 exact search and durable operational adoption is the next dependency-ready stage.
+- `packages/server/src/artifact-inspector.test.ts`
+- `packages/server/src/artifact-mcp-registration.test.ts`
+- `packages/server/src/artifact-receipt-journal.test.ts`
+
+No merged S5a coordinate exists until Jesse accepts and merges that pull request. The
+reviewed implementation coordinate before this documentation repair was
+`41e197b2fd1f71111dd670364e69b44cbc98ec5c`. Verify the live PR head before relying on the
+candidate. This index does not treat the documentation-repair commit as an immutable
+coordinate; the final exact head is recorded externally in the PR and, after merge, in
+this evidence index.
+
+S4 remains complete on `main` only for the synthetic/local deterministic per-read
+line/heading integration and the fixed synthetic Markdown SDK demo recorded above. Live S5
+operational adoption is the later gate; S5a exact search itself is not that gate.
 
 Green CI on a draft coordinate proves only that the named workflow passed for that source.
 It does not merge the code, satisfy independent review, authorize deployment, or establish
