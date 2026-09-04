@@ -1,7 +1,7 @@
 # Security Model
 
-- **Status:** Mixed — accepted invariants, merged M0–M2 controls, unmerged candidate S5a
-  evidence boundary, and proposed later controls
+- **Status:** Mixed — accepted invariants, merged M0–M2 and S5a controls, and proposed later
+  controls
 - **Last reviewed:** 2026-09-04
 
 ## Objective
@@ -254,11 +254,12 @@ ID. The storage is private and append-only to ordinary principals.
 Audit retention, access, and deletion rules must be explicitly configured for the host
 application's legal and privacy requirements.
 
-## Candidate S5a operational-evidence boundary
+## S5a operational-evidence boundary
 
-This section describes the unmerged S5a candidate on
-[PR #58](https://github.com/jryski/Supabase_user_MCP/pull/58). It is not merged evidence and
-does not broaden the capability table or claim production support.
+This section describes the synthetic/local S5a boundary merged through
+[PR #58](https://github.com/jryski/Supabase_user_MCP/pull/58) at
+`526c42c01f1e861664fd155c4110a7a6a6d41302`. It does not broaden the capability table or
+claim production support.
 
 Artifact reads and exact search remain read capabilities. The receipt-journal append is an
 operational-evidence write, not an artifact, memory, or canonical-domain write. A receipt is
@@ -270,10 +271,10 @@ Pre-resolution and exact-version-null unavailable outcomes create no source rece
 append. Journal failure returns the fixed redacted `INTERNAL_ERROR`. Timeout or abort
 suppresses late receipt and event forwarding.
 
-The repository defines only an injected journal interface and synthetic acknowledgements. This
-candidate adds no persistent journal backend, hosted Storage adapter, `service_role`, signed
-URL, generic listing, semantic/vector search, ingest, publication, canonical write, private
-data, or production deployment.
+The repository defines only an injected journal interface and synthetic acknowledgements. S5a
+adds no persistent journal backend, hosted Storage adapter, `service_role`, signed URL, generic
+listing, semantic/vector search, ingest, publication, canonical write, private data, or
+production deployment.
 
 ## Security verification
 
