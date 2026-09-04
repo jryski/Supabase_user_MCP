@@ -1,9 +1,9 @@
 # Development Guide
 
 **Status:** Implemented through the experimental local-stdio M2 path and merged issue #34 S0
-through S4 synthetic/local artifact inspection. S5a exact search and acknowledged
-receipt-journal behavior exist only on the current draft candidate until merged. Production,
-hosted, remote, canonical-write, semantic/vector, and private-data profiles remain unsupported.
+through S5a synthetic/local artifact inspection, exact search, and acknowledged receipt-journal
+behavior. Production, hosted, remote, canonical-write, semantic/vector, and private-data profiles
+remain unsupported.
 
 ## Engineering posture
 
@@ -81,11 +81,10 @@ The read-only server accepts no command arguments. It requires
 ```
 
 Only directories required by completed or active milestones are created. M0 through M2 are
-implemented for the experimental local synthetic profile. Issue #34 S0 through S4 are merged.
-S5a exact search and acknowledged receipt-journal behavior are present only on the current
-draft candidate until merged. Default CLI/stdio remains exactly three memory tools; artifact
-capabilities require injected dependencies and are not activated by default. Live
-caller-context Storage adaptation and a durable evidence backend remain separate later gates.
+implemented for the experimental local synthetic profile. Issue #34 S0 through S5a are merged.
+Default CLI/stdio remains exactly three memory tools; artifact capabilities require injected
+dependencies and are not activated by default. Live caller-context Storage adaptation and a
+durable evidence backend remain separate later gates.
 Remote access, canonical writes, semantic/vector behavior, production deployment, and private
 data remain unsupported.
 
