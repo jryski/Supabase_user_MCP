@@ -7,7 +7,7 @@ fail() { printf '[m4-remote-oauth] FAIL: %s\n' "$1" >&2; exit 1; }
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$PROJECT_ROOT"
 export SUPABASE_DISABLE_TELEMETRY=1
-export PATH="/home/ubuntu/.nvm/versions/node/v22.20.0/bin:${PATH}"
+export PATH="${PROJECT_ROOT}/node_modules/.bin:${PATH}"
 
 HEAD_SHA="$(git rev-parse HEAD)"
 TREE_SHA="$(git rev-parse 'HEAD^{tree}')"
