@@ -10,8 +10,9 @@ Supabase User MCP is an independent, security-first data-plane MCP server for ap
 
 > [!WARNING]
 > This repository is still pre-release. The experimental local-stdio, read-only, synthetic-only
-> user-context path is implemented and accepted on `main`; production deployment, remote OAuth,
-> writes, hosted artifact inspection, and privileged credentials remain unsupported. Do not connect
+> user-context path is implemented and accepted on `main`. An experimental local remote HTTP +
+> OAuth 2.1 lab profile exists on this branch; hosted live OAuth, production deployment, writes,
+> hosted artifact inspection, and privileged credentials remain unsupported. Do not connect
 > this project to production data merely because the local and CI acceptance suites are green.
 
 ## Why this exists
@@ -123,6 +124,12 @@ and the executable environment-only stdio/operator package merged through
 read-only stdio server; `npm run start:compatibility` retains the no-data M0 probe. Exact-head and
 post-merge Build, M2, Markdown, and Links checks passed. This is an experimental local-development
 profile, not a production or hosted deployment claim.
+
+An experimental local remote HTTP + OAuth 2.1 profile (`npm run start:remote`,
+`npm run test:remote-oauth`) validates JWKS verification, dual resource binding, PKCE, and live
+access-token revocation inside the disposable loopback lab. The inbound MCP bearer is not forwarded
+to the Data API; dispatch is fail-closed until a supported separate downstream credential exists.
+Downstream credential and hosted live OAuth remain unmet. This is not completion of issue #62.
 
 The intended local path is:
 

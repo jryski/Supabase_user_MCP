@@ -6,7 +6,8 @@
   "license": "Apache-2.0",
   "type": "module",
   "bin": {
-    "supabase-user-mcp": "./dist/cli.js"
+    "supabase-user-mcp": "./dist/cli.js",
+    "supabase-user-mcp-remote": "./dist/remote-http-cli.js"
   },
   "exports": {
     ".": {
@@ -19,6 +20,7 @@
   ],
   "dependencies": {
     "@modelcontextprotocol/server": "2.0.0",
-    "@supabase-user-mcp/contracts": "0.0.0"
+    "@supabase-user-mcp/contracts": "0.0.0",
+    "jose": "6.2.9"
   }
 }
