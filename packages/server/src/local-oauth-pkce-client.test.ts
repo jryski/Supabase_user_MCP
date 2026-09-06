@@ -43,13 +43,14 @@ describe('local OAuth PKCE client helpers', () => {
         fetch: fetchImpl,
       }),
     ).resolves.toEqual({ kind: 'pending', authorizationId: AUTH_ID });
-    expect(String(fetchImpl.mock.calls[0]?.[0])).toBe(
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    expect(String(fetchImpl.mock.calls.flat()[0])).toBe(
       `${AUTH}/auth/v1/oauth/authorizations/${AUTH_ID}`,
     );
   });
 
   it('binds the user on GET then approves with redirect_url', async () => {
-    const fetchImpl = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+    const fetchImpl = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
       const url = String(input);
       if (init?.method === 'POST' && url.endsWith('/consent')) {
         expect(JSON.parse(String(init.body))).toEqual({ action: 'approve' });
@@ -82,7 +83,7 @@ describe('local OAuth PKCE client helpers', () => {
   });
 
   it('binds the user on GET then denies consent', async () => {
-    const fetchImpl = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+    const fetchImpl = vi.fn(async (_input: string | URL | Request, init?: RequestInit) => {
       if (init?.method === 'POST') {
         expect(JSON.parse(String(init.body))).toEqual({ action: 'deny' });
         return jsonResponse(200, {
