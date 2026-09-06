@@ -1,6 +1,6 @@
 BEGIN;
 CREATE EXTENSION IF NOT EXISTS pgtap WITH SCHEMA extensions;
-SELECT extensions.plan(12);
+SELECT extensions.plan(11);
 
 SELECT extensions.ok(
   not (select prosecdef from pg_proc p join pg_namespace n on n.oid = p.pronamespace
