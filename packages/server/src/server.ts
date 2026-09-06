@@ -20,7 +20,7 @@ import { createMemorySearch } from './memory-search.js';
 import type { ReadToolGovernancePolicy, ReadToolOperationalEvent } from './read-tool-governor.js';
 
 export const SERVER_NAME = 'supabase-user-mcp';
-export const SERVER_VERSION = '0.0.0';
+export const SERVER_VERSION = '0.1.0-alpha.1';
 export const TARGET_PROTOCOL_VERSION = '2026-07-28';
 
 export interface ReadOnlyServerOptions {

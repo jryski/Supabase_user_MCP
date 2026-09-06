@@ -14,6 +14,10 @@ Supabase User MCP is an independent, security-first data-plane MCP server for ap
 > writes, hosted artifact inspection, and privileged credentials remain unsupported. Do not connect
 > this project to production data merely because the local and CI acceptance suites are green.
 
+The [`v0.1.0-alpha.1` release candidate](docs/releases/v0.1.0-alpha.1.md) packages the
+accepted local principal-bound read path. Remote HTTP and Supabase OAuth 2.1 remain a separately
+gated next profile under [issue #60](https://github.com/jryski/Supabase_user_MCP/issues/60).
+
 ## Why this exists
 
 Supabase's hosted MCP server is a developer control-plane tool. Supabase User MCP explores the complementary **application data-plane** problem:

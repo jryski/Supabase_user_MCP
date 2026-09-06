@@ -78,8 +78,12 @@ const compatibilityToolListing = {
 } as const;
 
 describe('official upstream StreamTransport compatibility seam', () => {
-  it('preserves the complete fixed tool listing and successful call result', async () => {
+  it('advertises the exact alpha release identity with the fixed tool contract', async () => {
     await withClient(createServer(), async (client) => {
+      expect(client.getServerVersion()).toEqual({
+        name: 'supabase-user-mcp',
+        version: '0.1.0-alpha.1',
+      });
       expect(await client.listTools()).toEqual({ tools: [compatibilityToolListing] });
 
       const result = await client.callTool({

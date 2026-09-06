@@ -1,6 +1,6 @@
 {
   "name": "supabase-user-mcp-workspace",
-  "version": "0.0.0",
+  "version": "0.1.0-alpha.1",
   "private": true,
   "description": "Security-first, user-scoped Supabase data-plane MCP reference implementation",
   "license": "Apache-2.0",
