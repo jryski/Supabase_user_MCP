@@ -194,45 +194,26 @@ localDescribe('local GoTrue PKCE + remote MCP HTTP', () => {
       redirectUri: REDIRECT,
     });
     const otherToken = await completePkce(env('M4_ALICE_TOKEN'), otherClient.clientId);
-    const otherHandlerDenied = await handler(
-      new Request(RESOURCE, {
-        method: 'POST',
-        headers: { Authorization: `Bearer ${otherToken}`, Accept: 'application/json' },
-        body: JSON.stringify({
-          jsonrpc: '2.0',
-          id: 1,
-          method: 'initialize',
-          params: {
-            protocolVersion: '2026-07-28',
-            capabilities: {},
-            clientInfo: { name: 'denied-client', version: '0.0.0' },
-          },
-        }),
-      }),
+    const deniedTransport = new StreamableHTTPClientTransport(new URL(RESOURCE), {
+      fetch: async (input, init) => handler(new Request(input, init)),
+      authProvider: { token: async () => otherToken },
+    });
+    const deniedClient = new Client(
+      { name: 'm4-other-client', version: '0.0.0' },
+      { capabilities: {} },
     );
-    expect([401, 200].includes(otherHandlerDenied.status)).toBe(true);
-    if (otherHandlerDenied.status === 200) {
-      const deniedTransport = new StreamableHTTPClientTransport(new URL(RESOURCE), {
-        fetch: async (input, init) => handler(new Request(input, init)),
-        authProvider: { token: async () => otherToken },
+    try {
+      await deniedClient.connect(deniedTransport);
+      const denied = await deniedClient.callTool({
+        name: 'memory_get',
+        arguments: { id: 'mem_01JTESTALPHA000000000001' },
       });
-      const deniedClient = new Client(
-        { name: 'm4-other-client', version: '0.0.0' },
-        { capabilities: {} },
-      );
-      try {
-        await deniedClient.connect(deniedTransport);
-        const denied = await deniedClient.callTool({
-          name: 'memory_get',
-          arguments: { id: 'mem_01JTESTALPHA000000000001' },
-        });
-        expect(denied.structuredContent).toMatchObject({
-          ok: false,
-          error: { code: 'RESOURCE_UNAVAILABLE' },
-        });
-      } finally {
-        await Promise.allSettled([deniedClient.close(), deniedTransport.close()]);
-      }
+      expect(denied.structuredContent).toMatchObject({
+        ok: false,
+        error: { code: 'RESOURCE_UNAVAILABLE' },
+      });
+    } finally {
+      await Promise.allSettled([deniedClient.close(), deniedTransport.close()]);
     }
 
     const bobToken = await completePkce(env('M4_BOB_TOKEN'), client.clientId);
