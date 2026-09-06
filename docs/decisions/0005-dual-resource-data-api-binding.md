@@ -75,7 +75,8 @@ Accept Option A for the **experimental local** remote HTTP profile:
 ### Negative
 
 - Local GoTrue tokens need the in-lab hook to carry the MCP resource.
-- Hosted JWKS/asymmetric signing and live third-party MCP clients are not exercised.
+- Hosted/project JWKS and live third-party MCP clients are not exercised. Local GoTrue ES256
+  JWKS verification is exercised in the disposable lab.
 
 ## Revisit when
 

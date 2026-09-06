@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 
+import { exportJWK, generateKeyPair, SignJWT } from 'jose';
 import { describe, expect, it } from 'vitest';
 
 import { DATA_API_AUDIENCE, LOCAL_LAB_MCP_RESOURCE_URI } from '@supabase-user-mcp/contracts';
@@ -234,5 +235,42 @@ describe('remote access-token verifier', () => {
     await expect(verifier.verifyAccessToken(token)).rejects.toMatchObject({
       denialClass: 'revoked_access_token',
     });
+  });
+
+  it('verifies ES256 tokens through JWKS rather than HMAC', async () => {
+    const { publicKey, privateKey } = await generateKeyPair('ES256', { extractable: true });
+    const jwk = await exportJWK(publicKey);
+    const kid = 'lab-es256';
+    const jwksUrl = new URL(`${ISSUER}/.well-known/jwks.json`);
+    const issuedAt = Math.floor(Date.now() / 1000);
+    const token = await new SignJWT({
+      role: 'authenticated',
+      aud: [DATA_API_AUDIENCE, RESOURCE],
+      resource: RESOURCE,
+      client_id: CLIENT,
+      session_id: randomUUID(),
+    })
+      .setProtectedHeader({ alg: 'ES256', typ: 'JWT', kid })
+      .setIssuer(ISSUER)
+      .setSubject(PRINCIPAL)
+      .setIssuedAt(issuedAt)
+      .setExpirationTime(issuedAt + 3_600)
+      .sign(privateKey);
+    const hmacDenial = await denialOf(token);
+    expect(hmacDenial).toBe('invalid_signature');
+    const verifier = createRemoteAccessTokenVerifier({
+      issuer: ISSUER,
+      resourceUri: RESOURCE,
+      signingKey: { kind: 'jwks', jwksUrl },
+      revocationAuthority: { inspectAccessToken: async () => 'active' },
+      fetch: async (input) => {
+        expect(String(input)).toBe(jwksUrl.href);
+        return new Response(JSON.stringify({ keys: [{ ...jwk, kid, alg: 'ES256', use: 'sig' }] }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        });
+      },
+    });
+    await expect(verifier.verifyAccessToken(token)).resolves.toMatchObject({ clientId: CLIENT });
   });
 });

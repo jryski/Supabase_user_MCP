@@ -23,7 +23,6 @@ const requiredEnvironment = [
   'M4_SUPABASE_URL',
   'M4_PUBLISHABLE_KEY',
   'M4_SERVICE_ROLE_KEY',
-  'M4_JWT_SECRET',
   'M4_ALICE_TOKEN',
   'M4_BOB_TOKEN',
   'M4_DB_URL',
@@ -134,6 +133,10 @@ localDescribe('local GoTrue PKCE + remote MCP HTTP', () => {
     seedGrantedClient(client.clientId, ALICE);
 
     const accessToken = await completePkce(env('M4_ALICE_TOKEN'), client.clientId);
+    const header = JSON.parse(
+      Buffer.from(accessToken.split('.')[0] ?? '', 'base64url').toString('utf8'),
+    ) as { alg?: string };
+    expect(header.alg).toBe('ES256');
     const claims = decodeJwtPayloadClaims(accessToken);
     expect(audienceValues(claims.aud)).toEqual(expect.arrayContaining(['authenticated', RESOURCE]));
     expect(claims.resource).toBe(RESOURCE);
@@ -146,7 +149,7 @@ localDescribe('local GoTrue PKCE + remote MCP HTTP', () => {
       issuer,
       supabaseOrigin: VIRTUAL_ORIGIN,
       publishableKey: env('M4_PUBLISHABLE_KEY'),
-      signingKey: { kind: 'hmac', secret: new TextEncoder().encode(env('M4_JWT_SECRET')) },
+      signingKey: { kind: 'jwks', jwksUrl: new URL(`${issuer}/.well-known/jwks.json`) },
       revocationAuthority: createGoTrueSessionRevocationAuthority({
         origin: VIRTUAL_ORIGIN,
         publishableKey: env('M4_PUBLISHABLE_KEY'),
