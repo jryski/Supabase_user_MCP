@@ -38,7 +38,7 @@ export class RemoteHttpStartupError extends Error {
 }
 
 export class RemoteHttpIngressError extends Error {
-  readonly code: 'payload_too_large' | 'deadline_exceeded' | 'disconnected';
+  readonly code: 'payload_too_large' | 'deadline_exceeded' | 'disconnected' | 'invalid_request';
 
   constructor(code: RemoteHttpIngressError['code']) {
     super(code);
@@ -182,33 +182,41 @@ export async function readBoundedIncomingMessage(
       fail(new RemoteHttpIngressError('disconnected'));
     };
     const onData = (chunk: string | Buffer): void => {
-      if (settled) return;
-      if (now() > deadlineAt) {
-        fail(new RemoteHttpIngressError('deadline_exceeded'));
-        return;
+      try {
+        if (settled) return;
+        if (now() > deadlineAt) {
+          fail(new RemoteHttpIngressError('deadline_exceeded'));
+          return;
+        }
+        const buf = typeof chunk === 'string' ? Buffer.from(chunk) : chunk;
+        if (total + buf.byteLength > maxBytes) {
+          fail(new RemoteHttpIngressError('payload_too_large'));
+          return;
+        }
+        chunks.push(buf);
+        total += buf.byteLength;
+      } catch {
+        fail(new RemoteHttpIngressError('invalid_request'));
       }
-      const buf = typeof chunk === 'string' ? Buffer.from(chunk) : chunk;
-      if (total + buf.byteLength > maxBytes) {
-        fail(new RemoteHttpIngressError('payload_too_large'));
-        return;
-      }
-      chunks.push(buf);
-      total += buf.byteLength;
     };
     const onEnd = (): void => {
       if (settled) return;
-      const method = req.method ?? 'GET';
-      const body =
-        method === 'GET' || method === 'HEAD' || total === 0
-          ? undefined
-          : new Uint8Array(Buffer.concat(chunks));
-      succeed(
-        new Request(`https://${host}${req.url}`, {
-          method,
-          headers: headerRecord(req),
-          ...(body === undefined ? {} : { body }),
-        }),
-      );
+      try {
+        const method = req.method ?? 'GET';
+        const body =
+          method === 'GET' || method === 'HEAD' || total === 0
+            ? undefined
+            : new Uint8Array(Buffer.concat(chunks));
+        succeed(
+          new Request(`https://${host}${req.url}`, {
+            method,
+            headers: headerRecord(req),
+            ...(body === undefined ? {} : { body }),
+          }),
+        );
+      } catch {
+        fail(new RemoteHttpIngressError('invalid_request'));
+      }
     };
     const onError = (): void => {
       fail(new RemoteHttpIngressError('disconnected'));
@@ -253,6 +261,41 @@ function ingressStatus(error: RemoteHttpIngressError): number {
   return 400;
 }
 
+export async function handleRemoteHttpConnection(
+  req: IncomingMessage,
+  res: ServerResponse,
+  handler: RemoteHttpHandler,
+): Promise<void> {
+  try {
+    const request = await readBoundedIncomingMessage(req);
+    const response = await handler(request);
+    const headers: Record<string, string> = {};
+    response.headers.forEach((value, key) => {
+      headers[key] = value;
+    });
+    if (!res.headersSent) {
+      res.writeHead(response.status, headers);
+      res.end(Buffer.from(await response.arrayBuffer()));
+    }
+  } catch (error) {
+    if (error instanceof RemoteHttpIngressError) {
+      if (!res.headersSent) {
+        res.writeHead(ingressStatus(error), {
+          'content-type': 'application/json',
+          connection: 'close',
+        });
+        res.end(JSON.stringify({ error: error.code }));
+      }
+      req.resume();
+      return;
+    }
+    if (!res.headersSent) {
+      res.writeHead(500, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ error: 'server_error' }));
+    }
+  }
+}
+
 export function listenRemoteHttpHandler(
   handler: RemoteHttpHandler,
   port: number,
@@ -261,34 +304,7 @@ export function listenRemoteHttpHandler(
   const server = createServer((req: IncomingMessage, res: ServerResponse) => {
     req.on('error', () => {});
     res.on('error', () => {});
-    void (async () => {
-      try {
-        const request = await readBoundedIncomingMessage(req);
-        const response = await handler(request);
-        const headers: Record<string, string> = {};
-        response.headers.forEach((value, key) => {
-          headers[key] = value;
-        });
-        res.writeHead(response.status, headers);
-        res.end(Buffer.from(await response.arrayBuffer()));
-      } catch (error) {
-        if (error instanceof RemoteHttpIngressError) {
-          if (!res.headersSent) {
-            res.writeHead(ingressStatus(error), {
-              'content-type': 'application/json',
-              connection: 'close',
-            });
-            res.end(JSON.stringify({ error: error.code }));
-          }
-          req.resume();
-          return;
-        }
-        if (!res.headersSent) {
-          res.writeHead(500, { 'content-type': 'application/json' });
-          res.end(JSON.stringify({ error: 'server_error' }));
-        }
-      }
-    })();
+    void handleRemoteHttpConnection(req, res, handler);
   });
   server.listen(port, '127.0.0.1');
   return server;

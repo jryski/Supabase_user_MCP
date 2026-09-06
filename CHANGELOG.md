@@ -20,7 +20,8 @@ the first public package is released.
   binding, PKCE S256, exact redirects, live access-token revocation, and request-scoped MCP
   servers. Hosted live OAuth remains unmet. See [ADR-0005](docs/decisions/0005-dual-resource-data-api-binding.md)
 - Experimental local remote HTTP + OAuth 2.1 scaffolding: JWKS verification, PKCE S256, exact
-  redirects, live access-token revocation, bounded ingress, and fail-closed Data API dispatch.
+  redirects, live access-token revocation, bounded ingress (including TRACE/malformed-Host
+  Request-construction failures), and fail-closed Data API dispatch.
   Dual audience does not authorize MCP bearer passthrough. Downstream credential unresolved; hosted
   live OAuth unmet. See [ADR-0005](docs/decisions/0005-dual-resource-data-api-binding.md)
   and [issue 62 evidence](docs/evidence/ISSUE_62_REMOTE_OAUTH_HTTP.md).

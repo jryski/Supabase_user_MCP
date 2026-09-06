@@ -25,7 +25,9 @@
 - Local CLI `[auth.oauth_server]` with DCR disabled. Live GoTrue tokens are ES256 and verified
   via JWKS, not HMAC `JWT_SECRET`.
 - HTTP ingress rejects oversized chunked bodies (including 4MiB without Content-Length),
-  exact-ceiling overflow, deadline expiry, and disconnect before handler execution.
+  exact-ceiling overflow, deadline expiry, disconnect, forbidden methods such as TRACE, and
+  malformed Host values before handler execution. Request-construction failures settle through
+  the same reader cleanup path and return a bounded 4xx instead of an uncaught callback exception.
 - Real local GoTrue PKCE/consent (GET authorization details then POST consent `redirect_url`).
   This fixture obtains a token and posts it to the in-process handler. It does **not** prove a
   supported MCP client performing discovery/PKCE/consent UI itself.
