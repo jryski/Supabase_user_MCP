@@ -9,6 +9,7 @@ import {
 import {
   ACCESS_TOKEN_REVOCATION_LATENCY_BOUND_MS,
   DATA_API_AUDIENCE,
+  RemoteOAuthClientIdSchema,
   RemotePrincipalIdSchema,
   audienceValues,
   canonicalizeResourceUri,
@@ -46,6 +47,7 @@ export interface AccessTokenRevocationAuthority {
 export interface RemoteAccessTokenVerifierConfig {
   readonly issuer: string;
   readonly resourceUri: string;
+  readonly expectedClientId: string;
   readonly signingKey: RemoteTokenSigningKey;
   readonly revocationAuthority: AccessTokenRevocationAuthority;
   readonly now?: () => number;
@@ -116,6 +118,7 @@ export function createRemoteAccessTokenVerifier(
 ): OAuthTokenVerifier {
   const canonicalIssuer = canonicalizeResourceUri(config.issuer);
   const canonicalResource = canonicalizeResourceUri(config.resourceUri);
+  const expectedClientId = RemoteOAuthClientIdSchema.parse(config.expectedClientId);
   const resourceUrl = new URL(canonicalResource);
   const now = config.now ?? Date.now;
   const hmacKey = config.signingKey.kind === 'hmac' ? config.signingKey.secret : undefined;
@@ -193,6 +196,9 @@ export function createRemoteAccessTokenVerifier(
       const clientId = extractServerControlledClientId(claims);
       if (clientId === undefined) {
         fail('missing_client_id');
+      }
+      if (clientId !== expectedClientId) {
+        fail('wrong_client');
       }
       const sessionId = claims.session_id;
       if (typeof sessionId !== 'string' || !UUID_SESSION.test(sessionId)) {

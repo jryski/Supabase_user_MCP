@@ -32,6 +32,7 @@ async function denialOf(
   const verifier = createRemoteAccessTokenVerifier({
     issuer: ISSUER,
     resourceUri: RESOURCE,
+    expectedClientId: CLIENT,
     signingKey: { kind: 'hmac', secret: SYNTHETIC_OAUTH_HMAC_SECRET },
     revocationAuthority: extras?.authority ?? {
       inspectAccessToken: async () => 'active',
@@ -71,6 +72,7 @@ describe('remote access-token verifier', () => {
     const verifier = createRemoteAccessTokenVerifier({
       issuer: ISSUER,
       resourceUri: RESOURCE,
+      expectedClientId: CLIENT,
       signingKey: { kind: 'hmac', secret: SYNTHETIC_OAUTH_HMAC_SECRET },
       revocationAuthority: {
         inspectAccessToken: async () => 'active',
@@ -164,6 +166,17 @@ describe('remote access-token verifier', () => {
     expect(await denialOf(token)).toBe('missing_client_id');
   });
 
+  it('rejects a verified client_id that is not the configured pre-registered client', async () => {
+    const token = await mintSyntheticAccessToken({
+      issuer: ISSUER,
+      resourceUri: RESOURCE,
+      principalId: PRINCIPAL,
+      clientId: 'smp-other-client',
+      sessionId: randomUUID(),
+    });
+    expect(await denialOf(token)).toBe('wrong_client');
+  });
+
   it('enforces access-token revocation separately from grant/refresh and remaining exp', async () => {
     const lab = new SyntheticOAuthLab({
       issuer: ISSUER,
@@ -177,6 +190,7 @@ describe('remote access-token verifier', () => {
     const verifier = createRemoteAccessTokenVerifier({
       issuer: ISSUER,
       resourceUri: RESOURCE,
+      expectedClientId: CLIENT,
       signingKey: { kind: 'hmac', secret: SYNTHETIC_OAUTH_HMAC_SECRET },
       revocationAuthority: lab,
     });
@@ -223,6 +237,7 @@ describe('remote access-token verifier', () => {
     const verifier = createRemoteAccessTokenVerifier({
       issuer: ISSUER,
       resourceUri: RESOURCE,
+      expectedClientId: CLIENT,
       signingKey: { kind: 'hmac', secret: SYNTHETIC_OAUTH_HMAC_SECRET },
       now: () => nowMs,
       revocationAuthority: {
@@ -261,6 +276,7 @@ describe('remote access-token verifier', () => {
     const verifier = createRemoteAccessTokenVerifier({
       issuer: ISSUER,
       resourceUri: RESOURCE,
+      expectedClientId: CLIENT,
       signingKey: { kind: 'jwks', jwksUrl },
       revocationAuthority: { inspectAccessToken: async () => 'active' },
       fetch: async (input) => {

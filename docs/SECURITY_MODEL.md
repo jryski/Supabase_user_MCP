@@ -216,8 +216,10 @@ security boundary. Database state is.
 - Require `aal2` for configured high-consequence human review actions.
 - Never log access or refresh tokens.
 
-The remote HTTP token chain has an experimental local dual-binding implementation
-([ADR-0005](decisions/0005-dual-resource-data-api-binding.md)). Hosted live OAuth remains unmet.
+The remote HTTP profile verifies MCP tokens locally and keeps Data API dispatch fail-closed
+until a supported separate downstream credential exists
+([ADR-0005](decisions/0005-dual-resource-data-api-binding.md)). Dual audience is not passthrough.
+Hosted live OAuth remains unmet.
 Never authorize using `user_metadata`.
 
 ## Query and exfiltration controls

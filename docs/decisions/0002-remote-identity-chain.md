@@ -1,6 +1,6 @@
 # ADR-0002: Remote identity and downstream token chain
 
-- **Status:** Accepted blocking decision; local dual-binding mechanism recorded in ADR-0005
+- **Status:** Accepted blocking decision; downstream credential remains unresolved (see ADR-0005)
 - **Date:** 2026-08-17
 - **Owners:** Maintainers
 - **Milestone:** M0 decision; M4 implementation
@@ -84,8 +84,9 @@ implement production-ready remote HTTP support until options A–C are tested an
 accepted with a complete token trace.
 
 Options A–C remained unresolved in this ADR. [ADR-0005](0005-dual-resource-data-api-binding.md)
-accepts Option A dual-binding for the experimental local remote HTTP profile only. Hosted live
-OAuth and production remote deployment remain blocked.
+rejects Option A as MCP bearer passthrough and keeps remote data dispatch fail-closed until a
+supported separate downstream credential is proven. Hosted live OAuth and production remote
+deployment remain blocked.
 
 ## Required validation artifact
 
