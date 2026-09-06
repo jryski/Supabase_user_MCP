@@ -67,7 +67,8 @@ the disposable lab only.
    no listener on Site URL).
 4. Token exchange. Custom Access Token Hook sets `aud=["authenticated", MCP resource]` and
    `resource`.
-5. MCP `requireBearerAuth` verifies dual binding, client id, and live `GET /auth/v1/user`.
+5. MCP `requireBearerAuth` verifies the ES256 signature via GoTrue JWKS, dual binding, client
+   id, and live `GET /auth/v1/user`. HMAC `JWT_SECRET` is not used for live Auth tokens.
 6. Request-scoped Data API calls use the same JWT against the fixed origin.
 7. Logout of that access token yields 401 on the next MCP request while `exp` is still in
    the future.
