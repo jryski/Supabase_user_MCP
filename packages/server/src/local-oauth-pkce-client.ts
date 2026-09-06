@@ -44,6 +44,105 @@ export function extractAuthorizationCode(location: string): string {
   return code;
 }
 
+export function extractConsentRedirectUrl(payload: unknown): string {
+  if (payload === null || typeof payload !== 'object' || !('redirect_url' in payload)) {
+    throw new Error('oauth consent response did not include redirect_url');
+  }
+  const redirectUrl = (payload as { redirect_url?: unknown }).redirect_url;
+  if (typeof redirectUrl !== 'string' || redirectUrl.length === 0) {
+    throw new Error('oauth consent response did not include redirect_url');
+  }
+  return redirectUrl;
+}
+
+type FetchLike = typeof globalThis.fetch;
+
+function resolveFetch(fetchImpl: FetchLike | undefined): FetchLike {
+  return fetchImpl ?? globalThis.fetch;
+}
+
+function userAuthHeaders(input: {
+  readonly userAccessToken: string;
+  readonly projectPublishableKey: string;
+  readonly json?: boolean;
+}): Record<string, string> {
+  return {
+    Authorization: `Bearer ${input.userAccessToken}`,
+    apikey: input.projectPublishableKey,
+    ...(input.json === true ? { 'Content-Type': 'application/json' } : {}),
+  };
+}
+
+export type LocalAuthorizationDetails =
+  | { readonly kind: 'pending'; readonly authorizationId: string }
+  | { readonly kind: 'redirect'; readonly redirectUrl: string };
+
+export async function getLocalAuthorizationDetails(input: {
+  readonly authOrigin: string;
+  readonly authorizationId: string;
+  readonly userAccessToken: string;
+  readonly projectPublishableKey: string;
+  readonly fetch?: FetchLike;
+}): Promise<LocalAuthorizationDetails> {
+  const response = await resolveFetch(input.fetch)(
+    new URL(`/auth/v1/oauth/authorizations/${input.authorizationId}`, input.authOrigin),
+    {
+      method: 'GET',
+      headers: userAuthHeaders(input),
+    },
+  );
+  if (!response.ok) {
+    throw new Error(`get authorization details failed: ${response.status}`);
+  }
+  const body: unknown = await response.json();
+  if (
+    typeof body === 'object' &&
+    body !== null &&
+    'redirect_url' in body &&
+    typeof (body as { redirect_url?: unknown }).redirect_url === 'string' &&
+    (body as { redirect_url: string }).redirect_url.length > 0
+  ) {
+    return { kind: 'redirect', redirectUrl: (body as { redirect_url: string }).redirect_url };
+  }
+  if (
+    typeof body === 'object' &&
+    body !== null &&
+    'authorization_id' in body &&
+    typeof (body as { authorization_id?: unknown }).authorization_id === 'string' &&
+    (body as { authorization_id: string }).authorization_id.length > 0
+  ) {
+    return {
+      kind: 'pending',
+      authorizationId: (body as { authorization_id: string }).authorization_id,
+    };
+  }
+  throw new Error('authorization details were incomplete');
+}
+
+async function postLocalAuthorizationConsent(input: {
+  readonly authOrigin: string;
+  readonly authorizationId: string;
+  readonly userAccessToken: string;
+  readonly projectPublishableKey: string;
+  readonly action: 'approve' | 'deny';
+  readonly fetch?: FetchLike;
+}): Promise<{ readonly status: number; readonly location: string | null; readonly body: unknown }> {
+  const response = await resolveFetch(input.fetch)(
+    new URL(`/auth/v1/oauth/authorizations/${input.authorizationId}/consent`, input.authOrigin),
+    {
+      method: 'POST',
+      headers: userAuthHeaders({ ...input, json: true }),
+      body: JSON.stringify({ action: input.action }),
+    },
+  );
+  const location = response.headers.get('location');
+  if (response.status === 303 && location) {
+    return { status: response.status, location, body: null };
+  }
+  const body: unknown = await response.json().catch(() => null);
+  return { status: response.status, location, body };
+}
+
 export async function registerLocalPublicOAuthClient(input: {
   readonly authOrigin: string;
   readonly serviceRoleKey: string;
@@ -120,31 +219,22 @@ export async function approveLocalAuthorization(input: {
   readonly authorizationId: string;
   readonly userAccessToken: string;
   readonly projectPublishableKey: string;
+  readonly fetch?: FetchLike;
 }): Promise<{ readonly code: string; readonly location: string }> {
-  const response = await fetch(
-    new URL(`/auth/v1/oauth/authorizations/${input.authorizationId}/consent`, input.authOrigin),
-    {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${input.userAccessToken}`,
-        apikey: input.projectPublishableKey,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({ action: 'approve' }),
-    },
-  );
-  const location = response.headers.get('location');
-  if (response.status === 303 && location) {
-    return { code: extractAuthorizationCode(location), location };
+  // Official consent UI binds the user on GET /oauth/authorizations/{id} before POST /consent.
+  const details = await getLocalAuthorizationDetails(input);
+  if (details.kind === 'redirect') {
+    return { code: extractAuthorizationCode(details.redirectUrl), location: details.redirectUrl };
   }
-  if (!response.ok) {
-    throw new Error(`approve authorization failed: ${response.status}`);
+  const posted = await postLocalAuthorizationConsent({ ...input, action: 'approve' });
+  if (posted.status === 303 && posted.location) {
+    return { code: extractAuthorizationCode(posted.location), location: posted.location };
   }
-  const body = (await response.json()) as { redirect_to?: string };
-  if (!body.redirect_to) {
-    throw new Error('approve authorization did not return redirect_to');
+  if (posted.status < 200 || posted.status >= 300) {
+    throw new Error(`approve authorization failed: ${posted.status}`);
   }
-  return { code: extractAuthorizationCode(body.redirect_to), location: body.redirect_to };
+  const location = extractConsentRedirectUrl(posted.body);
+  return { code: extractAuthorizationCode(location), location };
 }
 
 export async function denyLocalAuthorization(input: {
@@ -152,21 +242,15 @@ export async function denyLocalAuthorization(input: {
   readonly authorizationId: string;
   readonly userAccessToken: string;
   readonly projectPublishableKey: string;
+  readonly fetch?: FetchLike;
 }): Promise<void> {
-  const response = await fetch(
-    new URL(`/auth/v1/oauth/authorizations/${input.authorizationId}/consent`, input.authOrigin),
-    {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${input.userAccessToken}`,
-        apikey: input.projectPublishableKey,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({ action: 'deny' }),
-    },
-  );
-  if (!response.ok && response.status !== 303) {
-    throw new Error(`deny authorization failed: ${response.status}`);
+  const details = await getLocalAuthorizationDetails(input);
+  if (details.kind === 'redirect') {
+    throw new Error('authorization already redirected; cannot deny');
+  }
+  const posted = await postLocalAuthorizationConsent({ ...input, action: 'deny' });
+  if (posted.status !== 303 && (posted.status < 200 || posted.status >= 300)) {
+    throw new Error(`deny authorization failed: ${posted.status}`);
   }
 }
 

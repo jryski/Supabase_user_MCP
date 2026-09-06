@@ -24,11 +24,14 @@
 - Local CLI `[auth.oauth_server]` with DCR disabled and an in-lab Custom Access Token Hook
   that adds the MCP resource only when a top-level OAuth `client_id` is present. Password-grant
   M2 tokens are unchanged.
+- MCP TypeScript SDK `Client` + `StreamableHTTPClientTransport` against the local resource after
+  a real GoTrue PKCE/consent round trip. External MCP clients remain unmet.
 
 ## What this evidence does not cover
 
 - Hosted Supabase projects, real human login, tunnels, or public listeners.
-- External MCP clients (Claude Desktop, Cursor, etc.) against a public origin.
+- External MCP clients (Claude Desktop, Cursor, etc.) against a public origin. The local lab
+  uses the official MCP TypeScript client only.
 - Asymmetric JWKS verification against a hosted GoTrue.
 - Production readiness or a stable remote deployment.
 
@@ -58,8 +61,10 @@ the disposable lab only.
 
 1. Pre-register a public client (`token_endpoint_auth_method=none`, exact redirect).
 2. Authorization code + PKCE S256 + `resource=https://mcp.loopback.invalid/mcp`.
-3. Consent via `POST /auth/v1/oauth/authorizations/{id}/consent` using the fixture user JWT
-   (no browser UI).
+3. Official consent sequence (same as `@supabase/auth-js` `oauth.getAuthorizationDetails` then
+   `approveAuthorization`): `GET /auth/v1/oauth/authorizations/{id}` binds the fixture user,
+   then `POST .../consent` with `{action:"approve"}` returns `redirect_url` (no browser UI,
+   no listener on Site URL).
 4. Token exchange. Custom Access Token Hook sets `aud=["authenticated", MCP resource]` and
    `resource`.
 5. MCP `requireBearerAuth` verifies dual binding, client id, and live `GET /auth/v1/user`.

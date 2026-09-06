@@ -227,7 +227,8 @@ The exact user experience is deliberately open; the database state machine is no
 - Local Supabase Auth OAuth 2.1 + PKCE with pre-registered public clients.
 - Mandatory dual issuer/resource/`authenticated` audience validation ([ADR-0005](decisions/0005-dual-resource-data-api-binding.md)).
 - Request-scoped Data API credential after MCP dual-binding; no process-global user bearer cache.
-- Hosted live OAuth, tunnels, and public listeners remain unmet.
+- Process-global principal-scoped rate-limit counters survive request-scoped client rebuilds.
+- Hosted live OAuth, tunnels, public listeners, and external MCP clients remain unmet.
 
 ## Governed Artifact Inspection
 
