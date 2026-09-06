@@ -208,8 +208,8 @@ The client-registration strategy for this local profile is pre-registration only
 Registration is disabled. MCP `2026-07-28` deprecates RFC 7591 Dynamic Client Registration in favor of
 Client ID Metadata Documents while retaining backwards compatibility.
 
-This profile is experimental and local-lab only. Hosted live OAuth, tunnels, and public listeners
-remain unmet. See [ADR-0002](decisions/0002-remote-identity-chain.md) and
+This profile is experimental and local-lab only. Hosted live OAuth, tunnels, public listeners,
+and external MCP clients remain unmet. See [ADR-0002](decisions/0002-remote-identity-chain.md) and
 [ADR-0005](decisions/0005-dual-resource-data-api-binding.md).
 
 ## Request lifecycle
