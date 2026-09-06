@@ -87,6 +87,22 @@ function seedGrantedClient(clientId: string, principalId: string): void {
   );
 }
 
+function mintFixtureAccessToken(email: string): string {
+  const token = execFileSync(
+    'npx',
+    ['tsx', 'test/support/mint-m2-token.ts', `${env('M4_SUPABASE_URL')}/auth/v1`, email],
+    {
+      encoding: 'utf8',
+      env: { ...process.env, M2_PUBLISHABLE_KEY: env('M4_PUBLISHABLE_KEY') },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    },
+  ).trim();
+  if (token.length === 0) {
+    throw new Error('fixture session mint failed');
+  }
+  return token;
+}
+
 async function completePkce(userAccessToken: string, clientId: string): Promise<string> {
   const pkce = generateS256PkceChallenge();
   const started = await startLocalAuthorization({
@@ -254,6 +270,9 @@ localDescribe('local GoTrue PKCE + remote MCP HTTP', () => {
 
   it('denies consent and rejects a wrong PKCE verifier', async () => {
     const authOrigin = env('M4_SUPABASE_URL');
+    // Logout of the OAuth access token in the previous test can retire the
+    // password-grant consent session if GoTrue bound them to the same session.
+    const aliceToken = mintFixtureAccessToken('alice.fixture@example.test');
     const client = await registerLocalPublicOAuthClient({
       authOrigin,
       serviceRoleKey: env('M4_SERVICE_ROLE_KEY'),
@@ -273,7 +292,7 @@ localDescribe('local GoTrue PKCE + remote MCP HTTP', () => {
     await denyLocalAuthorization({
       authOrigin,
       authorizationId: started.authorizationId,
-      userAccessToken: env('M4_ALICE_TOKEN'),
+      userAccessToken: aliceToken,
       projectPublishableKey: env('M4_PUBLISHABLE_KEY'),
     });
 
@@ -290,7 +309,7 @@ localDescribe('local GoTrue PKCE + remote MCP HTTP', () => {
     const approved = await approveLocalAuthorization({
       authOrigin,
       authorizationId: approvedStart.authorizationId,
-      userAccessToken: env('M4_ALICE_TOKEN'),
+      userAccessToken: aliceToken,
       projectPublishableKey: env('M4_PUBLISHABLE_KEY'),
     });
     await expect(
