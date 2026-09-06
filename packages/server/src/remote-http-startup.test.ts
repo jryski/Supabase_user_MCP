@@ -1,5 +1,5 @@
 import http from 'node:http';
-import type { IncomingMessage } from 'node:http';
+import type { IncomingMessage, ServerResponse } from 'node:http';
 import { createServer as createNetServer } from 'node:net';
 import type { AddressInfo } from 'node:net';
 import { Readable } from 'node:stream';
@@ -14,6 +14,7 @@ import {
   REMOTE_HTTP_STARTUP_ERROR,
   RemoteHttpIngressError,
   createRemoteHttpHandlerFromEnvironment,
+  handleRemoteHttpConnection,
   listenRemoteHttpHandler,
   readBoundedIncomingMessage,
 } from './remote-http-startup.js';
@@ -71,6 +72,58 @@ async function reservedLoopbackPort(): Promise<number> {
       });
     });
   });
+}
+
+function recordingResponse(): ServerResponse & { readonly body: string } {
+  let body = '';
+  const response = {
+    headersSent: false,
+    statusCode: 0,
+    writeHead(status: number) {
+      response.statusCode = status;
+      response.headersSent = true;
+      return response;
+    },
+    end(chunk?: unknown) {
+      if (typeof chunk === 'string') body = chunk;
+      else if (chunk instanceof Uint8Array) body = Buffer.from(chunk).toString('utf8');
+      return response;
+    },
+    get body() {
+      return body;
+    },
+  };
+  return response as unknown as ServerResponse & { readonly body: string };
+}
+
+async function withProcessExceptionMonitor<T>(
+  run: () => Promise<T>,
+): Promise<{ readonly outcome: PromiseSettledResult<T>; readonly escaped: readonly unknown[] }> {
+  const escaped: unknown[] = [];
+  const onMonitor = (error: unknown): void => {
+    escaped.push(error);
+  };
+  const onRejection = (reason: unknown): void => {
+    escaped.push(reason);
+  };
+  process.on('uncaughtExceptionMonitor', onMonitor);
+  process.on('unhandledRejection', onRejection);
+  try {
+    const outcome = await Promise.allSettled([run()]).then(
+      (results) => results[0] as PromiseSettledResult<T>,
+    );
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    return { outcome, escaped };
+  } finally {
+    process.off('uncaughtExceptionMonitor', onMonitor);
+    process.off('unhandledRejection', onRejection);
+  }
+}
+
+function assertReaderCleanedUp(req: IncomingMessage): void {
+  expect(req.listenerCount('data')).toBe(0);
+  expect(req.listenerCount('end')).toBe(0);
+  expect(req.listenerCount('close')).toBe(0);
 }
 
 describe('remote HTTP startup', () => {
@@ -194,6 +247,62 @@ describe('remote HTTP startup', () => {
     await expect(readBoundedIncomingMessage(destroyed)).rejects.toMatchObject({
       code: 'disconnected',
     });
+  });
+
+  it('rejects TRACE and a malformed Host through the reader cleanup path without an uncaught exception', async () => {
+    const trace = incomingMessage({ chunks: [], method: 'TRACE' });
+    const traced = await withProcessExceptionMonitor(() =>
+      readBoundedIncomingMessage(trace, { deadlineMs: 40 }),
+    );
+    expect(traced.escaped).toEqual([]);
+    expect(traced.outcome).toMatchObject({
+      status: 'rejected',
+      reason: { name: 'RemoteHttpIngressError', code: 'invalid_request' },
+    });
+    assertReaderCleanedUp(trace);
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(traced.escaped).toEqual([]);
+
+    const malformed = incomingMessage({
+      chunks: [],
+      headers: { host: '[invalid' },
+    });
+    const malformedRun = await withProcessExceptionMonitor(() =>
+      readBoundedIncomingMessage(malformed, { deadlineMs: 40 }),
+    );
+    expect(malformedRun.escaped).toEqual([]);
+    expect(malformedRun.outcome).toMatchObject({
+      status: 'rejected',
+      reason: { name: 'RemoteHttpIngressError', code: 'invalid_request' },
+    });
+    assertReaderCleanedUp(malformed);
+  });
+
+  it('returns a bounded 4xx for TRACE and malformed Host without invoking the MCP handler', async () => {
+    let handlerCalls = 0;
+    const handler = async () => {
+      handlerCalls += 1;
+      return new Response(JSON.stringify({ ok: true }), { status: 200 });
+    };
+
+    const traceResponse = recordingResponse();
+    await handleRemoteHttpConnection(
+      incomingMessage({ chunks: [], method: 'TRACE' }),
+      traceResponse,
+      handler,
+    );
+    expect(traceResponse.statusCode).toBe(400);
+    expect(JSON.parse(traceResponse.body)).toEqual({ error: 'invalid_request' });
+
+    const malformedResponse = recordingResponse();
+    await handleRemoteHttpConnection(
+      incomingMessage({ chunks: [], headers: { host: '[invalid' } }),
+      malformedResponse,
+      handler,
+    );
+    expect(malformedResponse.statusCode).toBe(400);
+    expect(JSON.parse(malformedResponse.body)).toEqual({ error: 'invalid_request' });
+    expect(handlerCalls).toBe(0);
   });
 
   it('rejects a 4MiB chunked body at the listener without invoking the MCP handler', async () => {

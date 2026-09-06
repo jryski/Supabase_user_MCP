@@ -114,6 +114,7 @@ export {
 } from './remote-http-profile.js';
 export {
   createRemoteHttpHandlerFromEnvironment,
+  handleRemoteHttpConnection,
   listenRemoteHttpHandler,
   readBoundedIncomingMessage,
   toWebRequest,
