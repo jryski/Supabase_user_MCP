@@ -1,6 +1,6 @@
 {
   "name": "@supabase-user-mcp/server",
-  "version": "0.0.0",
+  "version": "0.1.0-alpha.1",
   "private": true,
   "description": "Reference Supabase User MCP server",
   "license": "Apache-2.0",
@@ -19,6 +19,6 @@
   ],
   "dependencies": {
     "@modelcontextprotocol/server": "2.0.0",
-    "@supabase-user-mcp/contracts": "0.0.0"
+    "@supabase-user-mcp/contracts": "0.1.0-alpha.1"
   }
 }

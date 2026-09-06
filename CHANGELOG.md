@@ -8,6 +8,8 @@ the first public package is released.
 
 ## [Unreleased]
 
+## [0.1.0-alpha.1] - 2026-09-06
+
 ### Added
 
 - Development-ready documentation architecture.

@@ -1,6 +1,6 @@
 {
   "name": "@supabase-user-mcp/contracts",
-  "version": "0.0.0",
+  "version": "0.1.0-alpha.1",
   "private": true,
   "description": "Versioned runtime contracts for Supabase User MCP",
   "license": "Apache-2.0",
