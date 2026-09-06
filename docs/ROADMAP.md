@@ -2,7 +2,7 @@
 
 - **Status:** Active — merged foundations and future evidence gates are distinguished below
 - **Planning horizon:** M0 through v1
-- **Last reviewed:** 2026-09-02
+- **Last reviewed:** 2026-09-06
 
 ## Active execution slice
 
@@ -37,7 +37,7 @@ be deferred as “hardening” when they are part of the product boundary.
 | Reference language and repository shape | Complete | [ADR-0001] |
 | Strict TypeScript workspace and exact dependency lock | Complete | Root workspace and lockfile |
 | MCP `2026-07-28` stdio compatibility spike | Complete | [M0 compatibility evidence] |
-| Remote downstream token and audience chain | Blocked by design review | [ADR-0002] |
+| Remote downstream token and audience chain | Experimental local dual-binding in ADR-0005; hosted live OAuth unmet | [ADR-0005] |
 | Service-agent lifecycle, policy vocabulary, and access matrix | Open | M0 deliverables below |
 
 “Complete” in this table applies only to the named M0 artifact; it is not a product
@@ -73,6 +73,7 @@ readiness claim.
 
 [ADR-0001]: decisions/0001-reference-implementation-language.md
 [ADR-0002]: decisions/0002-remote-identity-chain.md
+[ADR-0005]: decisions/0005-dual-resource-data-api-binding.md
 [Documentation index]: README.md
 [M0 compatibility evidence]: evidence/M0_COMPATIBILITY_SPIKE.md
 
@@ -213,7 +214,8 @@ credential-confusion or transit vulnerability.
 
 ### Dependencies
 
-- Accepted [ADR-0002](decisions/0002-remote-identity-chain.md).
+- Accepted [ADR-0002](decisions/0002-remote-identity-chain.md) stdio-first decision and
+  [ADR-0005](decisions/0005-dual-resource-data-api-binding.md) local dual-binding.
 - Confirmed compatibility between the chosen Supabase Auth behavior and the current MCP
   specification.
 

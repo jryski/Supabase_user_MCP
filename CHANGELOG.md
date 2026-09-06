@@ -10,6 +10,10 @@ the first public package is released.
 
 ### Added
 
+- Experimental local remote HTTP + OAuth 2.1 profile with mandatory dual resource/Data API
+  binding, PKCE S256, exact redirects, live access-token revocation, and request-scoped MCP
+  servers. Hosted live OAuth remains unmet. See [ADR-0005](docs/decisions/0005-dual-resource-data-api-binding.md)
+  and [issue 62 evidence](docs/evidence/ISSUE_62_REMOTE_OAUTH_HTTP.md).
 - Development-ready documentation architecture.
 - Product definition, feature catalog, security model, threat model, and milestone gates.
 - Architecture Decision Record process.

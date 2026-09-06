@@ -1,7 +1,7 @@
 # Evidence Index
 
 - **Status:** Active index of merged evidence and unmerged candidates
-- **Last reviewed:** 2026-09-04
+- **Last reviewed:** 2026-09-06
 
 This index maps public claims to exact artifacts. A commit in the merged table means the
 named artifact is present on `main`; it does not prove a larger milestone or deployment.
@@ -36,8 +36,9 @@ Draft candidates are listed separately and must not be described as merged or ac
 
 ## Unmerged candidate evidence
 
-There is no unmerged candidate at this documentation coordinate. S5a is merged only for the
-synthetic/local exact-search and acknowledged receipt-journal boundary recorded above.
+| Scope | Evidence | Executable seam | Notes |
+| --- | --- | --- | --- |
+| Experimental local remote HTTP + OAuth 2.1 | [Issue #62 evidence](ISSUE_62_REMOTE_OAUTH_HTTP.md) | `packages/server/src/remote-http-profile.test.ts`, `packages/server/src/local-oauth-pkce.e2e.test.ts`, and `npm run test:remote-oauth` | Dual-binding local lab only. Hosted live OAuth unmet. |
 
 Live S5 operational adoption remains gated on an approved caller-context Storage adapter and
 durable evidence backend. S6 semantic summaries have not started.
@@ -61,6 +62,7 @@ npm run check
 npm run policy-lab:test
 npm run test:m2
 npm run test:s1
+npm run test:remote-oauth
 npm run artifact:calibrate
 ```
 

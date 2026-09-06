@@ -1,6 +1,6 @@
 # ADR-0002: Remote identity and downstream token chain
 
-- **Status:** Accepted blocking decision; downstream mechanism unresolved
+- **Status:** Accepted blocking decision; local dual-binding mechanism recorded in ADR-0005
 - **Date:** 2026-08-17
 - **Owners:** Maintainers
 - **Milestone:** M0 decision; M4 implementation
@@ -83,9 +83,9 @@ Ship the first identity-preserving proof as a local stdio profile. Do not claim 
 implement production-ready remote HTTP support until options A–C are tested and one is
 accepted with a complete token trace.
 
-The remote profile remains an explicit M4 gate rather than silently adopting bearer token
-pass-through. This acceptance governs the stdio-first and remote-block decisions only.
-Options A–C remain unresolved and require K3 review; none is promoted by this status.
+Options A–C remained unresolved in this ADR. [ADR-0005](0005-dual-resource-data-api-binding.md)
+accepts Option A dual-binding for the experimental local remote HTTP profile only. Hosted live
+OAuth and production remote deployment remain blocked.
 
 ## Required validation artifact
 
