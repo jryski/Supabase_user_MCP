@@ -38,7 +38,7 @@ Draft candidates are listed separately and must not be described as merged or ac
 
 | Scope | Evidence | Executable seam | Notes |
 | --- | --- | --- | --- |
-| Experimental local remote HTTP + OAuth 2.1 | [Issue #62 evidence](ISSUE_62_REMOTE_OAUTH_HTTP.md) | `packages/server/src/remote-http-profile.test.ts`, `packages/server/src/local-oauth-pkce.e2e.test.ts`, and `npm run test:remote-oauth` | Dual-binding local lab only. Hosted live OAuth unmet. |
+| Experimental local remote HTTP + OAuth 2.1 | [Issue #62 evidence](ISSUE_62_REMOTE_OAUTH_HTTP.md) | `packages/server/src/remote-http-profile.test.ts`, `packages/server/src/local-oauth-pkce.e2e.test.ts`, and `npm run test:remote-oauth` | Fail-closed Data API dispatch. Downstream credential unresolved. Hosted live OAuth unmet. Not #62 completion. |
 
 Live S5 operational adoption remains gated on an approved caller-context Storage adapter and
 durable evidence backend. S6 semantic summaries have not started.

@@ -1,8 +1,11 @@
 import { execFileSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 
-import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
-import { LOCAL_LAB_MCP_RESOURCE_URI, audienceValues } from '@supabase-user-mcp/contracts';
+import {
+  DOWNSTREAM_CREDENTIAL_UNRESOLVED,
+  LOCAL_LAB_MCP_RESOURCE_URI,
+  audienceValues,
+} from '@supabase-user-mcp/contracts';
 import { afterAll, describe, expect, it } from 'vitest';
 
 import { createAuthorizationServerMetadata } from './authorization-server-metadata.js';
@@ -137,7 +140,7 @@ localDescribe('local GoTrue PKCE + remote MCP HTTP', () => {
     registeredClients.length = 0;
   });
 
-  it('completes a real Auth PKCE/consent round trip, dual-binds, and preserves RLS', async () => {
+  it('completes a real Auth PKCE/consent round trip and fail-closes Data API dispatch', async () => {
     const authOrigin = env('M4_SUPABASE_URL');
     const client = await registerLocalPublicOAuthClient({
       authOrigin,
@@ -160,11 +163,21 @@ localDescribe('local GoTrue PKCE + remote MCP HTTP', () => {
     expect(claims.role).toBe('authenticated');
     const issuer = typeof claims.iss === 'string' ? claims.iss : `${authOrigin}/auth/v1`;
 
+    const dataApiPaths: string[] = [];
+    const fetchImpl: typeof globalThis.fetch = async (input, init) => {
+      const requested = new URL(
+        typeof input === 'string' || input instanceof URL ? input : input.url,
+      );
+      if (requested.pathname.startsWith('/rest/v1')) {
+        dataApiPaths.push(requested.pathname);
+        throw new Error('inbound MCP bearer must not reach Data API authorization');
+      }
+      return loopbackFetch(authOrigin)(input, init);
+    };
     const handler = createRemoteHttpProfile({
       resourceUri: RESOURCE,
       issuer,
-      supabaseOrigin: VIRTUAL_ORIGIN,
-      publishableKey: env('M4_PUBLISHABLE_KEY'),
+      expectedClientId: client.clientId,
       signingKey: { kind: 'jwks', jwksUrl: new URL(`${issuer}/.well-known/jwks.json`) },
       revocationAuthority: createGoTrueSessionRevocationAuthority({
         origin: VIRTUAL_ORIGIN,
@@ -173,35 +186,19 @@ localDescribe('local GoTrue PKCE + remote MCP HTTP', () => {
       }),
       authorizationServerMetadata: createAuthorizationServerMetadata(issuer),
       allowInsecureIssuer: true,
-      fetch: loopbackFetch(authOrigin),
+      fetch: fetchImpl,
     });
 
-    const transport = new StreamableHTTPClientTransport(new URL(RESOURCE), {
-      fetch: async (input, init) => handler(new Request(input, init)),
-      authProvider: { token: async () => accessToken },
-    });
-    const mcp = new Client({ name: 'm4-pkce-client', version: '0.0.0' }, { capabilities: {} });
-    try {
-      await mcp.connect(transport);
-      const own = await mcp.callTool({
-        name: 'memory_get',
-        arguments: { id: 'mem_01JTESTALPHA000000000001' },
-      });
-      expect(own.structuredContent).toMatchObject({
-        ok: true,
-        record: { id: 'mem_01JTESTALPHA000000000001', contentTrust: 'untrusted' },
-      });
-      const cross = await mcp.callTool({
-        name: 'memory_get',
-        arguments: { id: 'mem_01JTESTBETA0000000000001' },
-      });
-      expect(cross.structuredContent).toMatchObject({
-        ok: false,
-        error: { code: 'RESOURCE_UNAVAILABLE' },
-      });
-    } finally {
-      await Promise.allSettled([mcp.close(), transport.close()]);
-    }
+    const verified = await handler(
+      new Request(RESOURCE, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${accessToken}`, Accept: 'application/json' },
+        body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize', params: {} }),
+      }),
+    );
+    expect(verified.status).toBe(403);
+    expect(await verified.json()).toEqual({ error: DOWNSTREAM_CREDENTIAL_UNRESOLVED });
+    expect(dataApiPaths).toEqual([]);
 
     const otherClient = await registerLocalPublicOAuthClient({
       authOrigin,
@@ -210,47 +207,16 @@ localDescribe('local GoTrue PKCE + remote MCP HTTP', () => {
       redirectUri: REDIRECT,
     });
     const otherToken = await completePkce(env('M4_ALICE_TOKEN'), otherClient.clientId);
-    const deniedTransport = new StreamableHTTPClientTransport(new URL(RESOURCE), {
-      fetch: async (input, init) => handler(new Request(input, init)),
-      authProvider: { token: async () => otherToken },
-    });
-    const deniedClient = new Client(
-      { name: 'm4-other-client', version: '0.0.0' },
-      { capabilities: {} },
+    const wrongClient = await handler(
+      new Request(RESOURCE, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${otherToken}`, Accept: 'application/json' },
+        body: '{}',
+      }),
     );
-    try {
-      await deniedClient.connect(deniedTransport);
-      const denied = await deniedClient.callTool({
-        name: 'memory_get',
-        arguments: { id: 'mem_01JTESTALPHA000000000001' },
-      });
-      expect(denied.structuredContent).toMatchObject({
-        ok: false,
-        error: { code: 'RESOURCE_UNAVAILABLE' },
-      });
-    } finally {
-      await Promise.allSettled([deniedClient.close(), deniedTransport.close()]);
-    }
-
-    const bobToken = await completePkce(env('M4_BOB_TOKEN'), client.clientId);
-    const bobTransport = new StreamableHTTPClientTransport(new URL(RESOURCE), {
-      fetch: async (input, init) => handler(new Request(input, init)),
-      authProvider: { token: async () => bobToken },
-    });
-    const bobClient = new Client({ name: 'm4-bob', version: '0.0.0' }, { capabilities: {} });
-    try {
-      await bobClient.connect(bobTransport);
-      const bobRead = await bobClient.callTool({
-        name: 'memory_get',
-        arguments: { id: 'mem_01JTESTALPHA000000000001' },
-      });
-      expect(bobRead.structuredContent).toMatchObject({
-        ok: false,
-        error: { code: 'RESOURCE_UNAVAILABLE' },
-      });
-    } finally {
-      await Promise.allSettled([bobClient.close(), bobTransport.close()]);
-    }
+    expect(wrongClient.status).toBe(401);
+    expect(await wrongClient.text()).not.toContain(otherToken);
+    expect(dataApiPaths).toEqual([]);
 
     await logoutLocalSession({
       authOrigin,
@@ -266,6 +232,7 @@ localDescribe('local GoTrue PKCE + remote MCP HTTP', () => {
     );
     expect(revoked.status).toBe(401);
     expect(await revoked.text()).not.toContain(accessToken);
+    expect(dataApiPaths).toEqual([]);
   }, 20_000);
 
   it('denies consent and rejects a wrong PKCE verifier', async () => {

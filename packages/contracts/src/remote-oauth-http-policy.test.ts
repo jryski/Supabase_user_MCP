@@ -4,6 +4,7 @@ import {
   ACCESS_TOKEN_REVOCATION_POLICY,
   DATA_API_AUDIENCE,
   LOCAL_LAB_MCP_RESOURCE_URI,
+  REMOTE_DOWNSTREAM_CREDENTIAL_POLICY,
   REMOTE_IDENTITY_CLAIM_POLICY,
   audienceValues,
   canonicalizeResourceUri,
@@ -27,6 +28,10 @@ describe('remote OAuth/HTTP policy contracts', () => {
     expect(ACCESS_TOKEN_REVOCATION_POLICY.distinctFromGrantRevocation).toBe(true);
     expect(ACCESS_TOKEN_REVOCATION_POLICY.distinctFromRefreshRevocation).toBe(true);
     expect(ACCESS_TOKEN_REVOCATION_POLICY.cache).toBe('none');
+    expect(REMOTE_DOWNSTREAM_CREDENTIAL_POLICY.inboundMcpBearerForwardsToDataApi).toBe(false);
+    expect(REMOTE_DOWNSTREAM_CREDENTIAL_POLICY.dualAudienceDoesNotAuthorizePassthrough).toBe(true);
+    expect(REMOTE_DOWNSTREAM_CREDENTIAL_POLICY.separateDownstreamCredential).toBe('unresolved');
+    expect(REMOTE_DOWNSTREAM_CREDENTIAL_POLICY.failClosedUntilResolved).toBe(true);
   });
 
   it('canonicalizes resource URIs without trailing slash unless the path is significant', () => {

@@ -33,6 +33,16 @@ export const REMOTE_IDENTITY_CLAIM_POLICY = Object.freeze({
   oidcScopesAuthorizeData: false as const,
 });
 
+/** MCP 2026-07-28 forbids forwarding the inbound MCP bearer to an upstream API. */
+export const DOWNSTREAM_CREDENTIAL_UNRESOLVED = 'downstream_credential_unresolved' as const;
+export const REMOTE_DOWNSTREAM_CREDENTIAL_POLICY = Object.freeze({
+  inboundMcpBearerForwardsToDataApi: false as const,
+  dualAudienceDoesNotAuthorizePassthrough: true as const,
+  separateDownstreamCredential: 'unresolved' as const,
+  failClosedUntilResolved: true as const,
+  error: DOWNSTREAM_CREDENTIAL_UNRESOLVED,
+});
+
 export const RemoteCanonicalUriSchema = z
   .string()
   .url()
@@ -81,6 +91,7 @@ export const RemoteTokenDenialClassSchema = z.enum([
   'wrong_role',
   'missing_subject',
   'missing_client_id',
+  'wrong_client',
   'revoked_access_token',
   'revoked_session',
   'revoked_grant',

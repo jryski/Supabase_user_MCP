@@ -115,6 +115,12 @@ export {
 export {
   createRemoteHttpHandlerFromEnvironment,
   listenRemoteHttpHandler,
+  readBoundedIncomingMessage,
+  toWebRequest,
+  OAUTH_CLIENT_ID_ENV,
+  REMOTE_HTTP_INGRESS_DEADLINE_MS,
+  REMOTE_HTTP_INGRESS_MAX_BYTES,
+  RemoteHttpIngressError,
   RemoteHttpStartupError,
   REMOTE_HTTP_STARTUP_ERROR,
 } from './remote-http-startup.js';

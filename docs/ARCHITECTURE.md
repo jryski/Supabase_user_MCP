@@ -1,6 +1,6 @@
 # Architecture
 
-- **Status:** Mixed — local foundation implemented; experimental local remote HTTP in ADR-0005; hosted OAuth unmet
+- **Status:** Mixed — local foundation implemented; remote HTTP data dispatch fail-closed (ADR-0005); hosted OAuth unmet
 - **Last reviewed:** 2026-09-06
 
 Implemented behavior is linked through the [evidence index](evidence/README.md). Target
@@ -49,8 +49,10 @@ code must not create an authorization session that outlives the underlying crede
 
 - **stdio profile:** obtains a Supabase user access token from a protected local
   credential source. MCP HTTP authorization does not apply to stdio.
-- **remote HTTP profile:** experimental local loopback OAuth 2.1 + Streamable HTTP with mandatory
-  dual resource/Data API binding ([ADR-0005](decisions/0005-dual-resource-data-api-binding.md)).
+- **remote HTTP profile:** experimental loopback OAuth 2.1 + Streamable HTTP metadata and JWKS
+  verification. Dual resource binding is required at MCP, but the inbound bearer is not forwarded
+  to the Data API ([ADR-0005](decisions/0005-dual-resource-data-api-binding.md)). Data dispatch is
+  fail-closed until a supported separate downstream credential exists.
   Hosted live OAuth and production listeners remain unmet.
 
 ### Identity verifier

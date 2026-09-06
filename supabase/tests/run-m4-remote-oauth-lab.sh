@@ -89,8 +89,8 @@ SUPABASE_VERSION="$(supabase --version)"
   || fail "repository tree changed during execution"
 [[ -z "$(git status --porcelain --untracked-files=all)" ]] \
   || fail "acceptance worktree changed during execution"
-printf '{"schema":"supabase-user-mcp.m4-remote-oauth.v1","repositorySha":"%s","treeSha":"%s","node":"%s","npm":"%s","supabase":"%s","oauthServer":"local-cli","dynamicClientRegistration":false,"hostedLiveOAuth":"unmet","cases":["local-oauth-server-enabled","pkce-s256-consent-approve","pkce-deny","pkce-wrong-verifier","dual-aud-resource-binding","data-api-rls","same-user-different-client","different-user","access-token-logout-revocation"],"result":"pass"}\n' \
+printf '{"schema":"supabase-user-mcp.m4-remote-oauth.v1","repositorySha":"%s","treeSha":"%s","node":"%s","npm":"%s","supabase":"%s","oauthServer":"local-cli","dynamicClientRegistration":false,"hostedLiveOAuth":"unmet","downstreamCredential":"unresolved","dataDispatch":"fail-closed","cases":["local-oauth-server-enabled","pkce-s256-consent-approve","pkce-deny","pkce-wrong-verifier","dual-aud-resource-binding","es256-jwks-verify","wrong-client-pre-dispatch","access-token-logout-revocation","inbound-bearer-not-forwarded-to-data-api"],"result":"pass"}\n' \
   "$HEAD_SHA" "$TREE_SHA" "$NODE_VERSION" "$NPM_VERSION" "$SUPABASE_VERSION" \
   > "$TMP_DIR/m4-remote-oauth-receipt.json"
 cat "$TMP_DIR/m4-remote-oauth-receipt.json"
-log "PASS: local remote OAuth/HTTP lab complete. Hosted live OAuth remains unmet."
+log "PASS: local PKCE/JWKS lab complete. Downstream Data API credential remains unresolved; remote dispatch is fail-closed. Hosted live OAuth remains unmet."
