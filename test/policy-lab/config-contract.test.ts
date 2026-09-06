@@ -21,6 +21,9 @@ describe('local Supabase policy lab contract', () => {
 
   it('pins the local project and required SQL files', () => {
     expect(read('supabase/config.toml')).toContain('project_id = "supabase-user-mcp-s1"');
+    expect(read('supabase/config.toml')).toContain('[auth.oauth_server]');
+    expect(read('supabase/config.toml')).toContain('allow_dynamic_registration = false');
+    expect(read('supabase/config.toml')).not.toContain('jwt_issuer');
     expect(read('supabase/seed.sql')).toContain('policy_lab.memories');
     expect(read('supabase/tests/database/policy_lab_test.sql')).toContain(
       'CREATE EXTENSION IF NOT EXISTS pgtap',

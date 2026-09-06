@@ -207,6 +207,7 @@ export async function createReadOnlyServer(
     requestId,
     principalId: identity.principalId,
     signal,
+    ...(identity.clientId === undefined ? {} : { clientId: identity.clientId }),
     ...(options.emitOperationalEvent === undefined
       ? {}
       : { emitOperationalEvent: options.emitOperationalEvent }),
