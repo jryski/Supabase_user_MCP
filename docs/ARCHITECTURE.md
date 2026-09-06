@@ -1,7 +1,7 @@
 # Architecture
 
-- **Status:** Mixed — local foundation implemented; remote and write profiles proposed or blocked
-- **Last reviewed:** 2026-09-02
+- **Status:** Mixed — local foundation implemented; experimental local remote HTTP in ADR-0005; hosted OAuth unmet
+- **Last reviewed:** 2026-09-06
 
 Implemented behavior is linked through the [evidence index](evidence/README.md). Target
 components and profiles remain design requirements until their named acceptance gates pass.
@@ -49,9 +49,9 @@ code must not create an authorization session that outlives the underlying crede
 
 - **stdio profile:** obtains a Supabase user access token from a protected local
   credential source. MCP HTTP authorization does not apply to stdio.
-- **remote HTTP profile:** acts as an OAuth protected resource and follows the current
-  MCP authorization specification. This profile remains blocked until ADR-0002 resolves
-  the downstream-token boundary.
+- **remote HTTP profile:** experimental local loopback OAuth 2.1 + Streamable HTTP with mandatory
+  dual resource/Data API binding ([ADR-0005](decisions/0005-dual-resource-data-api-binding.md)).
+  Hosted live OAuth and production listeners remain unmet.
 
 ### Identity verifier
 
@@ -204,14 +204,13 @@ horizontal scaling.
 - Per-principal and per-client rate limits.
 - A standards-compliant downstream credential strategy.
 
-The client-registration strategy is unresolved. MCP `2026-07-28` deprecates RFC 7591 Dynamic
-Client Registration in favor of Client ID Metadata Documents while retaining backwards
-compatibility. Public Supabase MCP guidance still presents dynamic registration as an option.
-ADR-0002 records this as a K3 decision driver rather than silently choosing either path.
+The client-registration strategy for this local profile is pre-registration only; Dynamic Client
+Registration is disabled. MCP `2026-07-28` deprecates RFC 7591 Dynamic Client Registration in favor of
+Client ID Metadata Documents while retaining backwards compatibility.
 
-This profile is blocked until the accepted architecture demonstrates that the credential
-used with Supabase APIs is valid for that resource and is not an impermissible transit of
-the MCP resource token. See [ADR-0002](decisions/0002-remote-identity-chain.md).
+This profile is experimental and local-lab only. Hosted live OAuth, tunnels, and public listeners
+remain unmet. See [ADR-0002](decisions/0002-remote-identity-chain.md) and
+[ADR-0005](decisions/0005-dual-resource-data-api-binding.md).
 
 ## Request lifecycle
 

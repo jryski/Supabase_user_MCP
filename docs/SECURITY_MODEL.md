@@ -216,7 +216,9 @@ security boundary. Database state is.
 - Require `aal2` for configured high-consequence human review actions.
 - Never log access or refresh tokens.
 
-The remote HTTP token chain remains blocked by [ADR-0002](decisions/0002-remote-identity-chain.md).
+The remote HTTP token chain has an experimental local dual-binding implementation
+([ADR-0005](decisions/0005-dual-resource-data-api-binding.md)). Hosted live OAuth remains unmet.
+Never authorize using `user_metadata`.
 
 ## Query and exfiltration controls
 
