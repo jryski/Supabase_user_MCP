@@ -1,5 +1,10 @@
 # Supabase User MCP
 
+Maintained as part of the WIRE SPEED COMPUTING LLC program led by Jesse Ryski.
+[Website](https://www.wirespeedcomputers.com/) |
+[Program guide](https://github.com/WireSpeedComputing/sovereign-ai-os).
+Existing license terms and contributor rights are unchanged.
+
 [![Documentation](https://github.com/jryski/Supabase_user_MCP/actions/workflows/docs.yml/badge.svg)](https://github.com/jryski/Supabase_user_MCP/actions/workflows/docs.yml)
 [![CI](https://github.com/jryski/Supabase_user_MCP/actions/workflows/ci.yml/badge.svg)](https://github.com/jryski/Supabase_user_MCP/actions/workflows/ci.yml)
 [![License: Apache 2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
@@ -80,66 +85,26 @@ Non-negotiable principles:
 
 ## Current state
 
-Current `main` contains the reviewed local foundation and merged principal-bound read path:
+| Area | Accepted scope | Still missing |
+| --- | --- | --- |
+| Memory tools | Local stdio, read-only, synthetic data; three fixed tools under user-context RLS | Production deployment and remote OAuth acceptance |
+| Artifact inspection | Synthetic/local bounded reads, exact search and receipt interfaces | Live Storage adapter, persistent receipt backend and semantic summaries |
+| Release candidate | Alpha.1 package and runtime metadata merged in [PR #65](https://github.com/jryski/Supabase_user_MCP/pull/65) | Publication approval; version metadata is not a published package |
+| Remote access | Work under [draft PR #64](https://github.com/jryski/Supabase_user_MCP/pull/64) | Reviewed separate credentials and complete supported-client authorization evidence |
 
-- strict TypeScript/MCP contracts and exact dependency lock;
-- synthetic local Supabase Auth/JWT + RLS policy laboratory;
-- cross-schema catalog lint for dangerous grants and SECURITY DEFINER review conditions;
-- revocation/audit policy evidence;
-- protected local credential loader and fixed Supabase client seam;
-- bounded `memory_search`, `memory_get`, and `memory_list_recent` factories;
-- verified Auth identity before read-only server registration;
-- exact principal-scoped limiter and operational-event attribution;
-- complete dual-representation JSON-RPC frame and request-ID ceilings;
-- real MCP client -> fixed Data API -> PostgreSQL RLS acceptance;
-- environment-only verified read-only stdio startup plus operator, revoke, and rollback guidance;
-- a synthetic Storage/RLS artifact registry laboratory;
-- the accepted Governed Artifact Inspection S0 capability, receipt, and integrity contracts; and
-- deterministic S1b source-manifest, chunk, and Merkle-proof calibration; and
-- an S2 synthetic/local fixed inspector library for `artifact_stat`, bounded byte ranges, and
-  bounded UTF-8 line reads through injected authorization and immutable-version dependencies; and
-- optional S3–S5a synthetic/local MCP registration for five fixed artifact operations
-  (`artifact_stat`, bounded byte ranges, bounded UTF-8 lines, deterministic Markdown heading reads,
-  and deterministic exact UTF-8 search), a deeply frozen executable Supabase Storage containment
-  manifest, an acknowledged append-only inspection-receipt journal seam, and one fixed synthetic
-  Markdown real-SDK adoption demo.
+The local read path merged through [PR #38](https://github.com/jryski/Supabase_user_MCP/pull/38).
+Official Auth test reuse followed in [PR #45](https://github.com/jryski/Supabase_user_MCP/pull/45);
+environment-only stdio startup and operator guidance followed in
+[PR #46](https://github.com/jryski/Supabase_user_MCP/pull/46).
 
-The consolidated read path merged through
-[PR #38](https://github.com/jryski/Supabase_user_MCP/pull/38) at
-`dd5ba98a00a3b37003554a14200f789fcb233cac`. PR #40's base-binding and E2E-skip repairs are
-absorbed in that tree. Read-only server construction verifies the protected user credential through
-the fixed Supabase Auth user endpoint before registering tools, then supplies the verified principal
-and exact SDK request ID to every governor call. One contracts-owned renderer defines both the
-emitted dual-representation result and complete JSON-RPC byte estimator. The
-[MCP tools specification](https://modelcontextprotocol.io/specification/2026-07-28/server/tools)
-says structured results **SHOULD** also provide serialized JSON text for compatibility; it is not a
-MUST. This implementation retains full dual representation and measures the selected complete frame.
-Unit and transport tests cover exact/one-over byte boundaries, request-ID escaping, hostile-content
-escaping, and bounded denial instead of oversized success. A read-only transport guard closes
-oversized inbound or outbound frames before dispatch/send, including denial paths with hostile
-request IDs. Serialized request IDs are separately capped at 1,024 bytes so bounded errors can echo
-them safely. Exact-head and post-merge Build/M2/Markdown/Links workflows passed.
+The reference path verifies the user's identity before registering tools.
+Reads use fixed Data API/RPC routes, principal-scoped limits and database
+permissions. Responses include structured data and JSON text, with a
+65,536-byte complete-frame ceiling and bounded request IDs.
 
-The experimental local v0.1 pilot is complete. Official Auth test reuse and the authenticated
-PostgREST OpenAPI census merged through [PR #45](https://github.com/jryski/Supabase_user_MCP/pull/45),
-and the executable environment-only stdio/operator package merged through
-[PR #46](https://github.com/jryski/Supabase_user_MCP/pull/46). `npm start` launches the verified
-read-only stdio server; `npm run start:compatibility` retains the no-data M0 probe. Exact-head and
-post-merge Build, M2, Markdown, and Links checks passed. This is an experimental local-development
-profile, not a production or hosted deployment claim.
-
-The intended local path is:
-
-```text
-local Auth/JWT
-  -> strict MCP tool
-  -> fixed Data API/RPC
-  -> RLS
-  -> authorized intersection
-```
-
-Passing CI on a draft head is reproducible test evidence for that coordinate. It is not
-merge, deployment, production-readiness, or security acceptance.
+The [evidence index](docs/evidence/README.md) records the detailed acceptance
+scope. A passing check applies to its tested revision, not every deployment.
+Local prototype approval is not remote-profile acceptance, a merge or a release.
 
 ## Planned product surface
 
@@ -168,46 +133,22 @@ Later governed write capabilities are planned separately, including append-only 
 
 ### Governed Artifact Inspection
 
-Issue #34 tracks a related Storage/Edge capability: agents inspect durable artifacts through opaque
-IDs, caller-context RLS, bounded reads, integrity/provenance receipts, and a small supported-profile
-registry rather than receiving generic Storage access.
+[Issue #34](https://github.com/jryski/Supabase_user_MCP/issues/34) covers
+bounded artifact access through opaque identifiers and caller-context policy.
 
-The current design keeps:
+| Stage | Synthetic/local result |
+| --- | --- |
+| S0 and S1 | Capability and receipt contracts; artifact registry and Storage/RLS lab |
+| S1b | Source manifests, chunk hashes and Merkle-proof calibration |
+| S2 and S3 | Fixed stat/range/line inspectors and optional MCP registration |
+| S4 | Markdown heading reads and a real-SDK synthetic demonstration |
+| S5a | Exact UTF-8 search and an acknowledged receipt-journal interface |
 
-- MCP as the agent capability surface;
-- Edge as a bounded inspection/execution surface;
-- Postgres/RLS as authorization;
-- Storage as byte custody.
-
-Current repository evidence includes:
-
-- **S0:** strict capability, complete-wire, integrity, derivation, and receipt contracts;
-- **synthetic S1:** immutable artifact registry, derivation tables, approved-client policy, and
-  Storage RLS laboratory; and
-- **S1b:** deterministic raw/source hashes, domain-separated Merkle leaves, bounded proofs,
-  full-source verification, and mutation-sensitive calibration; and
-- **S2:** a pure TypeScript synthetic/local fixed inspector library with strict runtime adapter
-  validation, distinct client/capability-grant custody, exact-version disappearance handling,
-  redacted dependency failures, and schema-valid immutable receipts; and
-- **S3:** optional fixed MCP registration for stat/range/lines plus executable Storage authorization,
-  byte-read, immutable-version, integrity, retry, listing, credential, and write closure accounting;
-  and
-- **S4 bounded integration/demo:** the deterministic text-index primitive is exported and built in
-  memory after each complete-source S1b verification; S2 line reads consume its canonical geometry,
-  `artifact_read_heading` is registered as the fourth fixed artifact tool, and one fixed synthetic
-  Markdown artifact passes the real MCP Client + `StreamTransport` SDK seam; and
-- **S5a deterministic search/receipt closure:** `artifact_search_exact` performs case-sensitive raw
-  UTF-8 byte matching over one fully verified source, optional registration exposes exactly five
-  artifact tools, and every configured source-bound receipt is acknowledged through the injected
-  append-only journal seam before MCP return.
-
-S5a is complete only for synthetic/local exact search and the required receipt-journal interface. The
-repository provides no persistent journal backend and no live Storage/network adapter. Default
-CLI/stdio startup remains exactly the three memory tools. Live S5 operational adoption remains gated
-on selecting and approving a real caller-context adapter and durable evidence backend; S6 semantic
-summaries do not start here. No semantic/vector search, ingest, publication, Edge/hosted deployment,
-Storage/database mutation, signed URL, `service_role`, caller-selected coordinate, listing, canonical
-write, private-data access, or production-readiness claim is accepted.
+Default stdio startup still exposes only the three memory tools. Artifact
+support uses injected dependencies; it does not include a live Storage adapter
+or persistent journal backend. Live adoption requires separate review.
+Semantic summaries, signed URLs, arbitrary listing, writes and production
+access are not accepted capabilities. Detailed stage receipts are linked below.
 
 ## Roadmap
 
@@ -217,7 +158,7 @@ write, private-data access, or production-readiness claim is accepted.
 | M1 | Local Auth/RLS policy laboratory | Complete for the synthetic reference profile |
 | M2 | Read-only stdio reference server | Complete for the experimental local synthetic profile |
 | M3 | Idempotent writes and canonical approval | Future |
-| M4 | Remote HTTP/OAuth profile | Future; downstream-token/audience proof required |
+| M4 | Remote HTTP/OAuth profile | Draft work; separate credentials and supported-client proof remain open |
 | M5 | Operations/adversarial hardening | Future |
 | M6 | Stable v1 contract | Future |
 
