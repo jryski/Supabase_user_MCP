@@ -1,6 +1,6 @@
 # Issue #18: Experimental local stdio operator package
 
-- **Status:** Unmerged candidate
+- **Status:** Historical operator package; merged through PR #46. See the [current setup guide](../GETTING_STARTED.md).
 - **Profile:** local stdio, read-only, synthetic acceptance
 - **Production-ready:** no
 - **Remote HTTP/OAuth:** excluded

@@ -18,6 +18,14 @@ The [`v0.1.0-alpha.1` release candidate](docs/releases/v0.1.0-alpha.1.md) packag
 accepted local principal-bound read path. Remote HTTP and Supabase OAuth 2.1 remain a separately
 gated next profile under [issue #60](https://github.com/jryski/Supabase_user_MCP/issues/60).
 
+## Start here
+
+Read the [getting-started guide](docs/GETTING_STARTED.md) for prerequisites,
+the reproducible synthetic demo, local client configuration, expected results,
+and troubleshooting. The public runtime is POSIX-only; native Windows, a public
+hosted endpoint, and a one-click installer are not available. Glama and M8ven are
+discovery listings, not evidence that those installation paths exist.
+
 ## September 8, 2026: private-alpha validation
 
 A separate hosted OAuth candidate passed bounded synthetic SDK tests and actual
