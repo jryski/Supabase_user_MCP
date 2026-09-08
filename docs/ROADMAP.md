@@ -2,7 +2,7 @@
 
 - **Status:** Active — merged foundations and future evidence gates are distinguished below
 - **Planning horizon:** M0 through v1
-- **Last reviewed:** 2026-09-02
+- **Last reviewed:** 2026-09-08
 
 ## Active execution slice
 
@@ -18,6 +18,19 @@ and synthetic/local S5a deterministic exact search plus an acknowledged append-o
 seam are complete at their stated scope. Live S5 operational adoption remains gated on an approved
 real Storage adapter and durable evidence backend; S6 semantic summaries have not started. M3–M6
 remain separate product roadmap gates.
+
+## Separate hosted private-alpha validation
+
+The September 8 candidate passed bounded hosted SDK and actual Cursor/Claude Code
+CLI checks. See [results, provenance and limitations](status/2026-09-08-private-alpha.md).
+This is a separate candidate, not an expansion of `main` support or completion of
+M4–M6. An OAuth issuer-storage warning, deployment/session-state work, broader
+application-policy validation and independent review remain open.
+
+Near-term planning prioritizes a business deployment's own identity and policy
+matrix, then shared/personal store permissions. Policies must cover views, RPCs,
+Storage and alternate API paths as well as tables. Administration remains
+separate from everyday agent access. No production policy rollout is claimed.
 
 ## How milestones work
 
