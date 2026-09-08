@@ -18,6 +18,18 @@ The [`v0.1.0-alpha.1` release candidate](docs/releases/v0.1.0-alpha.1.md) packag
 accepted local principal-bound read path. Remote HTTP and Supabase OAuth 2.1 remain a separately
 gated next profile under [issue #60](https://github.com/jryski/Supabase_user_MCP/issues/60).
 
+## September 8, 2026: private-alpha validation
+
+A separate hosted OAuth candidate passed bounded synthetic SDK tests and actual
+Cursor and Claude Code CLI acceptance, including denied cross-user reads,
+revocation and recovery. Public `main` still supports the narrower local profile
+described above. No candidate source, hosted service, release tag or package is
+published by this status update.
+
+Read the [validation results and remaining gates](docs/status/2026-09-08-private-alpha.md),
+including the open OAuth issuer-storage warning and application-policy review.
+This is private alpha, not beta or production readiness.
+
 ## Why this exists
 
 Supabase's hosted MCP server is a developer control-plane tool. Supabase User MCP explores the complementary **application data-plane** problem:
@@ -154,7 +166,8 @@ Later governed write capabilities are planned separately, including append-only 
 ### Current scope limits
 
 - The first profile is local stdio with one protected Supabase user access token. Remote
-  HTTP/OAuth remains blocked on a standards-compliant downstream-token and audience design.
+  HTTP/OAuth is not accepted on `main`; separate private-alpha validation is documented above,
+  with issuer-storage, deployment and independent-review gates still open.
 - The v0.1 tools expose one fixed allowlisted field projection. They do not provide
   per-principal column entitlements; RLS remains a row boundary.
 - The current database search candidate is lexical. `semantic` mode does not establish an
@@ -217,7 +230,7 @@ write, private-data access, or production-readiness claim is accepted.
 | M1 | Local Auth/RLS policy laboratory | Complete for the synthetic reference profile |
 | M2 | Read-only stdio reference server | Complete for the experimental local synthetic profile |
 | M3 | Idempotent writes and canonical approval | Future |
-| M4 | Remote HTTP/OAuth profile | Future; downstream-token/audience proof required |
+| M4 | Remote HTTP/OAuth profile | Separate private-alpha candidate tested; public acceptance and review gates remain open |
 | M5 | Operations/adversarial hardening | Future |
 | M6 | Stable v1 contract | Future |
 
