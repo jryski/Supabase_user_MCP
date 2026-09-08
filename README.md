@@ -292,4 +292,4 @@ Please read [CONTRIBUTING.md](CONTRIBUTING.md) and [GOVERNANCE.md](GOVERNANCE.md
 Supabase User MCP is an independent open-source project. It is not an official Supabase product and is not endorsed by Supabase, Inc. "Supabase" identifies compatibility with the Supabase platform.
 
 Licensed under the [Apache License 2.0](LICENSE).
-[![M8ven Score](https://m8ven.ai/badge/mcp/jryski-supabase-user-mcp-2qecn0?v=92f078aeb0a5b9dafdb035f455435c09)](https://m8ven.ai/mcp/jryski-supabase-user-mcp-2qecn0)
+[![M8ven Verified](https://m8ven.ai/api/agent-verify/badge?score=94)](https://m8ven.ai/verified/verify?id=3208ad39b5280f34)
