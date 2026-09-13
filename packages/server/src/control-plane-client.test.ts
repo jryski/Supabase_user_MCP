@@ -66,6 +66,8 @@ describe('fixed control-plane client', () => {
         p_body: 'Synthetic body',
         p_re_seq: null,
       });
+      expect(body).not.toHaveProperty('seq');
+      expect(body).not.toHaveProperty('p_seq');
       return jsonResponse({ id: messageId, seq: 81 });
     });
     const client = createControlPlaneClient({ origin, serviceRoleKey, agentId, fetch });
@@ -188,6 +190,9 @@ describe('fixed control-plane client', () => {
     expect(
       [firstMessage, secondMessage].map((result) => result.ok && result.receipt.seq).toSorted(),
     ).toEqual([300, 301]);
+    expect(
+      new Set([firstMessage, secondMessage].map((result) => result.ok && result.receipt.id)).size,
+    ).toBe(2);
   });
 
   it.each([

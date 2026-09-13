@@ -37,10 +37,11 @@ Focused command:
 ```shell
 npm run test -- packages/contracts/src/control-plane-tools.test.ts \
   packages/server/src/control-plane-client.test.ts \
-  packages/server/src/control-plane-server.test.ts
+  packages/server/src/control-plane-server.test.ts \
+  packages/server/src/post-model-message-migration.test.ts
 ```
 
-Result after final hardening: 3 files passed, 15 tests passed.
+Result after the identity-allocation repair: 4 files passed, 18 tests passed.
 
 Full command:
 
@@ -53,8 +54,8 @@ Result after rebasing onto the refreshed GitHub `origin/main`:
 - formatting passed;
 - lint passed;
 - TypeScript build and test typecheck passed;
-- 35 test files passed and 1 skipped;
-- 706 tests passed and 4 skipped.
+- 36 test files passed and 1 skipped;
+- 709 tests passed and 4 skipped.
 
 The skipped tests are existing environment-gated tests. This slice did not convert a failure into a
 skip.
@@ -66,8 +67,10 @@ skip.
   database's original receipt.
 - An omitted database creation flag stays omitted; the adapter does not invent a creation outcome.
 - Distinct concurrent work and message calls remain independent and accept unique database-assigned
-  numbers.
+  numbers and message IDs.
 - Invalid board and reply references map to stable non-leaking errors.
+- The reviewed database migration omits the generated identity column from the insert and returns
+  the generated `id` and `seq` from the stored row.
 - MCP registration exposes exactly two tools and rejects generic database controls before invoking
   the privileged client.
 - The accepted read-only server's existing exact-three-tool registration test still passes.
@@ -83,10 +86,19 @@ skip.
   source and creator.
 - `public.post_model_message` returns `id`, `seq`, `from_agent`, and `to_agent`; the adapter emits the
   bounded `id` and `seq` receipt.
-- A live review-request call reached `public.post_model_message` and failed with PostgreSQL `428C9`.
-  `model_channel.seq` is an identity column defined as `GENERATED ALWAYS`, but the function inserts
-  a computed value into it. The table maximum and identity-sequence last value were both 1106, so
-  the identity sequence itself was aligned. No message was inserted by the failed call.
+- Pre-change evidence showed `model_channel.seq` as a `bigint GENERATED ALWAYS` identity backed by
+  `public.model_channel_seq_seq`. The function nevertheless took an advisory lock, computed
+  `max(seq) + 1`, and explicitly inserted `seq`. A live review-request call therefore failed with
+  PostgreSQL `428C9`. The table maximum and identity-sequence last value were both 1106 at that
+  failure, and no message was inserted.
+- Migration `20260913175421_repair_post_model_message_identity_allocation` replaced that body. The
+  insert now omits `seq`, and `returning id, seq` captures PostgreSQL's generated values. Required
+  field checks and optional `re_seq` validation remain in place.
+- A service-role exercise returned UUID `e65c0fd2-f583-4aed-83d7-4c7a94b3cbe2` and sequence 1108.
+  An exact-subject check found one row, both receipt fields matched the stored row, and the identity
+  sequence advanced from 1107 to 1108. The invalid-`re_seq` probe created zero rows.
+- The repaired live function remains owned by `postgres`, uses `SECURITY DEFINER`, has
+  `search_path=pg_catalog, public`, and grants EXECUTE only to `postgres` and `service_role`.
 - The 2026-09-13 VAULT security-advisor run did not flag either new function for mutable
   `search_path` or anonymous `SECURITY DEFINER` execution. That is useful negative evidence, but it
   does not replace direct catalog and role-execution checks.
@@ -119,13 +131,11 @@ supersedes UUID `9e6a9e76-637a-4166-9af7-5e5ed6391d07`; its predecessor is retai
 ## Required acceptance follow-up
 
 1. Verify that PostgREST exposes the custom `planning` schema to the isolated deployment profile.
-2. Repair `public.post_model_message` through an approved database migration so it uses the identity
-   column consistently, then reverify its definition, receipt, and ACLs.
-3. Run service-role success and `anon`/`authenticated` denial tests with synthetic rows in a safe
+2. Run service-role success and `anon`/`authenticated` denial tests with synthetic rows in a safe
    test board or local database.
-4. Run concurrent database calls and verify one work-item identity per idempotency key plus unique
+3. Run concurrent database calls and verify one work-item identity per idempotency key plus unique
    item/message numbering.
-5. Disposition relevant security-advisor findings and retain the result with the acceptance
+4. Disposition relevant security-advisor findings and retain the result with the acceptance
    evidence.
-6. Prove Ariadne can invoke the two MCP tools without raw SQL.
-7. Freeze an exact commit and obtain independent review.
+5. Prove Ariadne can invoke the two MCP tools without raw SQL.
+6. Freeze an exact commit and obtain independent review.

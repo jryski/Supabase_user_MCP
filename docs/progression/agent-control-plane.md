@@ -113,10 +113,39 @@ Live RPC failure milestone:
 - The failed call inserted no message. Repair requires a separately authorized database migration;
   the MCP will not fall back to table DML.
 
+## 2026-09-13: Dogfooding defect repaired
+
+The live failure was a correctness defect in the bounded RPC, not a reason to change the proposed
+control-plane architecture. Pre-change catalog evidence preserved the exact mismatch:
+
+- `public.model_channel.seq` was `bigint GENERATED ALWAYS` using
+  `public.model_channel_seq_seq`.
+- `public.post_model_message(text,text,text,text,bigint)` explicitly computed and inserted `seq`.
+- The failing call returned PostgreSQL `428C9` and created no row.
+
+Migration `20260913175421_repair_post_model_message_identity_allocation` removed explicit sequence
+allocation. PostgreSQL now allocates the identity, and `returning id, seq` produces the bounded
+receipt. Field validation, optional reply validation, fixed search path, `SECURITY DEFINER`, owner,
+and service-role-only EXECUTE posture were preserved.
+
+Regression evidence:
+
+- The focused control-plane suite passed 18 tests across four files.
+- The full repository gate passed 709 tests with four existing skips; 36 files passed and one
+  existing environment-gated file was skipped.
+- A negative live probe with an invalid `re_seq` created zero rows.
+- One service-role call returned sequence 1108 and UUID
+  `e65c0fd2-f583-4aed-83d7-4c7a94b3cbe2`; exactly one row matched the subject, UUID, and sequence.
+- The table maximum and identity sequence advanced together from 1107 to 1108.
+- The security advisor did not flag the repaired function. Its existing findings concern other
+  objects and were not changed in this bounded repair.
+
+Decision: keep the MCP on the fixed bounded RPC route. Do not add direct DML, change RLS, broaden
+grants, move credentials, or implement the remaining control-plane primitives in this repair.
+
 Open verification gates:
 
 - Verify PostgREST exposure of the custom `planning` schema.
-- Repair and reverify the live `post_model_message` identity-column behavior.
 - Exercise both RPCs through the isolated deployment profile with synthetic rollback-safe data.
 - Prove an Ariadne runtime invocation before claiming coordinator readiness.
 

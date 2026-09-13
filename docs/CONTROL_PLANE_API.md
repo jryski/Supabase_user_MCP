@@ -46,7 +46,7 @@ tool should preserve these semantics.
 | `work_item_release` | Release one valid lease with a bounded reason | `planning.release_work_item` reported; live signature pending refresh |
 | `work_item_submit` | Submit result and evidence for review | `planning.submit_work_item` reported; live signature pending refresh |
 | `work_item_review` | Accept, reject, or return submitted work under separate reviewer authority | `planning.review_work_item` reported; live signature pending refresh |
-| `model_message_post` | Post one bounded message or reply with database-assigned sequence | Definition and ACLs verified; live invocation blocked by identity-column mismatch |
+| `model_message_post` | Post one bounded message or reply with database-assigned sequence | Definition, ACLs, service-role invocation, receipt, and single-row effect verified 2026-09-13 |
 | `model_message_read` | Read a bounded coordination window without raw table queries | Ariadne signal read exists; general bounded read remains deployment-specific |
 
 Memory search, memory correction, household briefs, calendar delivery, source-control operations,
@@ -88,11 +88,16 @@ security mode, search paths, explicit ACLs, PostgREST schema exposure, service-r
 test does not satisfy that gate.
 
 The 2026-09-13 catalog pass verified the definitions, result shapes, owners, security mode, search
-paths, and explicit ACLs. PostgREST exposure of the custom `planning` schema and an end-to-end
-service-role invocation remain deployment acceptance gates.
+paths, and explicit ACLs. PostgREST exposure of the custom `planning` schema remains a deployment
+acceptance gate.
 
 A later live call to `public.post_model_message` failed with PostgreSQL `428C9`: `model_channel.seq`
-is `GENERATED ALWAYS`, while the function explicitly inserts its advisory-lock allocation. The
-sequence and current maximum were both 1106, so ordinary identity allocation was aligned. Repairing
-the live function requires a separately authorized database migration; the MCP must not fall back to
-direct table DML.
+was `GENERATED ALWAYS`, while the function explicitly inserted its advisory-lock allocation. The
+sequence and current maximum were both 1106, so ordinary identity allocation was aligned. Migration
+`20260913175421_repair_post_model_message_identity_allocation` corrected the function without adding
+an MCP fallback. PostgreSQL now allocates `seq`, and the RPC returns the stored `id` and `seq`.
+
+The repaired RPC was exercised under `service_role` with one bounded synthetic message. It returned
+sequence 1108 and UUID `e65c0fd2-f583-4aed-83d7-4c7a94b3cbe2`; exactly one stored row matched both
+values, and the identity sequence advanced by one. An invalid reply reference created no row. The
+fixed search path, `SECURITY DEFINER` mode, owner, and service-role-only ACL remained unchanged.
