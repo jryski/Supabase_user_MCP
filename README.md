@@ -171,6 +171,12 @@ Initial read capabilities:
 
 Later governed write capabilities are planned separately, including append-only observations and proposal/approval workflows. See [feature catalog](docs/FEATURES.md).
 
+Issue #70 also contains a proposed, isolated deployment control-plane profile for fixed
+`create_work_item` and `post_model_message` RPCs. It is a library-level implementation trial and is
+not registered by the accepted user-context CLI. See the
+[minimum control-plane API](docs/CONTROL_PLANE_API.md) and
+[ADR-0005](docs/decisions/0005-isolated-deployment-control-plane.md).
+
 ### Current scope limits
 
 - The first profile is local stdio with one protected Supabase user access token. Remote
