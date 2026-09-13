@@ -87,11 +87,27 @@ Database metadata milestone:
 - The service role still has direct DML on the underlying deployment tables. The fixed MCP route is
   therefore the application containment boundary.
 
+Durable documentation milestone:
+
+- Published the capability catalog at
+  `projects/sovereign-ai-os/control-plane/capability-catalog`.
+- Published the decision at
+  `projects/sovereign-ai-os/decisions/2026-09-13-agent-control-plane`.
+- Published the running progression at `projects/sovereign-ai-os/control-plane/progression`.
+- Superseded the existing `projects/sovereign-ai-os/chronicle` page with a new active version that
+  appends the fifth field note and links to its predecessor.
+
+Gateway verification milestone:
+
+- Anonymous REST probes with both current public key forms received HTTP 401 before schema routing;
+  VAULT requires a service-role or secret key at the gateway.
+- The probes made no RPC call. They do not verify custom `planning` schema exposure for the
+  privileged deployment profile.
+
 Open verification gates:
 
 - Verify PostgREST exposure of the custom `planning` schema.
 - Exercise both RPCs through the isolated deployment profile with synthetic rollback-safe data.
-- Write or supersede the durable VAULT progression page.
 - Prove an Ariadne runtime invocation before claiming coordinator readiness.
 
 ## 2026-09-13: Tooling failures recorded

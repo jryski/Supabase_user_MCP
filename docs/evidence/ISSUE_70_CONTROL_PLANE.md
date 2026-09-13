@@ -88,12 +88,28 @@ skip.
   does not replace direct catalog and role-execution checks.
 - Database settings did not expose the PostgREST schema list to the catalog session. Custom
   `planning` schema exposure therefore remains unverified.
+- Read-only REST probes with the current legacy anonymous and publishable keys both stopped at the
+  VAULT gateway with HTTP 401 responses requiring a service-role or secret key. They made no RPC
+  call and do not establish whether the `planning` schema is exposed to the privileged profile.
 - `service_role` retains direct table DML on planning and model-channel relations. Direct-DML
   avoidance is enforced by this MCP's fixed routes, not by removing the credential's database
   authority.
 - No live mutation, production data, private fixture, deployment, or Ariadne runtime was used.
 - Concurrency and idempotency tests prove adapter behavior against deterministic synthetic
   PostgREST responses. They do not independently prove the live PostgreSQL lock implementation.
+
+## Durable VAULT documentation receipts
+
+| Path | UUID | Content SHA-256 |
+| --- | --- | --- |
+| `projects/sovereign-ai-os/control-plane/capability-catalog` | `dfd7e5f4-ceb2-44e9-a015-df29f294e168` | `fe53a664de626134b16e41739f59ae6acf2d101c8e62f4bfaac62cd4baca5ce5` |
+| `projects/sovereign-ai-os/decisions/2026-09-13-agent-control-plane` | `e7700964-abf1-45b5-a149-ac4a9959c7f2` | `f17dcae97258965c391ff53a28c6393e32fa660d98d0b7dff0c4c424b6a975f4` |
+| `projects/sovereign-ai-os/control-plane/progression` | `1c4df04f-f4ce-4852-922f-8ff801f81d62` | `f3c84f05ffe13266154cfe36337225c5eebb1879e7b35d62c69e36c564cf13fb` |
+| `projects/sovereign-ai-os/chronicle` | `a993c43c-1565-49d0-a6f1-26d32fdc7974` | `df52aa1488208c81df9ea3ce95a0840a5a9b49487bc695664c6f24f2592e6eec` |
+
+The Chronicle receipt supersedes UUID `9e6a9e76-637a-4166-9af7-5e5ed6391d07`; its predecessor is
+retained at `projects/sovereign-ai-os/chronicle-archived-20260913171959-9e6a9e76` with status
+`superseded`.
 
 ## Required acceptance follow-up
 
