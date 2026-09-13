@@ -118,15 +118,14 @@ skip.
 
 | Path | UUID | Content SHA-256 |
 | --- | --- | --- |
-| `projects/sovereign-ai-os/control-plane/capability-catalog` | `3cdb1e2c-7f24-4de8-b2f2-e74dc6f4ff23` | `13a4482a7ccdff3e1f8a58d87e4a9a5cda12277fa2d2a1a5cbe7fe7f92860242` |
+| `projects/sovereign-ai-os/control-plane/capability-catalog` | `7c9dcad4-eee7-48da-a09d-66a707330c3e` | `f05bb4be3dc4370974d57b01a2dbbd74570766d8e062233cd3a45402865dab57` |
 | `projects/sovereign-ai-os/decisions/2026-09-13-agent-control-plane` | `e7700964-abf1-45b5-a149-ac4a9959c7f2` | `f17dcae97258965c391ff53a28c6393e32fa660d98d0b7dff0c4c424b6a975f4` |
-| `projects/sovereign-ai-os/control-plane/progression` | `9da3ba9e-18d6-4f18-a273-7d6766e14c68` | `8e76cea3e9b6d71ae13dbad82de813e189ccab053212d30a3ac44683311e80f9` |
-| `projects/sovereign-ai-os/chronicle` | `a993c43c-1565-49d0-a6f1-26d32fdc7974` | `df52aa1488208c81df9ea3ce95a0840a5a9b49487bc695664c6f24f2592e6eec` |
+| `projects/sovereign-ai-os/control-plane/progression` | `72d7069f-c1b8-4b26-bdf0-482e82a90f85` | `bfe79983a826edd09eaa134ec6bac64b9bd0ef7bafdbe995fd98e9663b3ad9b1` |
+| `projects/sovereign-ai-os/chronicle` | `fae5bea8-02d9-42af-b634-22a5703bd955` | `6445746a86b0607d0627f7669d73c77acb3d46664ef701e8b92c77282d7ec815` |
 
-The catalog and progression receipts supersede their earlier publication and gateway-update
-versions, including a correction from an incorrectly expanded short Git SHA. The Chronicle receipt
-supersedes UUID `9e6a9e76-637a-4166-9af7-5e5ed6391d07`; its predecessor is retained at
-`projects/sovereign-ai-os/chronicle-archived-20260913171959-9e6a9e76` with status `superseded`.
+The catalog, progression, and Chronicle receipts supersede the versions that recorded the 428C9
+blocker. Those predecessors remain stored with `superseded` status and archived paths. The active
+versions append the correction and retain the original failure narrative.
 
 ## Required acceptance follow-up
 
