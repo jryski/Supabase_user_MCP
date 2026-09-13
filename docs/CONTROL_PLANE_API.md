@@ -46,7 +46,7 @@ tool should preserve these semantics.
 | `work_item_release` | Release one valid lease with a bounded reason | `planning.release_work_item` reported; live signature pending refresh |
 | `work_item_submit` | Submit result and evidence for review | `planning.submit_work_item` reported; live signature pending refresh |
 | `work_item_review` | Accept, reject, or return submitted work under separate reviewer authority | `planning.review_work_item` reported; live signature pending refresh |
-| `model_message_post` | Post one bounded message or reply with database-assigned sequence | Live function definition, receipt, fixed search path, and ACLs verified 2026-09-13 |
+| `model_message_post` | Post one bounded message or reply with database-assigned sequence | Definition and ACLs verified; live invocation blocked by identity-column mismatch |
 | `model_message_read` | Read a bounded coordination window without raw table queries | Ariadne signal read exists; general bounded read remains deployment-specific |
 
 Memory search, memory correction, household briefs, calendar delivery, source-control operations,
@@ -90,3 +90,9 @@ test does not satisfy that gate.
 The 2026-09-13 catalog pass verified the definitions, result shapes, owners, security mode, search
 paths, and explicit ACLs. PostgREST exposure of the custom `planning` schema and an end-to-end
 service-role invocation remain deployment acceptance gates.
+
+A later live call to `public.post_model_message` failed with PostgreSQL `428C9`: `model_channel.seq`
+is `GENERATED ALWAYS`, while the function explicitly inserts its advisory-lock allocation. The
+sequence and current maximum were both 1106, so ordinary identity allocation was aligned. Repairing
+the live function requires a separately authorized database migration; the MCP must not fall back to
+direct table DML.

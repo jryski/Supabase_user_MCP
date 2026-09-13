@@ -104,9 +104,19 @@ Gateway verification milestone:
 - The probes made no RPC call. They do not verify custom `planning` schema exposure for the
   privileged deployment profile.
 
+Live RPC failure milestone:
+
+- A real review-request call reached `public.post_model_message` and failed with PostgreSQL `428C9`.
+- `model_channel.seq` is `GENERATED ALWAYS`, while the function explicitly inserts its computed
+  sequence value.
+- The table maximum and identity sequence were both 1106, so the sequence was not behind.
+- The failed call inserted no message. Repair requires a separately authorized database migration;
+  the MCP will not fall back to table DML.
+
 Open verification gates:
 
 - Verify PostgREST exposure of the custom `planning` schema.
+- Repair and reverify the live `post_model_message` identity-column behavior.
 - Exercise both RPCs through the isolated deployment profile with synthetic rollback-safe data.
 - Prove an Ariadne runtime invocation before claiming coordinator readiness.
 

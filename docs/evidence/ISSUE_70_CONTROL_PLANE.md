@@ -83,6 +83,10 @@ skip.
   source and creator.
 - `public.post_model_message` returns `id`, `seq`, `from_agent`, and `to_agent`; the adapter emits the
   bounded `id` and `seq` receipt.
+- A live review-request call reached `public.post_model_message` and failed with PostgreSQL `428C9`.
+  `model_channel.seq` is an identity column defined as `GENERATED ALWAYS`, but the function inserts
+  a computed value into it. The table maximum and identity-sequence last value were both 1106, so
+  the identity sequence itself was aligned. No message was inserted by the failed call.
 - The 2026-09-13 VAULT security-advisor run did not flag either new function for mutable
   `search_path` or anonymous `SECURITY DEFINER` execution. That is useful negative evidence, but it
   does not replace direct catalog and role-execution checks.
@@ -115,11 +119,13 @@ supersedes UUID `9e6a9e76-637a-4166-9af7-5e5ed6391d07`; its predecessor is retai
 ## Required acceptance follow-up
 
 1. Verify that PostgREST exposes the custom `planning` schema to the isolated deployment profile.
-2. Run service-role success and `anon`/`authenticated` denial tests with synthetic rows in a safe
+2. Repair `public.post_model_message` through an approved database migration so it uses the identity
+   column consistently, then reverify its definition, receipt, and ACLs.
+3. Run service-role success and `anon`/`authenticated` denial tests with synthetic rows in a safe
    test board or local database.
-3. Run concurrent database calls and verify one work-item identity per idempotency key plus unique
+4. Run concurrent database calls and verify one work-item identity per idempotency key plus unique
    item/message numbering.
-4. Disposition relevant security-advisor findings and retain the result with the acceptance
+5. Disposition relevant security-advisor findings and retain the result with the acceptance
    evidence.
-5. Prove Ariadne can invoke the two MCP tools without raw SQL.
-6. Freeze an exact commit and obtain independent review.
+6. Prove Ariadne can invoke the two MCP tools without raw SQL.
+7. Freeze an exact commit and obtain independent review.
