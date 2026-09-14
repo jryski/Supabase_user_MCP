@@ -2,8 +2,10 @@
 
 Contributions to this repository are accepted under the Developer Certificate
 of Origin, version 1.1. There is no Contributor License Agreement. Your
-contribution is licensed to the project under the same terms as the repository
-itself, which are in the LICENSE file.
+contribution is licensed to the project under the license that applies to the
+file or component you are changing. That is the repository's `LICENSE` unless
+the README documents a per-component scope map naming a different license for
+that path.
 
 Sign off each commit with `git commit -s`. That appends a line in this form:
 
