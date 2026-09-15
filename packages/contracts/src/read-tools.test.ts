@@ -1,9 +1,11 @@
+import { createHash } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
 
 import {
   MAX_FILTERS,
   MAX_QUERY_LENGTH,
   MAX_RECENT_ROWS,
+  MAX_REQUEST_ID_BYTES,
   MAX_RESPONSE_BYTES,
   MAX_SEARCH_ROWS,
   MAX_TOOL_EXECUTION_MS,
@@ -19,6 +21,8 @@ import {
   publicMemoryGetUnavailable,
   readToolWireResponseByteLength,
   serializeReadToolWireResponse,
+  SESSION_CAPABILITIES_READ_SEMANTICS_DIGEST,
+  SESSION_READ_SEMANTICS_CANONICAL,
 } from './read-tools.js';
 
 const memoryId = 'mem_AAAAAAAAAAAAAAAAAAAAAA';
@@ -174,6 +178,18 @@ describe('memory_list_recent contract', () => {
 });
 
 describe('shared read-tool safety contract', () => {
+  it('hashes discovery semantics that deny tools/list permission authority', () => {
+    expect(SESSION_READ_SEMANTICS_CANONICAL).toContain(
+      'MCP tools/list is not permission authority',
+    );
+    expect(SESSION_READ_SEMANTICS_CANONICAL).not.toContain(
+      'MCP tools/list is permission authority',
+    );
+    expect(SESSION_CAPABILITIES_READ_SEMANTICS_DIGEST).toBe(
+      createHash('sha256').update(SESSION_READ_SEMANTICS_CANONICAL, 'utf8').digest('hex'),
+    );
+  });
+
   it('accepts exact ID, cursor, and combined-filter ceilings and rejects one over', () => {
     const maxId = `mem_${'A'.repeat(128)}`;
     const maxCursor = `cur_${'A'.repeat(1020)}`;
@@ -196,6 +212,20 @@ describe('shared read-tool safety contract', () => {
         filters: { ...exactFilters, tags: [...exactFilters.tags, 'four'] },
       }).success,
     ).toBe(false);
+  });
+
+  it('bounds serialized request IDs to the JSON-RPC byte contract before wire-size checks', () => {
+    const output = { ok: true, items: [] } as const;
+    const boundedId = 'r'.repeat(MAX_REQUEST_ID_BYTES);
+    const boundedEnvelope = serializeReadToolWireResponse(boundedId, output);
+    expect(new TextEncoder().encode(boundedEnvelope).byteLength > 0).toBe(true);
+    expect(readToolWireResponseByteLength(`${boundedId}x`, output)).toBeGreaterThan(0);
+    const unicodeId = 'é'.repeat(MAX_REQUEST_ID_BYTES / 2);
+    expect(() => serializeReadToolWireResponse(unicodeId, output)).not.toThrow();
+    expect(() => serializeReadToolWireResponse(`${unicodeId}é`, output)).toThrow(RangeError);
+    expect(() => serializeReadToolWireResponse(`${boundedId}x`, output)).toThrow(
+      `Request ID must not exceed ${MAX_REQUEST_ID_BYTES} UTF-8 bytes.`,
+    );
   });
 
   it('budgets the complete UTF-8 JSON-RPC and MCP wire response at the byte boundary', () => {
