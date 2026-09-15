@@ -86,7 +86,12 @@ export function createSessionCapabilitiesGet(
 ) {
   const execute = createReadToolExecutor(
     SESSION_CAPABILITIES_GET_TOOL,
-    async () => buildSessionCapabilitiesOutput(registeredToolNames()),
+    async (_input, signal) => {
+      signal.throwIfAborted();
+      const output = buildSessionCapabilitiesOutput(registeredToolNames());
+      signal.throwIfAborted();
+      return output;
+    },
     options.governance,
   );
   return (invocation?: ReadToolInvocationContext) =>

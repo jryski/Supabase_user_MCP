@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
 
 import {
@@ -20,6 +21,8 @@ import {
   publicMemoryGetUnavailable,
   readToolWireResponseByteLength,
   serializeReadToolWireResponse,
+  SESSION_CAPABILITIES_READ_SEMANTICS_DIGEST,
+  SESSION_READ_SEMANTICS_CANONICAL,
 } from './read-tools.js';
 
 const memoryId = 'mem_AAAAAAAAAAAAAAAAAAAAAA';
@@ -175,6 +178,18 @@ describe('memory_list_recent contract', () => {
 });
 
 describe('shared read-tool safety contract', () => {
+  it('hashes discovery semantics that deny tools/list permission authority', () => {
+    expect(SESSION_READ_SEMANTICS_CANONICAL).toContain(
+      'MCP tools/list is not permission authority',
+    );
+    expect(SESSION_READ_SEMANTICS_CANONICAL).not.toContain(
+      'MCP tools/list is permission authority',
+    );
+    expect(SESSION_CAPABILITIES_READ_SEMANTICS_DIGEST).toBe(
+      createHash('sha256').update(SESSION_READ_SEMANTICS_CANONICAL, 'utf8').digest('hex'),
+    );
+  });
+
   it('accepts exact ID, cursor, and combined-filter ceilings and rejects one over', () => {
     const maxId = `mem_${'A'.repeat(128)}`;
     const maxCursor = `cur_${'A'.repeat(1020)}`;

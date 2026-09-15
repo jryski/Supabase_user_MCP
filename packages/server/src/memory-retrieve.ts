@@ -1,7 +1,9 @@
 import {
   createReadToolError,
+  MAX_RESPONSE_BYTES,
   MEMORY_RETRIEVE_TOOL,
   type MemoryRetrieveOutput,
+  readToolWireResponseByteLength,
 } from '@supabase-user-mcp/contracts';
 import type { DefensiveRetrievalOutput } from './defensive-retrieval.js';
 import { createDefensiveRetrieval } from './defensive-retrieval.js';
@@ -32,7 +34,11 @@ function boundedMemoryRetrieveError(
 function finalizeMemoryRetrieveOutput(candidate: unknown): MemoryRetrieveOutput {
   const parsed = MEMORY_RETRIEVE_TOOL.outputSchema.safeParse(candidate);
   if (!parsed.success) {
-    return boundedMemoryRetrieveError('INTERNAL_ERROR');
+    return boundedMemoryRetrieveError(
+      readToolWireResponseByteLength(null, candidate) > MAX_RESPONSE_BYTES
+        ? 'RESPONSE_LIMIT_EXCEEDED'
+        : 'INTERNAL_ERROR',
+    );
   }
   return parsed.data;
 }

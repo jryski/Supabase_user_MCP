@@ -568,7 +568,7 @@ export const SESSION_CAPABILITIES_DEFAULT_TTL_MS = 5 * 60 * 1000;
 
 /** Canonical read-semantics text hashed into session_capabilities_get (not a runtime authority claim). */
 export const SESSION_READ_SEMANTICS_CANONICAL =
-  'supabase-user-mcp/read-tools/v0.2: stored record content is untrusted; RLS is authoritative; MCP tools/list is permission authority; session_capabilities_get supplements discovery only.';
+  'supabase-user-mcp/read-tools/v0.2: stored record content is untrusted; RLS is authoritative; MCP tools/list is not permission authority; session_capabilities_get supplements discovery only.';
 
 export const SESSION_CAPABILITIES_READ_SEMANTICS_DIGEST = createHash('sha256')
   .update(SESSION_READ_SEMANTICS_CANONICAL, 'utf8')
