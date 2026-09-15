@@ -72,6 +72,8 @@ function normalizeError(cause: unknown, aborted: boolean): MemoryGetOutput {
 export interface MemoryGetOptions {
   readonly timeoutMs?: number;
   readonly governance?: ReadToolGovernancePolicy;
+  /** When true, skip the shared per-principal governor (nested composition only). */
+  readonly ungoverned?: boolean;
 }
 
 export function createMemoryGet(client: FixedSupabaseClient, options: MemoryGetOptions = {}) {
@@ -114,6 +116,10 @@ export function createMemoryGet(client: FixedSupabaseClient, options: MemoryGetO
       callerSignal?.removeEventListener('abort', cancel);
     }
   };
+  if (options.ungoverned === true) {
+    return (unsafeInput: unknown, context?: ReadToolInvocationContext) =>
+      executeRaw(unsafeInput, normalizeReadToolExecutionContext(context).signal);
+  }
   const execute = createReadToolExecutor(
     MEMORY_GET_TOOL,
     (input, signal) => executeRaw(input, signal),

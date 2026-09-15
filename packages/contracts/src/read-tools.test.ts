@@ -4,6 +4,7 @@ import {
   MAX_FILTERS,
   MAX_QUERY_LENGTH,
   MAX_RECENT_ROWS,
+  MAX_REQUEST_ID_BYTES,
   MAX_RESPONSE_BYTES,
   MAX_SEARCH_ROWS,
   MAX_TOOL_EXECUTION_MS,
@@ -196,6 +197,20 @@ describe('shared read-tool safety contract', () => {
         filters: { ...exactFilters, tags: [...exactFilters.tags, 'four'] },
       }).success,
     ).toBe(false);
+  });
+
+  it('bounds serialized request IDs to the JSON-RPC byte contract before wire-size checks', () => {
+    const output = { ok: true, items: [] } as const;
+    const boundedId = 'r'.repeat(MAX_REQUEST_ID_BYTES);
+    const boundedEnvelope = serializeReadToolWireResponse(boundedId, output);
+    expect(new TextEncoder().encode(boundedEnvelope).byteLength > 0).toBe(true);
+    expect(readToolWireResponseByteLength(`${boundedId}x`, output)).toBeGreaterThan(0);
+    const unicodeId = 'é'.repeat(MAX_REQUEST_ID_BYTES / 2);
+    expect(() => serializeReadToolWireResponse(unicodeId, output)).not.toThrow();
+    expect(() => serializeReadToolWireResponse(`${unicodeId}é`, output)).toThrow(RangeError);
+    expect(() => serializeReadToolWireResponse(`${boundedId}x`, output)).toThrow(
+      `Request ID must not exceed ${MAX_REQUEST_ID_BYTES} UTF-8 bytes.`,
+    );
   });
 
   it('budgets the complete UTF-8 JSON-RPC and MCP wire response at the byte boundary', () => {

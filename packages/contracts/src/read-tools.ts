@@ -1,3 +1,5 @@
+import { createHash } from 'node:crypto';
+
 import * as z from 'zod/v4';
 
 export const MAX_QUERY_LENGTH = 512;
@@ -218,6 +220,12 @@ export function serializeReadToolWireResponse(
   requestId: ReadToolRequestId,
   output: unknown,
 ): string {
+  if (
+    typeof requestId === 'string' &&
+    new TextEncoder().encode(requestId).byteLength > MAX_REQUEST_ID_BYTES
+  ) {
+    throw new RangeError(`Request ID must not exceed ${MAX_REQUEST_ID_BYTES} UTF-8 bytes.`);
+  }
   const serialized = `${JSON.stringify(readToolWireResponse(requestId, output))}\n`;
   if (new TextEncoder().encode(serialized).byteLength > MAX_RESPONSE_BYTES) {
     throw new RangeError(`Wire response must not exceed ${MAX_RESPONSE_BYTES} UTF-8 bytes.`);
@@ -358,3 +366,210 @@ export const MEMORY_LIST_RECENT_TOOL = Object.freeze({
     ...SHARED_LIMITS,
   }),
 });
+
+/** Same bounded parser as memory_search (whitespace, filters, cursor). */
+export const MemoryRetrieveInputSchema = MemorySearchInputSchema;
+export type MemoryRetrieveInput = MemorySearchInput;
+
+const MemoryRetrieveRetrievalBaseSchema = z
+  .object({
+    strategy: z.literal('defensive_search_then_get_v1'),
+    query_last_executed: z.string().max(MAX_QUERY_LENGTH),
+    scope_semantics: z.literal('authorized_scope_only'),
+    snapshot_semantics: z.literal('no_server_snapshot_v1'),
+    provenance_currentness: z.literal('unknown'),
+  })
+  .strict();
+
+const MemoryRetrieveScopedNoMatchResultSchema = z
+  .object({
+    ok: z.literal(true),
+    items: z.array(SearchResultSchema).max(0),
+  })
+  .strict()
+  .refine((result) => result.items.length === 0, 'Scoped no-match requires an empty items array.');
+
+const MemoryRetrieveAmbiguousResultSchema = MemorySearchSuccessSchema.refine(
+  (result) => result.items.length >= 2 && result.nextCursor === undefined,
+  'Ambiguous retrieval requires multiple items and forbids continuation.',
+);
+
+const MemoryRetrievePartialResultSchema = MemorySearchSuccessSchema.refine(
+  (result) => result.nextCursor !== undefined,
+  'Paginated partial retrieval requires nextCursor on the search result.',
+);
+
+const MemoryRetrieveFoundOutputSchema = z
+  .object({
+    ok: z.literal(true),
+    outcome: z.literal('found'),
+    completeness: z.literal('unknown'),
+    retrieval: MemoryRetrieveRetrievalBaseSchema,
+    result: MemoryGetSuccessSchema,
+  })
+  .strict();
+
+const MemoryRetrieveAmbiguousOutputSchema = z
+  .object({
+    ok: z.literal(true),
+    outcome: z.literal('ambiguous'),
+    completeness: z.literal('unknown'),
+    retrieval: MemoryRetrieveRetrievalBaseSchema,
+    result: MemoryRetrieveAmbiguousResultSchema,
+  })
+  .strict();
+
+const MemoryRetrieveScopedNoMatchOutputSchema = z
+  .object({
+    ok: z.literal(true),
+    outcome: z.literal('scoped_no_match'),
+    completeness: z.literal('unknown'),
+    retrieval: MemoryRetrieveRetrievalBaseSchema,
+    result: MemoryRetrieveScopedNoMatchResultSchema,
+  })
+  .strict();
+
+const MemoryRetrievePartialOutputSchema = z
+  .object({
+    ok: z.literal(true),
+    outcome: z.literal('partial'),
+    completeness: z.literal('unknown'),
+    retrieval: MemoryRetrieveRetrievalBaseSchema,
+    result: MemoryRetrievePartialResultSchema,
+  })
+  .strict();
+
+const MemoryRetrieveSuccessOutputSchema = z.discriminatedUnion('outcome', [
+  MemoryRetrieveFoundOutputSchema,
+  MemoryRetrieveAmbiguousOutputSchema,
+  MemoryRetrieveScopedNoMatchOutputSchema,
+  MemoryRetrievePartialOutputSchema,
+]);
+
+export const MemoryRetrieveOutputSchema = z
+  .union([MemoryRetrieveSuccessOutputSchema, ReadToolErrorOutputSchema])
+  .refine(
+    withinMinimumWireResponseByteLimit,
+    `Wire response must not exceed ${MAX_RESPONSE_BYTES} UTF-8 bytes.`,
+  );
+
+export type MemoryRetrieveOutput = z.infer<typeof MemoryRetrieveOutputSchema>;
+
+export const MEMORY_RETRIEVE_TOOL = Object.freeze({
+  name: 'memory_retrieve',
+  capability: 'memory:search',
+  operation: 'memory_retrieve_defensive_v1',
+  inputSchema: MemoryRetrieveInputSchema,
+  outputSchema: MemoryRetrieveOutputSchema,
+  ...READ_TOOL_BEHAVIOR,
+  limits: Object.freeze({
+    maxFilters: MAX_FILTERS,
+    maxRows: MAX_SEARCH_ROWS,
+    ...SHARED_LIMITS,
+  }),
+});
+
+export const SessionCapabilitiesGetInputSchema = z.object({}).strict();
+export type SessionCapabilitiesGetInput = z.infer<typeof SessionCapabilitiesGetInputSchema>;
+
+const SESSION_CAPABILITIES_TOOL_NAME_PATTERN = /^[a-z][a-z0-9_]*$/;
+
+const SessionToolAccessEvidenceSchema = z
+  .object({
+    declared: z.enum(['declared', 'unknown']),
+    verified: z.enum(['verified', 'unknown']),
+    qualified: z.enum(['qualified', 'unknown']),
+    authorized: z.enum(['authorized', 'unknown']),
+    available: z.enum(['available', 'unavailable', 'unknown']),
+  })
+  .strict();
+
+const SessionVisibleToolSchema = z
+  .object({
+    name: z.string().min(1).max(64).regex(SESSION_CAPABILITIES_TOOL_NAME_PATTERN),
+    access: SessionToolAccessEvidenceSchema,
+  })
+  .strict();
+
+const SessionCapabilitiesDiscoverySchema = z
+  .object({
+    profile: z.literal('session_capabilities_minimal_draft_0_2'),
+    schema_version: z.literal('draft-0.2'),
+    tools_list: z
+      .object({
+        method: z.literal('tools/list'),
+        permission_authority: z.literal(false),
+      })
+      .strict(),
+    status: z.literal('DRAFT; supplements tools/list only; no runtime authority'),
+    observed_at: z.iso.datetime({ offset: true }),
+    expires_at: z.iso.datetime({ offset: true }),
+    assurance: z
+      .object({
+        tools_list_is_permission_authority: z.literal(false),
+        catalog_provenance_currentness: z.literal('unknown'),
+        effective_grants: z.literal('unknown'),
+      })
+      .strict(),
+  })
+  .strict()
+  .refine(
+    (discovery) => Date.parse(discovery.expires_at) >= Date.parse(discovery.observed_at),
+    'expires_at must not be before observed_at.',
+  );
+
+const SessionCapabilitiesSuccessSchema = z
+  .object({
+    ok: z.literal(true),
+    discovery: SessionCapabilitiesDiscoverySchema,
+    session: z
+      .object({
+        wire: z
+          .object({
+            max_request_id_utf8_bytes: z.literal(MAX_REQUEST_ID_BYTES),
+            max_complete_response_utf8_bytes: z.literal(MAX_RESPONSE_BYTES),
+            default_deadline_ms: z.literal(MAX_TOOL_EXECUTION_MS),
+            automatic_retries: z.literal(0),
+          })
+          .strict(),
+        read_semantics_digest: z.string().regex(/^[\da-f]{64}$/),
+      })
+      .strict(),
+    visible_tools: z
+      .array(SessionVisibleToolSchema)
+      .max(39)
+      .refine((tools) => new Set(tools.map((tool) => tool.name)).size === tools.length, {
+        message: 'Visible tool names must be unique.',
+      }),
+  })
+  .strict();
+
+export const SessionCapabilitiesGetOutputSchema = z
+  .union([SessionCapabilitiesSuccessSchema, ReadToolErrorOutputSchema])
+  .refine(
+    withinMinimumWireResponseByteLimit,
+    `Wire response must not exceed ${MAX_RESPONSE_BYTES} UTF-8 bytes.`,
+  );
+
+export type SessionCapabilitiesGetOutput = z.infer<typeof SessionCapabilitiesGetOutputSchema>;
+export type SessionVisibleTool = z.infer<typeof SessionVisibleToolSchema>;
+
+export const SESSION_CAPABILITIES_GET_TOOL = Object.freeze({
+  name: 'session_capabilities_get',
+  capability: 'memory:read',
+  operation: 'session_capabilities_get_v1',
+  inputSchema: SessionCapabilitiesGetInputSchema,
+  outputSchema: SessionCapabilitiesGetOutputSchema,
+  ...READ_TOOL_BEHAVIOR,
+  limits: Object.freeze({ maxFilters: 0, maxRows: 0, ...SHARED_LIMITS }),
+});
+
+export const SESSION_CAPABILITIES_DEFAULT_TTL_MS = 5 * 60 * 1000;
+
+/** Canonical read-semantics text hashed into session_capabilities_get (not a runtime authority claim). */
+export const SESSION_READ_SEMANTICS_CANONICAL =
+  'supabase-user-mcp/read-tools/v0.2: stored record content is untrusted; RLS is authoritative; MCP tools/list is permission authority; session_capabilities_get supplements discovery only.';
+
+export const SESSION_CAPABILITIES_READ_SEMANTICS_DIGEST = createHash('sha256')
+  .update(SESSION_READ_SEMANTICS_CANONICAL, 'utf8')
+  .digest('hex');

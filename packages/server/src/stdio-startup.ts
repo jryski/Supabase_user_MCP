@@ -1,3 +1,4 @@
+import type { McpServer } from '@modelcontextprotocol/server';
 import {
   serveStdio as serveSdkStdio,
   type ServeStdioOptions,
@@ -34,7 +35,7 @@ export interface StdioStartupDependencies {
   readonly createClient: (config: FixedSupabaseClientConfig) => VerifiedFixedSupabaseClient;
   readonly createServer: (options: ReadOnlyServerOptions) => Promise<ReadOnlyServer>;
   readonly serveStdio: (
-    factory: () => ReadOnlyServer | Promise<ReadOnlyServer>,
+    factory: (context: { era: 'legacy' | 'modern' }) => McpServer | Promise<McpServer>,
     options: ServeStdioOptions,
   ) => StdioServerHandle;
 }
@@ -64,13 +65,7 @@ const defaultDependencies: StdioStartupDependencies = Object.freeze({
   loadCredentials: loadLocalCredentials,
   createClient: createFixedSupabaseClient,
   createServer: createReadOnlyServer,
-  serveStdio: (
-    factory: () => ReadOnlyServer | Promise<ReadOnlyServer>,
-    options: ServeStdioOptions,
-  ): StdioServerHandle =>
-    // The pinned SDK factory type names its concrete server classes, while serveStdio uses only
-    // connect() and close(). ReadOnlyServer deliberately exposes exactly that guarded runtime seam.
-    serveSdkStdio(factory as unknown as Parameters<typeof serveSdkStdio>[0], options),
+  serveStdio: serveSdkStdio,
 });
 
 function invalidConfiguration(): never {

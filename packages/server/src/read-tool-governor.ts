@@ -153,6 +153,21 @@ function countRows(output: unknown): number {
     return value.record === null ? 0 : 1;
   }
 
+  if (
+    value.ok === true &&
+    typeof value.outcome === 'string' &&
+    typeof value.result === 'object' &&
+    value.result !== null
+  ) {
+    const inner = value.result as Record<string, unknown>;
+    if (inner.ok === true && Array.isArray(inner.items)) {
+      return inner.items.length;
+    }
+    if (inner.ok === true && inner.record !== undefined) {
+      return inner.record === null ? 0 : 1;
+    }
+  }
+
   return 0;
 }
 
