@@ -9,7 +9,7 @@ that path.
 
 Sign off each commit with `git commit -s`. That appends a line in this form:
 
-```
+```text
 Signed-off-by: Your Name <you@example.com>
 ```
 
@@ -24,7 +24,7 @@ from <https://developercertificate.org/>. It is the authoritative statement of
 what your sign-off certifies. Anything else in this file is explanation and
 does not modify it.
 
-```
+```text
 Developer Certificate of Origin
 Version 1.1
 
