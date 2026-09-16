@@ -60,11 +60,13 @@ describe('read-only stdio startup', () => {
       getMemoryRow: async () => null,
       listRecentMemoryRows: async () => ({ rows: [] }),
     };
-    const server: ReadOnlyServer = {
+    const server = {
       connect: async () => undefined,
       close: async () => undefined,
-    };
-    let capturedFactory: (() => ReadOnlyServer | Promise<ReadOnlyServer>) | undefined;
+    } as unknown as ReadOnlyServer;
+    let capturedFactory:
+      | ((context: { era: 'legacy' | 'modern' }) => ReadOnlyServer | Promise<ReadOnlyServer>)
+      | undefined;
     const handle = { close: vi.fn(async () => undefined) };
     const dependencies: StdioStartupDependencies = {
       loadCredentials: vi.fn(async () => {
@@ -105,7 +107,7 @@ describe('read-only stdio startup', () => {
       credentials,
     });
     if (!capturedFactory) throw new TypeError('Expected stdio factory.');
-    await expect(capturedFactory()).resolves.toBe(server);
+    await expect(capturedFactory({ era: 'modern' })).resolves.toBe(server);
   });
 
   it('reports startup failures generically without registering signal handlers', async () => {
@@ -168,7 +170,8 @@ describe('read-only stdio startup', () => {
         userAccessToken: 'header.payload.signature',
       }),
       createClient: () => client,
-      createServer: async () => ({ connect: async () => undefined, close }),
+      createServer: async () =>
+        ({ connect: async () => undefined, close }) as unknown as ReadOnlyServer,
       serveStdio: () => {
         throw new Error('secret transport detail');
       },

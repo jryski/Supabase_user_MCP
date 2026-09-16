@@ -8,6 +8,21 @@ the first public package is released.
 
 ## [Unreleased]
 
+### Added
+
+- Opt-in candidate contracts for `memory_retrieve` and `session_capabilities_get`,
+  reusing the existing read parser, result renderer and governance checks.
+- Synthetic regressions for contradictory results and six fresh-process MCP
+  scenarios. Default startup continues to expose the original three memory tools.
+- [Controlled-client candidate guide](docs/status/2026-09-15-controlled-client-candidate.md),
+  separating synthetic validation from live authorization and deployment.
+
+### Fixed
+
+- Read-only stdio factory returns the SDK server required for modern negotiation,
+  while preserving bounded transport checks. The former connect/close-only wrapper
+  prevented discovery before tool calls. This correction is unreleased.
+
 ## [0.1.0-alpha.1] - 2026-09-06
 
 ### Added

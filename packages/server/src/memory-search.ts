@@ -38,6 +38,8 @@ function error(
 export interface MemorySearchOptions {
   readonly timeoutMs?: number;
   readonly governance?: ReadToolGovernancePolicy;
+  /** When true, skip the shared per-principal governor (nested composition only). */
+  readonly ungoverned?: boolean;
 }
 
 export function createMemorySearch(client: FixedSupabaseClient, options: MemorySearchOptions = {}) {
@@ -89,6 +91,10 @@ export function createMemorySearch(client: FixedSupabaseClient, options: MemoryS
       callerSignal?.removeEventListener('abort', cancel);
     }
   };
+  if (options.ungoverned === true) {
+    return (unsafeInput: unknown, context?: ReadToolInvocationContext) =>
+      executeRaw(unsafeInput, normalizeReadToolExecutionContext(context).signal);
+  }
   const execute = createReadToolExecutor(
     MEMORY_SEARCH_TOOL,
     (input, signal) => executeRaw(input, signal),

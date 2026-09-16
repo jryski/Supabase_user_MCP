@@ -38,6 +38,17 @@ Read the [validation results and remaining gates](docs/status/2026-09-08-private
 including the open OAuth issuer-storage warning and application-policy review.
 This is private alpha, not beta or production readiness.
 
+## September 15, 2026: retrieval and process-client candidate
+
+A local, unreleased candidate adds opt-in `memory_retrieve` and
+`session_capabilities_get` tools and fixes a stdio startup negotiation defect.
+The default three-tool surface is unchanged. Synthetic tests pass, including
+fresh client/server processes; live Vault authorization and phone acceptance
+remain unverified for this candidate.
+
+See the [candidate testing guide](docs/status/2026-09-15-controlled-client-candidate.md)
+for supported behavior, reproducible checks and the remaining enablement gates.
+
 ## Why this exists
 
 Supabase's hosted MCP server is a developer control-plane tool. Supabase User MCP explores the complementary **application data-plane** problem:
