@@ -110,3 +110,8 @@ Reviewers prioritize, in order:
 
 By contributing, you agree that your contributions are licensed under the repository's
 [Apache License 2.0](LICENSE).
+
+## Sign-off
+
+Commits must be signed off under the Developer Certificate of Origin. Use
+`git commit -s`. See [DCO.md](DCO.md).
