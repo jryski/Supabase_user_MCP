@@ -11,9 +11,10 @@ Supabase User MCP is an independent, security-first data-plane MCP server for ap
 > [!WARNING]
 > This repository is still pre-release. The experimental local-stdio, read-only, synthetic-only
 > user-context path is implemented and accepted on `main`. An experimental local remote HTTP +
-> OAuth 2.1 lab profile exists on this branch; hosted live OAuth, production deployment, writes,
-> hosted artifact inspection, and privileged credentials remain unsupported. Do not connect
-> this project to production data merely because the local and CI acceptance suites are green.
+> OAuth 2.1 lab profile exists on this branch and is explicitly not production-ready. For
+> production use, production deployment, remote OAuth, writes, hosted artifact inspection, and
+> privileged credentials remain unsupported, and hosted live OAuth is unmet. Do not connect this
+> project to production data merely because the local and CI acceptance suites are green.
 
 The [`v0.1.0-alpha.1` release candidate](docs/releases/v0.1.0-alpha.1.md) packages the
 accepted local principal-bound read path. Remote HTTP and Supabase OAuth 2.1 remain a separately
