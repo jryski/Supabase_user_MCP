@@ -16,10 +16,10 @@ describe('M2 official-upstream harness contract', () => {
     expect(script).toContain('postgrest-openapi-surface-census');
   });
 
-  it('installs and verifies the declared npm version in both CI jobs', async () => {
+  it('installs and verifies the declared npm version in every acceptance CI job', async () => {
     const workflow = await readFile(CI_WORKFLOW, 'utf8');
 
-    expect(workflow.match(/npm install --global npm@11\.19\.0/gu) ?? []).toHaveLength(2);
-    expect(workflow.match(/test "\$\(npm --version\)" = "11\.19\.0"/gu) ?? []).toHaveLength(2);
+    expect(workflow.match(/npm install --global npm@11\.19\.0/gu) ?? []).toHaveLength(3);
+    expect(workflow.match(/test "\$\(npm --version\)" = "11\.19\.0"/gu) ?? []).toHaveLength(3);
   });
 });
