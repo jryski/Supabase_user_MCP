@@ -175,7 +175,7 @@ Issue #70 also contains a proposed, isolated deployment control-plane profile fo
 `create_work_item` and `post_model_message` RPCs. It is a library-level implementation trial and is
 not registered by the accepted user-context CLI. See the
 [minimum control-plane API](docs/CONTROL_PLANE_API.md) and
-[ADR-0005](docs/decisions/0005-isolated-deployment-control-plane.md).
+[ADR-0006](docs/decisions/0006-isolated-deployment-control-plane.md).
 
 ### Current scope limits
 

@@ -1,4 +1,4 @@
-# ADR-0005: Isolate privileged deployment control-plane tools
+# ADR-0006: Isolate privileged deployment control-plane tools
 
 - **Status:** Proposed, implementation trial in issue #70
 - **Date:** 2026-09-13

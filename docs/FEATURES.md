@@ -148,7 +148,7 @@ Issue #70 adds a separate privileged server profile for two deployment coordinat
 This trial is not part of the accepted M2 user-context server or the M3 canonical-memory write
 model. It does not add tools to the production read-only CLI. Its contracts, fixed RPC paths, and
 registration are documented in [the minimum control-plane API](CONTROL_PLANE_API.md) and
-[ADR-0005](decisions/0005-isolated-deployment-control-plane.md).
+[ADR-0006](decisions/0006-isolated-deployment-control-plane.md).
 
 ### `memory_append_observation`
 
