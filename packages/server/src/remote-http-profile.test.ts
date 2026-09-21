@@ -162,4 +162,206 @@ describe('remote HTTP profile', () => {
     expect(response.status).toBe(401);
     expect(await response.text()).not.toContain(token);
   });
+
+  it('rejects query-string access_token without Authorization and makes zero Data API calls', async () => {
+    const oauth = lab();
+    const validToken = await issueLabToken(oauth);
+    const forgedToken = await mintSyntheticAccessToken({
+      issuer: ISSUER,
+      resourceUri: RESOURCE,
+      principalId: PRINCIPAL,
+      clientId: 'smp-attacker',
+      sessionId: randomUUID(),
+    });
+    for (const queryToken of [validToken, forgedToken]) {
+      const paths: string[] = [];
+      const response = await profile(
+        oauth,
+        trackingFetch(paths),
+      )(
+        new Request(`${RESOURCE}?access_token=${encodeURIComponent(queryToken)}`, {
+          method: 'POST',
+          headers: { Accept: 'application/json' },
+          body: '{}',
+        }),
+      );
+      expect(response.status).toBe(401);
+      const body = await response.text();
+      expect(body).not.toContain(queryToken);
+      expect(body).not.toContain(DOWNSTREAM_CREDENTIAL_UNRESOLVED);
+      expect(paths).toEqual([]);
+    }
+  });
+
+  it('ignores query-string access_token when Authorization bearer is valid and makes zero Data API calls', async () => {
+    const oauth = lab();
+    const token = await issueLabToken(oauth);
+    const forgedQueryToken = await mintSyntheticAccessToken({
+      issuer: ISSUER,
+      resourceUri: RESOURCE,
+      principalId: PRINCIPAL,
+      clientId: 'smp-attacker',
+      sessionId: randomUUID(),
+    });
+    const paths: string[] = [];
+    const handler = profile(oauth, trackingFetch(paths));
+    const response = await handler(
+      new Request(`${RESOURCE}?access_token=${encodeURIComponent(forgedQueryToken)}`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}`, Accept: 'application/json' },
+        body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize', params: {} }),
+      }),
+    );
+    expect(response.status).toBe(403);
+    const body = await response.text();
+    expect(JSON.parse(body)).toEqual({ error: DOWNSTREAM_CREDENTIAL_UNRESOLVED });
+    expect(body).not.toContain(forgedQueryToken);
+    expect(body).not.toContain(token);
+    expect(paths).toEqual([]);
+  });
+
+  it('rejects alternate-header bearer tokens without Authorization and makes zero Data API calls', async () => {
+    const oauth = lab();
+    const token = await issueLabToken(oauth);
+    const alternateHeaders = [
+      { 'x-access-token': token },
+      { 'x-supabase-access-token': token },
+      { 'x-forwarded-authorization': `Bearer ${token}` },
+      { 'x-authorization': `Bearer ${token}` },
+    ] as const;
+    for (const headers of alternateHeaders) {
+      const paths: string[] = [];
+      const handler = profile(oauth, trackingFetch(paths));
+      const response = await handler(
+        new Request(RESOURCE, {
+          method: 'POST',
+          headers: { Accept: 'application/json', ...headers },
+          body: '{}',
+        }),
+      );
+      expect(response.status).toBe(401);
+      const body = await response.text();
+      expect(body).not.toContain(token);
+      expect(body).not.toContain(DOWNSTREAM_CREDENTIAL_UNRESOLVED);
+      expect(paths).toEqual([]);
+    }
+    const pathsSmuggled: string[] = [];
+    const smuggled = profile(oauth, trackingFetch(pathsSmuggled));
+    const smuggledResponse = await smuggled(
+      new Request(RESOURCE, {
+        method: 'POST',
+        headers: {
+          Accept: 'application/json',
+          Authorization: 'Bearer',
+          'x-forwarded-authorization': `Bearer ${token}`,
+        },
+        body: '{}',
+      }),
+    );
+    expect(smuggledResponse.status).toBe(401);
+    const smuggledBody = await smuggledResponse.text();
+    expect(smuggledBody).not.toContain(token);
+    expect(smuggledBody).not.toContain(DOWNSTREAM_CREDENTIAL_UNRESOLVED);
+    expect(pathsSmuggled).toEqual([]);
+  });
+
+  function toolsCallBody(credentialKey: string, credentialValue: string): string {
+    return JSON.stringify({
+      jsonrpc: '2.0',
+      id: 1,
+      method: 'tools/call',
+      params: { name: 'probe', arguments: { [credentialKey]: credentialValue } },
+    });
+  }
+
+  it('rejects tools/call argument bearer without Authorization and makes zero Data API calls', async () => {
+    const oauth = lab();
+    const token = await issueLabToken(oauth);
+    for (const key of ['access_token', 'bearer', 'authorization'] as const) {
+      const paths: string[] = [];
+      const handler = profile(oauth, trackingFetch(paths));
+      const response = await handler(
+        new Request(RESOURCE, {
+          method: 'POST',
+          headers: { Accept: 'application/json', 'content-type': 'application/json' },
+          body: toolsCallBody(key, key === 'authorization' ? `Bearer ${token}` : token),
+        }),
+      );
+      expect(response.status).toBe(401);
+      const body = await response.text();
+      expect(body).not.toContain(token);
+      expect(body).not.toContain(DOWNSTREAM_CREDENTIAL_UNRESOLVED);
+      expect(paths).toEqual([]);
+    }
+  });
+
+  it('keeps header-derived auth when tools/call arguments carry bearer tokens and makes zero Data API calls', async () => {
+    const oauth = lab();
+    const token = await issueLabToken(oauth);
+    const paths: string[] = [];
+    const handler = profile(oauth, trackingFetch(paths));
+    const response = await handler(
+      new Request(RESOURCE, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${token}`,
+          Accept: 'application/json',
+          'content-type': 'application/json',
+        },
+        body: toolsCallBody('access_token', token),
+      }),
+    );
+    expect(response.status).toBe(403);
+    const body = await response.text();
+    expect(JSON.parse(body)).toEqual({ error: DOWNSTREAM_CREDENTIAL_UNRESOLVED });
+    expect(body).not.toContain(token);
+    expect(paths).toEqual([]);
+  });
+
+  it('denied auth never dispatches to the Data API or reaches downstream credential unresolved', async () => {
+    const oauth = lab();
+    const validToken = await issueLabToken(oauth);
+    const wrongClientToken = await mintSyntheticAccessToken({
+      issuer: ISSUER,
+      resourceUri: RESOURCE,
+      principalId: PRINCIPAL,
+      clientId: 'smp-other-client',
+      sessionId: randomUUID(),
+    });
+    oauth.revokeAccessToken(validToken);
+    const cases: Array<{ label: string; headers: Record<string, string> }> = [
+      { label: 'missing bearer', headers: { Accept: 'application/json' } },
+      {
+        label: 'malformed bearer',
+        headers: { Authorization: 'Bearer', Accept: 'application/json' },
+      },
+      {
+        label: 'wrong-client bearer',
+        headers: { Authorization: `Bearer ${wrongClientToken}`, Accept: 'application/json' },
+      },
+      {
+        label: 'revoked bearer',
+        headers: { Authorization: `Bearer ${validToken}`, Accept: 'application/json' },
+      },
+    ];
+    for (const { headers } of cases) {
+      const paths: string[] = [];
+      const handler = profile(oauth, trackingFetch(paths));
+      const response = await handler(
+        new Request(RESOURCE, {
+          method: 'POST',
+          headers,
+          body: '{}',
+        }),
+      );
+      expect(response.status).toBe(401);
+      const body = await response.text();
+      expect(body).not.toContain(DOWNSTREAM_CREDENTIAL_UNRESOLVED);
+      const presented = headers.Authorization?.match(/^Bearer\s+(.+)$/i)?.[1] ?? '';
+      if (presented.length > 0) {
+        expect(body).not.toContain(presented);
+      }
+      expect(paths).toEqual([]);
+    }
+  });
 });
