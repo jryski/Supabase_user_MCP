@@ -20,7 +20,23 @@ import {
 const ISSUER = 'https://auth.loopback.invalid/auth/v1';
 const RESOURCE = LOCAL_LAB_MCP_RESOURCE_URI;
 const PRINCIPAL = '11111111-1111-4111-9111-111111111111';
+const PRINCIPAL_B = '22222222-2222-4222-9222-222222222222';
 const CLIENT = 'smp-lab-inspector';
+
+function createJoinBarrier(parties: number) {
+  let arrived = 0;
+  let wake!: () => void;
+  const allHere = new Promise<void>((resolve) => {
+    wake = resolve;
+  });
+  return {
+    async wait(): Promise<void> {
+      arrived += 1;
+      if (arrived >= parties) wake();
+      await allHere;
+    },
+  };
+}
 
 async function denialOf(
   token: string,
@@ -288,5 +304,49 @@ describe('remote access-token verifier', () => {
       },
     });
     await expect(verifier.verifyAccessToken(token)).resolves.toMatchObject({ clientId: CLIENT });
+  });
+
+  it('returns distinct AuthInfo identity under concurrent interleaved revocation inspect', async () => {
+    const sessionA = randomUUID();
+    const sessionB = randomUUID();
+    const tokenA = await mintSyntheticAccessToken({
+      issuer: ISSUER,
+      resourceUri: RESOURCE,
+      principalId: PRINCIPAL,
+      clientId: CLIENT,
+      sessionId: sessionA,
+    });
+    const tokenB = await mintSyntheticAccessToken({
+      issuer: ISSUER,
+      resourceUri: RESOURCE,
+      principalId: PRINCIPAL_B,
+      clientId: CLIENT,
+      sessionId: sessionB,
+    });
+    const barrier = createJoinBarrier(2);
+    const verifier = createRemoteAccessTokenVerifier({
+      issuer: ISSUER,
+      resourceUri: RESOURCE,
+      expectedClientId: CLIENT,
+      signingKey: { kind: 'hmac', secret: SYNTHETIC_OAUTH_HMAC_SECRET },
+      revocationAuthority: {
+        inspectAccessToken: async () => {
+          await barrier.wait();
+          return 'active';
+        },
+      },
+    });
+
+    const [authA, authB] = await Promise.all([
+      verifier.verifyAccessToken(tokenA),
+      verifier.verifyAccessToken(tokenB),
+    ]);
+
+    expect(authA.token).toBe(tokenA);
+    expect(authA.clientId).toBe(CLIENT);
+    expect(authA.extra).toMatchObject({ principalId: PRINCIPAL, sessionId: sessionA });
+    expect(authB.token).toBe(tokenB);
+    expect(authB.clientId).toBe(CLIENT);
+    expect(authB.extra).toMatchObject({ principalId: PRINCIPAL_B, sessionId: sessionB });
   });
 });
