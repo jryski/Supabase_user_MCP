@@ -14,6 +14,7 @@ import {
   type AccessTokenRevocationAuthority,
   type RemoteTokenSigningKey,
 } from './remote-token-verifier.js';
+import { assertBoundAuthorizationServerMetadata } from './validate-bound-authorization-server-metadata.js';
 
 export interface RemoteHttpProfileConfig {
   readonly resourceUri: string;
@@ -50,9 +51,7 @@ export function createRemoteHttpProfile(config: RemoteHttpProfileConfig): Remote
   const resourceUri = canonicalizeResourceUri(config.resourceUri);
   const resourceUrl = new URL(resourceUri);
   const issuer = canonicalizeResourceUri(config.issuer);
-  if (config.authorizationServerMetadata.issuer !== issuer) {
-    throw new TypeError('Authorization-server metadata issuer must match the configured issuer.');
-  }
+  assertBoundAuthorizationServerMetadata(issuer, config.authorizationServerMetadata);
   const verifier = createRemoteAccessTokenVerifier({
     issuer,
     resourceUri,

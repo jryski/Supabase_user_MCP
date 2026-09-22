@@ -9,6 +9,7 @@ import {
 
 import { createRemoteHttpProfile, type RemoteHttpHandler } from './remote-http-profile.js';
 import type { AccessTokenRevocationAuthority } from './remote-token-verifier.js';
+import { assertBoundAuthorizationServerMetadata } from './validate-bound-authorization-server-metadata.js';
 
 export const REMOTE_HTTP_STARTUP_ERROR = 'REMOTE_HTTP_STARTUP_INVALID_CONFIGURATION';
 export const RESOURCE_URI_ENV = 'SUPABASE_USER_MCP_RESOURCE_URI';
@@ -96,9 +97,20 @@ export function createRemoteHttpHandlerFromEnvironment(
   ) {
     invalid();
   }
+  let canonicalIssuer: string;
+  try {
+    canonicalIssuer = canonicalizeResourceUri(issuer);
+  } catch {
+    invalid();
+  }
+  try {
+    assertBoundAuthorizationServerMetadata(canonicalIssuer, options.authorizationServerMetadata);
+  } catch {
+    invalid();
+  }
   return createRemoteHttpProfile({
     resourceUri: canonicalizeResourceUri(resourceUri),
-    issuer: canonicalizeResourceUri(issuer),
+    issuer,
     expectedClientId,
     signingKey: { kind: 'jwks', jwksUrl: jwksUrlFromMetadata(options.authorizationServerMetadata) },
     revocationAuthority: options.revocationAuthority,
