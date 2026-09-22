@@ -22,6 +22,9 @@ the first public package is released.
   Dual audience does not authorize MCP bearer passthrough. Downstream credential unresolved; hosted
   live OAuth unmet. See [ADR-0005](docs/decisions/0005-dual-resource-data-api-binding.md)
   and [issue 62 evidence](docs/evidence/ISSUE_62_REMOTE_OAUTH_HTTP.md).
+- [ADR-0006](docs/decisions/0006-downstream-credential-recheck.md) records a 2026-09-22 recheck:
+  Supabase still has no non-passthrough MCP-to-Data-API credential. Remote dispatch stays
+  fail-closed. A dual-grant broker is not authorized.
 
 ### Fixed
 

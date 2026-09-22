@@ -2,13 +2,15 @@ import { describe, expect, it } from 'vitest';
 
 import {
   ACCESS_TOKEN_REVOCATION_POLICY,
+  audienceValues,
+  canonicalizeResourceUri,
   DATA_API_AUDIENCE,
+  DOWNSTREAM_CREDENTIAL_RECHECK_2026_09_22,
+  DOWNSTREAM_CREDENTIAL_UNRESOLVED,
+  extractServerControlledClientId,
   LOCAL_LAB_MCP_RESOURCE_URI,
   REMOTE_DOWNSTREAM_CREDENTIAL_POLICY,
   REMOTE_IDENTITY_CLAIM_POLICY,
-  audienceValues,
-  canonicalizeResourceUri,
-  extractServerControlledClientId,
   userMetadataAttemptsAuthorization,
 } from './remote-oauth-http-policy.js';
 
@@ -32,6 +34,20 @@ describe('remote OAuth/HTTP policy contracts', () => {
     expect(REMOTE_DOWNSTREAM_CREDENTIAL_POLICY.dualAudienceDoesNotAuthorizePassthrough).toBe(true);
     expect(REMOTE_DOWNSTREAM_CREDENTIAL_POLICY.separateDownstreamCredential).toBe('unresolved');
     expect(REMOTE_DOWNSTREAM_CREDENTIAL_POLICY.failClosedUntilResolved).toBe(true);
+    expect(DOWNSTREAM_CREDENTIAL_RECHECK_2026_09_22).toEqual({
+      checkedOn: '2026-09-22',
+      nativeMcpToDataApiExchange: 'unsupported',
+      oauthServerGrantTypes: ['authorization_code', 'refresh_token'],
+      gotrueUserTokenExchangeOnMaster: 'absent',
+      gotrueRfc8693ProviderLogin: 'not-a-data-api-credential',
+      inboundBearerPassthrough: 'forbidden',
+      privilegedMint: 'forbidden',
+      customAccessTokenHookMintsSecondCredential: false,
+      sameGrantRefreshIsSeparateUpstreamToken: false,
+      dualGrantBroker: 'architecture-approval-required',
+      remoteDataDispatch: 'fail-closed',
+    });
+    expect(DOWNSTREAM_CREDENTIAL_UNRESOLVED).toBe('downstream_credential_unresolved');
   });
 
   it('canonicalizes resource URIs without trailing slash unless the path is significant', () => {
