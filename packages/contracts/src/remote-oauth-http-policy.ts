@@ -43,6 +43,25 @@ export const REMOTE_DOWNSTREAM_CREDENTIAL_POLICY = Object.freeze({
   error: DOWNSTREAM_CREDENTIAL_UNRESOLVED,
 });
 
+/**
+ * Observation of supported non-passthrough Data API credentials as of the
+ * 2026-09-22 recheck. This is not a runtime switch and does not authorize a
+ * broker. See ADR-0006.
+ */
+export const DOWNSTREAM_CREDENTIAL_RECHECK_2026_09_22 = Object.freeze({
+  checkedOn: '2026-09-22' as const,
+  nativeMcpToDataApiExchange: 'unsupported' as const,
+  oauthServerGrantTypes: Object.freeze(['authorization_code', 'refresh_token'] as const),
+  gotrueUserTokenExchangeOnMaster: 'absent' as const,
+  gotrueRfc8693ProviderLogin: 'not-a-data-api-credential' as const,
+  inboundBearerPassthrough: 'forbidden' as const,
+  privilegedMint: 'forbidden' as const,
+  customAccessTokenHookMintsSecondCredential: false as const,
+  sameGrantRefreshIsSeparateUpstreamToken: false as const,
+  dualGrantBroker: 'architecture-approval-required' as const,
+  remoteDataDispatch: 'fail-closed' as const,
+});
+
 export const RemoteCanonicalUriSchema = z
   .string()
   .url()
