@@ -16,6 +16,12 @@ the first public package is released.
   scenarios. Default startup continues to expose the original three memory tools.
 - [Controlled-client candidate guide](docs/status/2026-09-15-controlled-client-candidate.md),
   separating synthetic validation from live authorization and deployment.
+- Experimental local remote HTTP + OAuth 2.1 scaffolding: JWKS verification, PKCE S256, exact
+  redirects, live access-token revocation, bounded ingress (including TRACE/malformed-Host
+  Request-construction failures), and fail-closed Data API dispatch.
+  Dual audience does not authorize MCP bearer passthrough. Downstream credential unresolved; hosted
+  live OAuth unmet. See [ADR-0005](docs/decisions/0005-dual-resource-data-api-binding.md)
+  and [issue 62 evidence](docs/evidence/ISSUE_62_REMOTE_OAUTH_HTTP.md).
 
 ### Fixed
 

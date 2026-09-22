@@ -183,6 +183,8 @@ The v0.1 read-only pilot is done only when:
 
 ## Later work
 
-Issue #34 S2 fixed artifact inspection is the active extension. M3 governed writes, M4 remote
-HTTP/OAuth, M5 fleet hardening, and M6 stable v1 remain in `docs/ROADMAP.md`. They do not alter the
-completed v0.1 baseline and require their own acceptance gates.
+Issue #34 S5a exact search is merged at its synthetic/local scope. M3 governed writes, M4 hosted
+live OAuth, M5 fleet hardening, and M6 stable v1 remain in `docs/ROADMAP.md`. The experimental local
+remote HTTP profile is documented in [ADR-0005](decisions/0005-dual-resource-data-api-binding.md)
+as fail-closed pending a supported downstream credential and does not alter the completed v0.1
+stdio baseline.
