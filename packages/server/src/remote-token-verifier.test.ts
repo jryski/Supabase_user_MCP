@@ -134,6 +134,52 @@ describe('remote access-token verifier', () => {
 
   it('requires Data API audience and mandatory MCP resource binding', async () => {
     const sessionId = randomUUID();
+    // Case A: dual aud + matching resource — accept
+    const dualBound = await mintSyntheticAccessToken({
+      issuer: ISSUER,
+      resourceUri: RESOURCE,
+      principalId: PRINCIPAL,
+      clientId: CLIENT,
+      sessionId,
+      aud: [DATA_API_AUDIENCE, RESOURCE],
+      resource: RESOURCE,
+    });
+    const acceptVerifier = createRemoteAccessTokenVerifier({
+      issuer: ISSUER,
+      resourceUri: RESOURCE,
+      expectedClientId: CLIENT,
+      signingKey: { kind: 'hmac', secret: SYNTHETIC_OAUTH_HMAC_SECRET },
+      revocationAuthority: { inspectAccessToken: async () => 'active' },
+    });
+    await expect(acceptVerifier.verifyAccessToken(dualBound)).resolves.toMatchObject({
+      clientId: CLIENT,
+      resource: expect.objectContaining({ href: RESOURCE }),
+    });
+
+    // Case B: aud=[authenticated] only, resource=MCP — deny (MCP must be in aud)
+    const resourceClaimOnly = await mintSyntheticAccessToken({
+      issuer: ISSUER,
+      resourceUri: RESOURCE,
+      principalId: PRINCIPAL,
+      clientId: CLIENT,
+      sessionId,
+      aud: [DATA_API_AUDIENCE],
+      resource: RESOURCE,
+    });
+    expect(await denialOf(resourceClaimOnly)).toBe('missing_resource_binding');
+
+    // Case C: aud=[authenticated, MCP], resource=other — deny (independent resource check)
+    const conflictingResource = await mintSyntheticAccessToken({
+      issuer: ISSUER,
+      resourceUri: RESOURCE,
+      principalId: PRINCIPAL,
+      clientId: CLIENT,
+      sessionId,
+      aud: [DATA_API_AUDIENCE, RESOURCE],
+      resource: 'https://other.loopback.invalid/mcp',
+    });
+    expect(await denialOf(conflictingResource)).toBe('wrong_resource');
+
     const dataApiOnly = await mintSyntheticAccessToken({
       issuer: ISSUER,
       resourceUri: RESOURCE,

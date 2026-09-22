@@ -92,25 +92,31 @@ function payloadRecord(payload: JWTPayload): Readonly<Record<string, unknown>> {
   return payload as Readonly<Record<string, unknown>>;
 }
 
-function resourceCandidates(claims: Readonly<Record<string, unknown>>): readonly string[] {
-  const values = [...audienceValues(claims.aud)];
-  if (typeof claims.resource === 'string' && claims.resource.length > 0) {
-    values.push(claims.resource);
-  }
-  return values;
-}
-
-function hasExactResourceBinding(
-  claims: Readonly<Record<string, unknown>>,
+function audienceContainsCanonicalResource(
+  audiences: readonly string[],
   canonicalResource: string,
 ): boolean {
-  return resourceCandidates(claims).some((value) => {
+  return audiences.some((value) => {
     try {
       return canonicalizeResourceUri(value) === canonicalResource;
     } catch {
       return false;
     }
   });
+}
+
+function explicitResourceVerdict(
+  claims: Readonly<Record<string, unknown>>,
+  canonicalResource: string,
+): 'absent' | 'match' | 'mismatch' {
+  if (typeof claims.resource !== 'string' || claims.resource.length === 0) {
+    return 'absent';
+  }
+  try {
+    return canonicalizeResourceUri(claims.resource) === canonicalResource ? 'match' : 'mismatch';
+  } catch {
+    return 'mismatch';
+  }
 }
 
 export function createRemoteAccessTokenVerifier(
@@ -186,12 +192,17 @@ export function createRemoteAccessTokenVerifier(
       if (!audiences.includes(DATA_API_AUDIENCE)) {
         fail('missing_data_api_audience');
       }
-      if (!hasExactResourceBinding(claims, canonicalResource)) {
+      // MCP resource must appear in aud independently; a matching resource claim is not a substitute.
+      if (!audienceContainsCanonicalResource(audiences, canonicalResource)) {
         fail(
           audiences.length === 1 && audiences[0] === DATA_API_AUDIENCE
             ? 'missing_resource_binding'
             : 'wrong_resource',
         );
+      }
+      // If an explicit resource claim is present, it must match; do not OR it into the aud check.
+      if (explicitResourceVerdict(claims, canonicalResource) === 'mismatch') {
+        fail('wrong_resource');
       }
       const clientId = extractServerControlledClientId(claims);
       if (clientId === undefined) {
