@@ -50,11 +50,13 @@ export const MemorySearchInputSchema = z
 
 export type MemorySearchInput = z.infer<typeof MemorySearchInputSchema>;
 
+const OPAQUE_MEMORY_ID = /^(?:mem_[A-Za-z0-9_-]+|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[89ab][0-9a-f]{3}-[0-9a-f]{12})$/i;
+
 const OpaqueMemoryIdSchema = z
   .string()
   .min(26)
   .max(132)
-  .regex(/^mem_[A-Za-z0-9_-]+$/, 'Expected an opaque memory identifier.');
+  .regex(OPAQUE_MEMORY_ID, 'Expected an opaque memory identifier.');
 
 const MemoryRecordFields = {
   id: OpaqueMemoryIdSchema,
