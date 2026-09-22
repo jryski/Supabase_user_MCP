@@ -1,6 +1,6 @@
 # ADR-0005: Dual resource binding does not authorize MCP bearer passthrough
 
-- **Status:** Unresolved — Option A rejected as a downstream-credential mechanism
+- **Status:** Unresolved — Option A rejected as a downstream-credential mechanism. Rechecked 2026-09-22 in [ADR-0006](0006-downstream-credential-recheck.md); disposition unchanged.
 - **Date:** 2026-09-06
 - **Owners:** Maintainers
 - **Milestone:** M4 implementation

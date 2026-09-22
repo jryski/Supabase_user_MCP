@@ -165,7 +165,11 @@ An experimental local remote HTTP + OAuth 2.1 profile (`npm run start:remote`,
 `npm run test:remote-oauth`) validates JWKS verification, dual resource binding, PKCE, and live
 access-token revocation inside the disposable loopback lab. The inbound MCP bearer is not forwarded
 to the Data API; dispatch is fail-closed until a supported separate downstream credential exists.
-Downstream credential and hosted live OAuth remain unmet. This is not completion of issue #62.
+A 2026-09-22 recheck ([ADR-0006](docs/decisions/0006-downstream-credential-recheck.md)) found no
+such credential in current Supabase OAuth grants or Auth source. A dual-grant broker is not
+authorized. Downstream credential and hosted live OAuth remain unmet. This is not completion of
+issue #62. Paste-ready next-step text for that issue is in
+[the issue 62 evidence note](docs/evidence/ISSUE_62_REMOTE_OAUTH_HTTP.md#suggested-comment-for-issue-62).
 
 The intended local path is:
 

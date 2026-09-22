@@ -85,3 +85,71 @@ the disposable lab only.
 
 No access token, refresh token, JWT secret, or service-role key is written to this document
 or to operational events.
+
+## 2026-09-22 downstream-credential recheck
+
+[ADR-0006](../decisions/0006-downstream-credential-recheck.md) re-read current Supabase OAuth
+docs, `supabase/auth` master `ce9a8eee0cc042be8c7a42981a7ddae631e41d91`, and MCP `2026-07-28`.
+No supported grant mints a second user-bound Data API credential. Remote dispatch stays
+fail-closed. This note does not complete issue #62.
+
+Executable hooks added with that ADR:
+
+- `DOWNSTREAM_CREDENTIAL_RECHECK_2026_09_22` in `packages/contracts/src/remote-oauth-http-policy.ts`
+- HTTP profile denial of missing resource binding and a conflicting `resource` before
+  `downstream_credential_unresolved`, with zero outbound `Authorization` headers
+
+## Suggested comment for issue #62
+
+The block below is paste-ready text. This change does not post it.
+
+````markdown
+## Downstream credential recheck — 2026-09-22
+
+Base under review: `fcbaca121d0717ee8ff98df90b2f12475b05bb78` (PR #75).
+This follow-up is a design and regression scaffold only. Remote Data API dispatch stays
+fail-closed with `downstream_credential_unresolved`. No merge to main. Not #62 completion.
+
+### Finding
+
+No supported non-passthrough mechanism currently yields a second short-lived user-bound Data
+API credential (same subject and server-controlled client, not the inbound MCP bearer, no
+`service_role`). A dual-grant broker is still an unapproved architecture. I did not implement one.
+
+Pinned on 2026-09-22 (detail and proof bars are in ADR-0006):
+
+- Supabase docs `ef0f7f2b3d8cd2075c48b7d94b2badd59c4721b9`, `oauth-flows.mdx`: OAuth 2.1 server
+  grant types are only `authorization_code` and `refresh_token`. The page's "token exchange"
+  section is authorization-code redemption, not RFC 8693.
+- `supabase/auth` master `ce9a8eee0cc042be8c7a42981a7ddae631e41d91`: `POST /token` accepts
+  `password`, `refresh_token`, `id_token`, `pkce`, and `web3` only. The OAuth server token
+  handler accepts `authorization_code` and `refresh_token` only.
+- supabase/auth#2609 is still open. Its RFC 8693 grant is provider access-token sign-in
+  (Facebook), not an MCP resource token exchanged for a Data API token, and it is not on master.
+- The MCP authentication guide still says the MCP server sends the Supabase-issued access token
+  to Supabase APIs. That is inbound-bearer use. MCP 2026-07-28 forbids passing that token through
+  to an upstream API.
+- Enterprise ID-JAG remains Supabase's operated management MCP. Custom Auth-backed MCP servers
+  are pointed at the MCP authentication guide.
+- A Custom Access Token Hook edits the same issued JWT. Refresh of the MCP grant is the same
+  authorization, and this server does not custody the client refresh token.
+
+### What did not change
+
+Stdio still loads one protected user access token and calls the fixed Data API as that user.
+After a valid MCP bearer, remote HTTP still returns `403 downstream_credential_unresolved` and
+makes no `/rest/v1` call. Missing resource binding and a conflicting `resource` still fail with
+`401` before that response. The inbound bearer is not forwarded.
+
+### Decision needed
+
+1. Wait for a documented Supabase grant that mints a distinct Data API token for the same
+   subject and client, with the proof list in ADR-0006 (Option 1).
+2. Separately approve a dual-grant broker (MCP-facing token plus a distinct Supabase
+   authorization-code grant and refresh custody). That is a new authorization boundary
+   (ADR-0006 Option 2), not an #62 patch.
+3. Keep fail-closed and leave #62 open (ADR-0006 Option 3, current disposition).
+
+I recommend (3) until you explicitly choose (1) or (2). Option (2) should not start without
+the custody decision ADR-0006 lists.
+````

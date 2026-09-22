@@ -3,6 +3,7 @@ import { readFile } from 'node:fs/promises';
 
 import { getOAuthProtectedResourceMetadataUrl } from '@modelcontextprotocol/server';
 import {
+  DATA_API_AUDIENCE,
   DOWNSTREAM_CREDENTIAL_UNRESOLVED,
   LOCAL_LAB_MCP_RESOURCE_URI,
 } from '@supabase-user-mcp/contracts';
@@ -82,6 +83,8 @@ describe('remote HTTP profile', () => {
     expect(source).not.toMatch(/userAccessToken:\s*auth\.token/);
     expect(source).not.toContain('createFixedSupabaseClient');
     expect(source).not.toContain('createReadOnlyServer');
+    expect(source).not.toContain('service_role');
+    expect(source).not.toContain('urn:ietf:params:oauth:grant-type:token-exchange');
     expect(source).toContain('DOWNSTREAM_CREDENTIAL_UNRESOLVED');
   });
 
@@ -122,6 +125,60 @@ describe('remote HTTP profile', () => {
     expect(JSON.parse(body)).toEqual({ error: DOWNSTREAM_CREDENTIAL_UNRESOLVED });
     expect(body).not.toContain(token);
     expect(paths.some((path) => path.startsWith('/rest/v1'))).toBe(false);
+  });
+
+  it('denies missing resource binding and a conflicting resource before fail-closed dispatch', async () => {
+    const oauth = lab();
+    const sessionId = randomUUID();
+    const missingResourceBinding = await mintSyntheticAccessToken({
+      issuer: ISSUER,
+      resourceUri: RESOURCE,
+      principalId: PRINCIPAL,
+      clientId: CLIENT,
+      sessionId,
+      aud: [DATA_API_AUDIENCE],
+      resource: RESOURCE,
+    });
+    const conflictingResource = await mintSyntheticAccessToken({
+      issuer: ISSUER,
+      resourceUri: RESOURCE,
+      principalId: PRINCIPAL,
+      clientId: CLIENT,
+      sessionId,
+      aud: [DATA_API_AUDIENCE, RESOURCE],
+      resource: 'https://other.loopback.invalid/mcp',
+    });
+    for (const token of [missingResourceBinding, conflictingResource]) {
+      const seenAuthorization: string[] = [];
+      const fetchImpl: typeof globalThis.fetch = async (input, init) => {
+        const url = new URL(typeof input === 'string' || input instanceof URL ? input : input.url);
+        const headers = new Headers(
+          init?.headers ?? (input instanceof Request ? input.headers : undefined),
+        );
+        seenAuthorization.push(`${url.pathname} ${headers.get('authorization') ?? ''}`);
+        return new Response(JSON.stringify({ error: 'not_found' }), { status: 404 });
+      };
+      const response = await profile(
+        oauth,
+        fetchImpl,
+      )(
+        new Request(RESOURCE, {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${token}`, Accept: 'application/json' },
+          body: JSON.stringify({
+            jsonrpc: '2.0',
+            id: 1,
+            method: 'tools/call',
+            params: { name: 'memory_get', arguments: {} },
+          }),
+        }),
+      );
+      expect(response.status).toBe(401);
+      const body = await response.text();
+      expect(body).not.toContain(DOWNSTREAM_CREDENTIAL_UNRESOLVED);
+      expect(body).not.toContain(token);
+      expect(seenAuthorization).toEqual([]);
+    }
   });
 
   it('rejects a wrong-client bearer before dispatch and makes zero Data API calls', async () => {
