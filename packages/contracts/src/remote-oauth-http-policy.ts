@@ -62,6 +62,33 @@ export const DOWNSTREAM_CREDENTIAL_RECHECK_2026_09_22 = Object.freeze({
   remoteDataDispatch: 'fail-closed' as const,
 });
 
+/**
+ * Lab-only r2 dual-grant broker. Default off. This does not change the
+ * ordinary-path freeze above and does not accept ADR-0006 Option 2 for
+ * hosted or merge use.
+ */
+export const LAB_DUAL_GRANT_OPT_IN_ENV = 'SUPABASE_USER_MCP_LAB_DUAL_GRANT' as const;
+export const LOCAL_DISPATCH_TTL_MS = 15 * 60 * 1000;
+export const LAB_DUAL_GRANT_R2 = Object.freeze({
+  packet: 'DUAL_GRANT_R2_PACKET' as const,
+  custody: 'memory-only' as const,
+  defaultEnabled: false as const,
+  ordinaryRemoteDataDispatch: 'fail-closed' as const,
+  encryptedRefreshAtRest: false as const,
+  restartWipesMemoryCustody: true as const,
+  restartProvesProviderRevoke: false as const,
+  localDispatchTtlMs: LOCAL_DISPATCH_TTL_MS,
+  dataApiRevocationInheritsMcpVerifierBound: false as const,
+  disconnectCancelsRequestOnly: true as const,
+  mcpSigningAlgorithm: 'ES256' as const,
+  privilegedMint: false as const,
+  inboundMcpBearerForwardsToDataApi: false as const,
+  userMetadataIsAuthorizationSource: false as const,
+  contractFixtureResourceIsNetworkTarget: false as const,
+  loopbackBindHost: '127.0.0.1' as const,
+  credentialClasses: Object.freeze(['mcp_grant', 'data_api_grant', 'browser_login'] as const),
+});
+
 export const RemoteCanonicalUriSchema = z
   .string()
   .url()

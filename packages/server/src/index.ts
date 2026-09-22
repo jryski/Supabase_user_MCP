@@ -113,6 +113,17 @@ export {
   type RemoteHttpProfileConfig,
 } from './remote-http-profile.js';
 export {
+  createLabDualGrantBroker,
+  LAB_DUAL_GRANT_STATE_MACHINE,
+  LabDualGrantBroker,
+  LabDualGrantError,
+  listenLabOAuthCallback,
+  type LabDualGrantBrokerConfig,
+  type LabDualGrantProfileHook,
+  type LabDualGrantReceipt,
+  type LabUpstreamOAuth,
+} from './lab-dual-grant-broker.js';
+export {
   createRemoteHttpHandlerFromEnvironment,
   handleRemoteHttpConnection,
   listenRemoteHttpHandler,

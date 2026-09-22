@@ -8,6 +8,9 @@ import {
   DOWNSTREAM_CREDENTIAL_RECHECK_2026_09_22,
   DOWNSTREAM_CREDENTIAL_UNRESOLVED,
   extractServerControlledClientId,
+  LAB_DUAL_GRANT_OPT_IN_ENV,
+  LAB_DUAL_GRANT_R2,
+  LOCAL_DISPATCH_TTL_MS,
   LOCAL_LAB_MCP_RESOURCE_URI,
   REMOTE_DOWNSTREAM_CREDENTIAL_POLICY,
   REMOTE_IDENTITY_CLAIM_POLICY,
@@ -48,6 +51,16 @@ describe('remote OAuth/HTTP policy contracts', () => {
       remoteDataDispatch: 'fail-closed',
     });
     expect(DOWNSTREAM_CREDENTIAL_UNRESOLVED).toBe('downstream_credential_unresolved');
+    expect(LAB_DUAL_GRANT_OPT_IN_ENV).toBe('SUPABASE_USER_MCP_LAB_DUAL_GRANT');
+    expect(LAB_DUAL_GRANT_R2.defaultEnabled).toBe(false);
+    expect(LAB_DUAL_GRANT_R2.custody).toBe('memory-only');
+    expect(LAB_DUAL_GRANT_R2.encryptedRefreshAtRest).toBe(false);
+    expect(LAB_DUAL_GRANT_R2.restartProvesProviderRevoke).toBe(false);
+    expect(LAB_DUAL_GRANT_R2.dataApiRevocationInheritsMcpVerifierBound).toBe(false);
+    expect(LAB_DUAL_GRANT_R2.ordinaryRemoteDataDispatch).toBe('fail-closed');
+    expect(LAB_DUAL_GRANT_R2.localDispatchTtlMs).toBe(LOCAL_DISPATCH_TTL_MS);
+    expect(LOCAL_DISPATCH_TTL_MS).toBe(15 * 60 * 1000);
+    expect(LAB_DUAL_GRANT_R2.contractFixtureResourceIsNetworkTarget).toBe(false);
   });
 
   it('canonicalizes resource URIs without trailing slash unless the path is significant', () => {
