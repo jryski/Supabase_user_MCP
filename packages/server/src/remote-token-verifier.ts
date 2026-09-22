@@ -8,19 +8,19 @@ import {
 } from '@modelcontextprotocol/server';
 import {
   ACCESS_TOKEN_REVOCATION_LATENCY_BOUND_MS,
-  DATA_API_AUDIENCE,
-  RemoteOAuthClientIdSchema,
-  RemotePrincipalIdSchema,
   audienceValues,
   canonicalizeResourceUri,
+  DATA_API_AUDIENCE,
   extractServerControlledClientId,
+  RemoteOAuthClientIdSchema,
+  RemotePrincipalIdSchema,
 } from '@supabase-user-mcp/contracts';
 import {
   createRemoteJWKSet,
   customFetch,
-  jwtVerify,
   type JWTPayload,
   type JWTVerifyGetKey,
+  jwtVerify,
 } from 'jose';
 
 const UUID_SESSION = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -92,25 +92,31 @@ function payloadRecord(payload: JWTPayload): Readonly<Record<string, unknown>> {
   return payload as Readonly<Record<string, unknown>>;
 }
 
-function resourceCandidates(claims: Readonly<Record<string, unknown>>): readonly string[] {
-  const values = [...audienceValues(claims.aud)];
-  if (typeof claims.resource === 'string' && claims.resource.length > 0) {
-    values.push(claims.resource);
-  }
-  return values;
-}
-
-function hasExactResourceBinding(
-  claims: Readonly<Record<string, unknown>>,
+function audienceContainsCanonicalResource(
+  audiences: readonly string[],
   canonicalResource: string,
 ): boolean {
-  return resourceCandidates(claims).some((value) => {
+  return audiences.some((value) => {
     try {
       return canonicalizeResourceUri(value) === canonicalResource;
     } catch {
       return false;
     }
   });
+}
+
+function explicitResourceVerdict(
+  claims: Readonly<Record<string, unknown>>,
+  canonicalResource: string,
+): 'absent' | 'match' | 'mismatch' {
+  if (typeof claims.resource !== 'string' || claims.resource.length === 0) {
+    return 'absent';
+  }
+  try {
+    return canonicalizeResourceUri(claims.resource) === canonicalResource ? 'match' : 'mismatch';
+  } catch {
+    return 'mismatch';
+  }
 }
 
 export function createRemoteAccessTokenVerifier(
@@ -186,12 +192,17 @@ export function createRemoteAccessTokenVerifier(
       if (!audiences.includes(DATA_API_AUDIENCE)) {
         fail('missing_data_api_audience');
       }
-      if (!hasExactResourceBinding(claims, canonicalResource)) {
+      // MCP resource must appear in aud independently; a matching resource claim is not a substitute.
+      if (!audienceContainsCanonicalResource(audiences, canonicalResource)) {
         fail(
           audiences.length === 1 && audiences[0] === DATA_API_AUDIENCE
             ? 'missing_resource_binding'
             : 'wrong_resource',
         );
+      }
+      // If an explicit resource claim is present, it must match; do not OR it into the aud check.
+      if (explicitResourceVerdict(claims, canonicalResource) === 'mismatch') {
+        fail('wrong_resource');
       }
       const clientId = extractServerControlledClientId(claims);
       if (clientId === undefined) {
