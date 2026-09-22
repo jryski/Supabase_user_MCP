@@ -1,21 +1,19 @@
 import { randomUUID } from 'node:crypto';
-
+import { DATA_API_AUDIENCE, LOCAL_LAB_MCP_RESOURCE_URI } from '@supabase-user-mcp/contracts';
 import { exportJWK, generateKeyPair, SignJWT } from 'jose';
 import { describe, expect, it } from 'vitest';
 
-import { DATA_API_AUDIENCE, LOCAL_LAB_MCP_RESOURCE_URI } from '@supabase-user-mcp/contracts';
-
 import { generateS256PkceChallenge } from './local-oauth-pkce-client.js';
-import {
-  mintSyntheticAccessToken,
-  SYNTHETIC_OAUTH_HMAC_SECRET,
-  SyntheticOAuthLab,
-} from './synthetic-oauth-lab.js';
 import {
   createRemoteAccessTokenVerifier,
   fingerprintAccessToken,
   RemoteAccessTokenVerificationError,
 } from './remote-token-verifier.js';
+import {
+  mintSyntheticAccessToken,
+  SYNTHETIC_OAUTH_HMAC_SECRET,
+  SyntheticOAuthLab,
+} from './synthetic-oauth-lab.js';
 
 const ISSUER = 'https://auth.loopback.invalid/auth/v1';
 const RESOURCE = LOCAL_LAB_MCP_RESOURCE_URI;

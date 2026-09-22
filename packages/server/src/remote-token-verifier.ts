@@ -8,19 +8,19 @@ import {
 } from '@modelcontextprotocol/server';
 import {
   ACCESS_TOKEN_REVOCATION_LATENCY_BOUND_MS,
-  DATA_API_AUDIENCE,
-  RemoteOAuthClientIdSchema,
-  RemotePrincipalIdSchema,
   audienceValues,
   canonicalizeResourceUri,
+  DATA_API_AUDIENCE,
   extractServerControlledClientId,
+  RemoteOAuthClientIdSchema,
+  RemotePrincipalIdSchema,
 } from '@supabase-user-mcp/contracts';
 import {
   createRemoteJWKSet,
   customFetch,
-  jwtVerify,
   type JWTPayload,
   type JWTVerifyGetKey,
+  jwtVerify,
 } from 'jose';
 
 const UUID_SESSION = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
