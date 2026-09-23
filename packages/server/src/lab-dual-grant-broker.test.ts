@@ -1384,6 +1384,57 @@ describe('lab dual-grant broker r2', () => {
     await loopback.cleanup();
   });
 
+  it('rejects the process network fetch for remote .invalid fixture coordinates', async () => {
+    const lab = labFor(8765);
+    const remoteFixture = {
+      optIn: true,
+      mcpIssuer: 'http://127.0.0.1:8765',
+      mcpClientId: MCP_CLIENT,
+      mcpResourceUri: RESOURCE,
+      upstreamIssuer: 'https://auth.remote.example.invalid/auth/v1',
+      upstreamClientId: UPSTREAM_CLIENT,
+      upstreamResourceUri: 'https://data.remote.example.invalid/rest/v1',
+      exactRedirectUri: 'http://127.0.0.1:8765/lab/oauth/callback',
+      mcpClientRedirectUri: 'http://127.0.0.1:8765/lab/mcp/callback',
+      dataApiOrigin: 'https://data.remote.example.invalid',
+      publishableKey: PUBLISHABLE,
+      maintainedClientName: CLIENT_NAME,
+      maintainedClientVersion: CLIENT_VERSION,
+      upstream: adapt(lab),
+    };
+    await expect(
+      createLabDualGrantBroker({ ...remoteFixture, fetch: globalThis.fetch }),
+    ).rejects.toMatchObject({ code: 'contract_fixture_not_a_network_target' });
+    await expect(
+      createLabDualGrantBroker({
+        ...remoteFixture,
+        fetch: globalThis.fetch.bind(globalThis),
+      }),
+    ).rejects.toMatchObject({ code: 'contract_fixture_not_a_network_target' });
+    await expect(createLabDualGrantBroker(remoteFixture)).rejects.toMatchObject({
+      code: 'contract_fixture_not_a_network_target',
+    });
+    let invoked = false;
+    const scripted = await createLabDualGrantBroker({
+      ...remoteFixture,
+      fetch: async () => {
+        invoked = true;
+        return new Response(null, { status: 599 });
+      },
+    });
+    expect(invoked).toBe(false);
+    await scripted.cleanup();
+    const loopbackNetwork = await createLabDualGrantBroker({
+      ...remoteFixture,
+      upstreamIssuer: 'http://127.0.0.1:9/auth/v1',
+      upstreamResourceUri: 'http://127.0.0.1:9/rest/v1',
+      dataApiOrigin: 'http://127.0.0.1:9',
+      fetch: globalThis.fetch,
+    });
+    expect(loopbackNetwork.profileHook.enabled).toBe(true);
+    await loopbackNetwork.cleanup();
+  });
+
   it('handles refresh rejection on every waiter without an unhandled rejection', async () => {
     const seen: Array<{ name: string | undefined; message: string | undefined }> = [];
     const capture = (error: unknown): void => {

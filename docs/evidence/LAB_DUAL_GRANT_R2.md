@@ -44,8 +44,11 @@ bumps a lifecycle epoch. An in-flight code exchange, MCP signing admission, or r
 finishes after that epoch does not write the access token, refresh token, or mapping back.
 Lab coordinates are parsed URLs: the MCP issuer and redirects are `http://127.0.0.1` with the
 redirect host and port equal to the issuer, and a Data API origin is either that loopback host
-or an `https` `*.invalid` fixture used only with the injected fetch. A rejected refresh clears
-its single-flight entry on both settlement paths so the 403 does not leave an unhandled
+or an `https` `*.invalid` fixture. Fixture coordinates use a scripted adapter only. Passing
+`globalThis.fetch`, another native fetch, or no adapter is rejected with
+`contract_fixture_not_a_network_target` before any request. Loopback `http://127.0.0.1`
+coordinates are the only route that may use the process network fetch. A rejected refresh
+clears its single-flight entry on both settlement paths so the 403 does not leave an unhandled
 rejection.
 
 ## F1–F4 repair
@@ -57,7 +60,7 @@ repair closes them in the lab broker only:
 | --- | --- |
 | F1 | Current grant generation, revocation, local deadline, mapping, session, and lifecycle epoch are enforced inside the guarded fetch, immediately before `/auth/v1/user` and `/rest/v1`. |
 | F2 | `cleanup` / `discardMemoryCustody` increment a lifecycle epoch. Post-await parent, session, and flow checks drop stale exchange, signing, and refresh completions. |
-| F3 | Issuer, redirect, upstream, and Data API coordinates use parsed scheme, host, port, and path checks. Prefix lookalikes, userinfo, and non-loopback HTTPS origins are rejected in configuration. |
+| F3 | Issuer, redirect, upstream, and Data API coordinates use parsed scheme, host, port, and path checks. Prefix lookalikes, userinfo, and non-loopback HTTPS origins are rejected in configuration. `https://*.invalid` fixtures stay on the scripted adapter route; the process network fetch is not that adapter. |
 | F4 | Refresh flight cleanup handles fulfillment and rejection. Concurrent waiters receive HTTP 403. |
 
 `initialize` is still unimplemented. An authenticated `initialize` request remains HTTP 404 /

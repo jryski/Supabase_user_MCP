@@ -277,13 +277,24 @@ function isNoNetworkFixtureHost(hostname: string): boolean {
   return hostname.endsWith('.invalid') && !hostname.startsWith('127.0.0.1');
 }
 
+function isProcessNetworkFetch(fetchImpl: typeof globalThis.fetch): boolean {
+  if (fetchImpl === globalThis.fetch || fetchImpl === global.fetch) return true;
+  try {
+    return Function.prototype.toString.call(fetchImpl).includes('[native code]');
+  } catch {
+    return true;
+  }
+}
+
 function assertNoNetworkAdapter(
   url: URL,
   fetchImpl: typeof globalThis.fetch | undefined,
   code: string,
 ): void {
   if (!isNoNetworkFixtureHost(url.hostname)) return;
-  if (url.protocol !== 'https:' || fetchImpl === undefined) fail(code);
+  if (url.protocol !== 'https:' || fetchImpl === undefined || isProcessNetworkFetch(fetchImpl)) {
+    fail(code);
+  }
 }
 
 function assertMcpIssuer(value: string): URL {
@@ -376,7 +387,8 @@ export class LabDualGrantBroker {
   private readonly maintainedClientName: string;
   private readonly maintainedClientVersion: string;
   private readonly upstream: LabUpstreamOAuth;
-  private readonly fetchImpl: typeof globalThis.fetch | undefined;
+  private readonly fetchImpl: typeof globalThis.fetch;
+  private readonly fixtureTransport: boolean;
   private readonly now: () => number;
   private readonly beforeAdmitMcpToken: (() => Promise<void>) | undefined;
   private lifecycleEpoch = 0;
@@ -416,7 +428,21 @@ export class LabDualGrantBroker {
     this.maintainedClientName = config.maintainedClientName;
     this.maintainedClientVersion = config.maintainedClientVersion;
     this.upstream = config.upstream;
-    this.fetchImpl = config.fetch;
+    const fixtureHosts = [
+      config.upstreamIssuer,
+      config.upstreamResourceUri,
+      config.dataApiOrigin,
+    ].some((value) => isNoNetworkFixtureHost(new URL(value).hostname));
+    this.fixtureTransport = fixtureHosts;
+    const injected = config.fetch;
+    if (fixtureHosts) {
+      if (injected === undefined || isProcessNetworkFetch(injected)) {
+        fail('contract_fixture_not_a_network_target');
+      }
+      this.fetchImpl = injected;
+    } else {
+      this.fetchImpl = injected ?? globalThis.fetch;
+    }
     this.now = config.now ?? Date.now;
     this.beforeAdmitMcpToken = config.beforeAdmitMcpToken;
   }
@@ -1066,7 +1092,7 @@ export class LabDualGrantBroker {
     lease: DispatchLease,
     mapping: TrustedMapping,
   ): typeof globalThis.fetch {
-    const inner = this.fetchImpl ?? globalThis.fetch;
+    const inner = this.fetchImpl;
     return async (input, init) => {
       const grant = this.assertDispatchAuthority(mapping, lease);
       const headers = new Headers(init?.headers);
@@ -1075,6 +1101,13 @@ export class LabDualGrantBroker {
       const url = requestUrl(input);
       const expected = `Bearer ${grant.upstreamAccessToken}`;
       if (url.hostname === 'mcp.loopback.invalid') fail('contract_fixture_not_a_network_target');
+      if (this.fixtureTransport) {
+        if (!isNoNetworkFixtureHost(url.hostname) || isProcessNetworkFetch(inner)) {
+          fail('contract_fixture_not_a_network_target');
+        }
+      } else if (!isExactLoopbackHost(url)) {
+        fail('invalid_data_api_origin');
+      }
       if (
         authorization !== expected ||
         (mcpBearer.length > 0 && authorization.includes(mcpBearer))
