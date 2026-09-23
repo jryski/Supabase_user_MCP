@@ -1,3 +1,5 @@
+import { Client } from '@modelcontextprotocol/client';
+import type { JSONRPCMessage, Transport } from '@modelcontextprotocol/server';
 import { randomBytes, randomUUID } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import type { AddressInfo } from 'node:net';
@@ -20,6 +22,7 @@ import {
   type LabUpstreamOAuth,
   listenLabOAuthCallback,
 } from './lab-dual-grant-broker.js';
+import { SERVER_NAME, SERVER_VERSION } from './server.js';
 import { generateS256PkceChallenge } from './local-oauth-pkce-client.js';
 import { containsSecretMaterial, createRemoteHttpProfile } from './remote-http-profile.js';
 import {
@@ -146,6 +149,7 @@ async function createBroker(input: {
   readonly now?: () => number;
   readonly optIn?: boolean;
   readonly port?: number;
+  readonly maintainedClientName?: string;
   readonly maintainedClientVersion?: string;
 }): Promise<LabDualGrantBroker> {
   const port = input.port ?? 8765;
@@ -161,7 +165,7 @@ async function createBroker(input: {
     mcpClientRedirectUri: `http://127.0.0.1:${port}/lab/mcp/callback`,
     dataApiOrigin: DATA_ORIGIN,
     publishableKey: PUBLISHABLE,
-    maintainedClientName: CLIENT_NAME,
+    maintainedClientName: input.maintainedClientName ?? CLIENT_NAME,
     maintainedClientVersion: input.maintainedClientVersion ?? CLIENT_VERSION,
     upstream: input.upstream,
     fetch: input.fetchImpl,
@@ -214,6 +218,46 @@ async function login(broker: LabDualGrantBroker, who: string, port = 8765): Prom
     resource: RESOURCE,
   });
   return issued.accessToken;
+}
+
+class LabHttpClientTransport implements Transport {
+  onclose?: () => void;
+  onerror?: (error: Error) => void;
+  onmessage?: (message: JSONRPCMessage) => void;
+  readonly sent: JSONRPCMessage[] = [];
+  readonly statuses: number[] = [];
+
+  constructor(
+    private readonly handler: (request: Request) => Promise<Response>,
+    private readonly token: string,
+  ) {}
+
+  async start(): Promise<void> {}
+
+  async send(message: JSONRPCMessage): Promise<void> {
+    this.sent.push(message);
+    const response = await this.handler(
+      new Request(RESOURCE, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${this.token}`,
+          Accept: 'application/json',
+          'content-type': 'application/json',
+        },
+        body: JSON.stringify(message),
+      }),
+    );
+    this.statuses.push(response.status);
+    if (!('id' in message)) return;
+    if (!response.ok) {
+      throw new Error(`lab http ${response.status}`);
+    }
+    this.onmessage?.((await response.json()) as JSONRPCMessage);
+  }
+
+  async close(): Promise<void> {
+    this.onclose?.();
+  }
 }
 
 function toolRequest(
@@ -303,7 +347,7 @@ describe('lab dual-grant broker r2', () => {
     expect(callback.status).toBe(404);
   });
 
-  it('runs the maintained-client happy path under the upstream grant', async () => {
+  it('runs the opt-in read path and records the configured client identity', async () => {
     const who = principal();
     const observed: string[] = [];
     const paths: string[] = [];
@@ -338,6 +382,89 @@ describe('lab dual-grant broker r2', () => {
     expect(receipt.custody).toBe('memory-only');
     expect(JSON.stringify(receipt)).not.toContain('eyJ');
     expect(containsSecretMaterial(receipt, [token, ...observed])).toBe(false);
+  });
+
+  it('completes initialize, tools/list, and tools/call through the MCP client SDK', async () => {
+    const sdkName = 'lab-sdk-mcp-client';
+    const sdkVersion = '0.0.0-lab-sdk';
+    const who = principal();
+    const observed: string[] = [];
+    const paths: string[] = [];
+    const lab = labFor(8765);
+    const broker = await createBroker({
+      upstream: adapt(lab),
+      fetchImpl: scriptedFetch([memory(who, ALICE_MEMORY)], observed, paths),
+      maintainedClientName: sdkName,
+      maintainedClientVersion: sdkVersion,
+    });
+    const handler = profile(broker, lab);
+    const token = await login(broker, who);
+    const transport = new LabHttpClientTransport(handler, token);
+    const client = new Client({ name: sdkName, version: sdkVersion });
+    await client.connect(transport);
+    expect(client.getServerVersion()).toEqual({ name: SERVER_NAME, version: SERVER_VERSION });
+    expect(client.getInstructions()).toContain('three declared memory tools');
+    const listing = await client.listTools();
+    expect(listing.tools.map((tool) => tool.name).toSorted()).toEqual([
+      'memory_get',
+      'memory_list_recent',
+      'memory_search',
+    ]);
+    for (const tool of listing.tools) {
+      expect(tool.inputSchema.type).toBe('object');
+      expect(tool.inputSchema.additionalProperties).toBe(false);
+      expect(tool.outputSchema).toBeDefined();
+      expect(Object.keys(tool.inputSchema.properties ?? {}).length).toBeGreaterThan(0);
+    }
+    const called = await client.callTool({
+      name: 'memory_get',
+      arguments: { id: ALICE_MEMORY },
+    });
+    expect(called.structuredContent).toMatchObject({ ok: true, record: { id: ALICE_MEMORY } });
+    const initialize = transport.sent.find(
+      (message) => 'method' in message && message.method === 'initialize',
+    );
+    expect(initialize).toMatchObject({
+      params: { clientInfo: { name: sdkName, version: sdkVersion } },
+    });
+    const receipt = broker.buildLabReceipt();
+    expect(receipt.maintainedClientName).toBe(sdkName);
+    expect(receipt.maintainedClientVersion).toBe(sdkVersion);
+    expect(paths.some((path) => path === '/auth/v1/user')).toBe(true);
+    expect(paths.some((path) => path.startsWith('/rest/v1'))).toBe(true);
+    expect(observed.every((value) => value.startsWith('Bearer ') && !value.includes(token))).toBe(
+      true,
+    );
+    await client.close();
+
+    const closedPaths: string[] = [];
+    const closed = createRemoteHttpProfile({
+      resourceUri: RESOURCE,
+      issuer: UPSTREAM_ISSUER,
+      expectedClientId: UPSTREAM_CLIENT,
+      signingKey: { kind: 'hmac', secret: SYNTHETIC_OAUTH_HMAC_SECRET },
+      revocationAuthority: { inspectAccessToken: async () => 'active' },
+      authorizationServerMetadata: createAuthorizationServerMetadata(UPSTREAM_ISSUER),
+      allowInsecureIssuer: true,
+      fetch: async (input) => {
+        const url = new URL(typeof input === 'string' || input instanceof URL ? input : input.url);
+        closedPaths.push(url.pathname);
+        return new Response(null, { status: 599 });
+      },
+    });
+    const ordinaryToken = await mintSyntheticAccessToken({
+      issuer: UPSTREAM_ISSUER,
+      resourceUri: RESOURCE,
+      principalId: principal(),
+      clientId: UPSTREAM_CLIENT,
+      sessionId: randomUUID(),
+    });
+    const closedTransport = new LabHttpClientTransport(closed, ordinaryToken);
+    const closedClient = new Client({ name: sdkName, version: sdkVersion });
+    await expect(closedClient.connect(closedTransport)).rejects.toThrow(/lab http 403/);
+    expect(closedTransport.statuses).toContain(403);
+    expect(closedPaths).toEqual([]);
+    await closedClient.close();
   });
 
   it('isolates two synthetic principals and denies the other row', async () => {

@@ -63,11 +63,13 @@ repair closes them in the lab broker only:
 | F3 | Issuer, redirect, upstream, and Data API coordinates use parsed scheme, host, port, and path checks. Prefix lookalikes, userinfo, and non-loopback HTTPS origins are rejected in configuration. `https://*.invalid` fixtures stay on the scripted adapter route; the process network fetch is not that adapter. |
 | F4 | Refresh flight cleanup handles fulfillment and rejection. Concurrent waiters receive HTTP 403. |
 
-`initialize` is still unimplemented. An authenticated `initialize` request remains HTTP 404 /
-JSON-RPC `-32601`. `tools/list` still returns names without tool schemas. That gap is an
-integration residual, not an F1–F4 regression. T3 (maintained client), T4 (live Postgres RLS),
-T5 (real second registration), T10 (live GoTrue latency), and T17 (full-stack cleanup) are
-still open. Mock owner filtering is not RLS.
+Authenticated lab `initialize` and `tools/list` are answered by the same `McpServer` registration
+as the local read-only server (`supabase-user-mcp` / `0.1.0-alpha.1`, the three memory tool
+schemas). An in-process `@modelcontextprotocol/client` drives `initialize`, then `tools/list`,
+then `tools/call`. The receipt records that client's name and version. Ordinary remote without
+the lab hook still returns `403` and does not call the Data API. T4 live Postgres RLS, T5 a real
+second OAuth registration, T10 live GoTrue revocation latency, and T17 full-stack cleanup remain
+open. Mock owner filtering is not RLS. An external MCP client binary was not run.
 
 `https://mcp.loopback.invalid/mcp` stays a contract fixture. The callback listener binds
 `127.0.0.1` only.
@@ -100,7 +102,8 @@ restart -> reauth_required, provider grant untouched
 - Not a native Supabase token exchange.
 - Not proof against a live GoTrue project or real RLS policies. The matrix uses a synthetic
   upstream and a scripted Data API.
-- Not an external maintained MCP client binary. The receipt pins the name and version supplied
-  to the lab process. `initialize` still returns 404 / `-32601`.
+- Not an external maintained MCP client binary and not live GoTrue. The in-process SDK client
+  does exercise `initialize`, `tools/list`, and `tools/call`. The receipt pins that client's
+  name and version. T3 is not fully accepted.
 - Not encrypted refresh custody, hosted activation, or issue #62 completion.
 - Not a merge, and not a claim that F1–F4 closure finishes r2 acceptance.
