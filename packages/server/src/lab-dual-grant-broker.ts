@@ -143,6 +143,11 @@ export interface LabDualGrantBrokerConfig {
   readonly upstream: LabUpstreamOAuth;
   readonly fetch?: typeof globalThis.fetch;
   readonly now?: () => number;
+  /**
+   * Test seam. Awaited after MCP signing and before the mapping is stored so a
+   * cleanup during that await cannot be overwritten by the late completion.
+   */
+  readonly beforeAdmitMcpToken?: () => Promise<void>;
 }
 
 export interface LabVerifiedMcpAuth {
@@ -230,6 +235,13 @@ interface TrustedMapping {
   readonly loginSessionId: string;
 }
 
+interface DispatchLease {
+  readonly epoch: number;
+  readonly family: string;
+  readonly generation: number;
+  readonly token: string;
+}
+
 function fail(code: string): never {
   throw new LabDualGrantError(code);
 }
@@ -246,43 +258,81 @@ function assertLabel(value: string, code: string): void {
   if (!LABEL.test(value)) fail(code);
 }
 
-function assertLoopbackRedirect(value: string): string {
+function parseLabUrl(value: string, code: string): URL {
   let url: URL;
   try {
     url = new URL(value);
   } catch {
+    fail(code);
+  }
+  if (url.username !== '' || url.password !== '' || url.hash !== '') fail(code);
+  return url;
+}
+
+function isExactLoopbackHost(url: URL): boolean {
+  return url.protocol === 'http:' && url.hostname === '127.0.0.1';
+}
+
+function isNoNetworkFixtureHost(hostname: string): boolean {
+  return hostname.endsWith('.invalid') && !hostname.startsWith('127.0.0.1');
+}
+
+function assertNoNetworkAdapter(
+  url: URL,
+  fetchImpl: typeof globalThis.fetch | undefined,
+  code: string,
+): void {
+  if (!isNoNetworkFixtureHost(url.hostname)) return;
+  if (url.protocol !== 'https:' || fetchImpl === undefined) fail(code);
+}
+
+function assertMcpIssuer(value: string): URL {
+  const url = parseLabUrl(value, 'redirect_not_loopback');
+  if (!isExactLoopbackHost(url) || url.pathname !== '/' || url.search !== '') {
     fail('redirect_not_loopback');
   }
-  if (
-    url.protocol !== 'http:' ||
-    url.hostname !== '127.0.0.1' ||
-    url.username !== '' ||
-    url.password !== '' ||
-    url.hash !== ''
-  ) {
-    fail('redirect_not_loopback');
+  return url;
+}
+
+function assertLoopbackRedirect(value: string, issuer: URL): URL {
+  const url = parseLabUrl(value, 'redirect_not_loopback');
+  if (!isExactLoopbackHost(url) || url.search !== '') fail('redirect_not_loopback');
+  if (url.host !== issuer.host || url.pathname === '/' || url.pathname === '') {
+    fail('invalid_redirect');
   }
-  return url.toString();
+  return url;
+}
+
+function assertUpstreamCoordinate(
+  value: string,
+  pathname: string,
+  fetchImpl: typeof globalThis.fetch | undefined,
+): URL {
+  const url = parseLabUrl(value, 'invalid_resource');
+  const loopback = isExactLoopbackHost(url);
+  const fixture = url.protocol === 'https:' && isNoNetworkFixtureHost(url.hostname);
+  if (!loopback && !fixture) fail('invalid_resource');
+  if (url.pathname !== pathname || url.search !== '') fail('invalid_resource');
+  assertNoNetworkAdapter(url, fetchImpl, 'contract_fixture_not_a_network_target');
+  return url;
 }
 
 function assertDataApiOrigin(
   value: string,
   fetchImpl: typeof globalThis.fetch | undefined,
+  upstreamResource: URL,
 ): string {
-  let url: URL;
-  try {
-    url = new URL(value);
-  } catch {
+  const url = parseLabUrl(value, 'invalid_data_api_origin');
+  if (url.hostname === 'mcp.loopback.invalid') fail('contract_fixture_not_a_network_target');
+  if (url.pathname !== '/' || url.search !== '' || url.origin !== value) {
     fail('invalid_data_api_origin');
   }
-  if (url.hostname === 'mcp.loopback.invalid' || url.origin !== value) {
-    fail('contract_fixture_not_a_network_target');
-  }
-  const loopback = url.protocol === 'http:' && url.hostname === '127.0.0.1';
-  const https = url.protocol === 'https:';
-  if (!loopback && !https) fail('invalid_data_api_origin');
-  if (url.hostname.endsWith('.invalid') && fetchImpl === undefined) {
-    fail('contract_fixture_not_a_network_target');
+  const loopback = isExactLoopbackHost(url);
+  const fixture = url.protocol === 'https:' && isNoNetworkFixtureHost(url.hostname);
+  if (!loopback && !fixture) fail('invalid_data_api_origin');
+  assertNoNetworkAdapter(url, fetchImpl, 'contract_fixture_not_a_network_target');
+  if (url.protocol !== upstreamResource.protocol || url.host !== upstreamResource.host) {
+    fail('invalid_data_api_origin');
   }
   return url.origin;
 }
@@ -328,6 +378,8 @@ export class LabDualGrantBroker {
   private readonly upstream: LabUpstreamOAuth;
   private readonly fetchImpl: typeof globalThis.fetch | undefined;
   private readonly now: () => number;
+  private readonly beforeAdmitMcpToken: (() => Promise<void>) | undefined;
+  private lifecycleEpoch = 0;
   private publicKey: Awaited<ReturnType<typeof generateKeyPair>>['publicKey'] | undefined;
   private privateKey: Awaited<ReturnType<typeof generateKeyPair>>['privateKey'] | undefined;
   private thumbprint = '';
@@ -366,6 +418,7 @@ export class LabDualGrantBroker {
     this.upstream = config.upstream;
     this.fetchImpl = config.fetch;
     this.now = config.now ?? Date.now;
+    this.beforeAdmitMcpToken = config.beforeAdmitMcpToken;
   }
 
   static async create(config: LabDualGrantBrokerConfig): Promise<LabDualGrantBroker> {
@@ -380,7 +433,7 @@ export class LabDualGrantBroker {
       enabled: this.enabled,
       mcpIssuer: this.mcpIssuer,
       mcpClientId: this.mcpClientId,
-      allowInsecureIssuer: this.mcpIssuer.startsWith('http://127.0.0.1'),
+      allowInsecureIssuer: new URL(this.mcpIssuer).hostname === '127.0.0.1',
       authorizationServerMetadata: () => this.authorizationServerMetadata(),
       mcpTokenVerifier: { verifyAccessToken: (token) => this.verifyMcpAccessToken(token) },
       handleHttp: (request) => this.handleHttp(request),
@@ -667,6 +720,7 @@ export class LabDualGrantBroker {
   }
 
   async discardMemoryCustody(): Promise<void> {
+    this.lifecycleEpoch += 1;
     this.sessions.clear();
     this.pending.clear();
     this.stateIndex.clear();
@@ -764,6 +818,7 @@ export class LabDualGrantBroker {
     if (this.findGrant(flow.expectedPrincipalId, flow.expectedClientId)) {
       fail('grant_family_conflict');
     }
+    const epoch = this.lifecycleEpoch;
     const tokens = await this.upstream.exchangeAuthorizationCode({
       grantType: 'authorization_code',
       code,
@@ -772,13 +827,16 @@ export class LabDualGrantBroker {
       codeVerifier: flow.codeVerifier ?? '',
       resource: this.upstreamResourceUri,
     });
+    if (!this.upstreamExchangeStillLive(flow, epoch)) return;
     if (this.findGrant(flow.expectedPrincipalId, flow.expectedClientId)) {
       fail('grant_family_conflict');
     }
     const claims = this.readUpstreamClaims(tokens.accessToken);
+    if (!this.upstreamExchangeStillLive(flow, epoch)) return;
     if (claims.issuer !== this.upstreamIssuer) fail('mixup');
     if (claims.subject !== flow.expectedPrincipalId) fail('cross_user');
     if (claims.clientId !== flow.expectedClientId) fail('wrong_client');
+    if (!this.upstreamExchangeStillLive(flow, epoch)) return;
     const grantFamily = randomUUID();
     const grant: StoredGrant = {
       grantFamily,
@@ -792,8 +850,22 @@ export class LabDualGrantBroker {
       localDispatchDeadlineMs: this.now() + LOCAL_DISPATCH_TTL_MS,
       revokedLocally: false,
     };
+    if (!this.upstreamExchangeStillLive(flow, epoch)) return;
     this.grants.set(grantFamily, grant);
     this.grantIndex.set(this.upstreamKey(claims.subject, claims.clientId), grantFamily);
+  }
+
+  private upstreamExchangeStillLive(flow: PendingFlow, epoch: number): boolean {
+    if (this.lifecycleEpoch !== epoch) return false;
+    const parentId = flow.parentFlowId;
+    if (parentId === undefined) return false;
+    const parent = this.pending.get(parentId);
+    const session = this.sessions.get(flow.loginSessionId);
+    if (parent === undefined || parent.kind !== 'mcp') return false;
+    if (parent.loginSessionId !== flow.loginSessionId) return false;
+    if (session === undefined || session.principalId !== flow.expectedPrincipalId) return false;
+    if (this.now() >= session.expiresAtMs || this.now() >= parent.expiresAtMs) return false;
+    return true;
   }
 
   private async issueMcpToken(
@@ -802,6 +874,7 @@ export class LabDualGrantBroker {
     upstreamSubject: string,
   ): Promise<string> {
     if (!this.privateKey) fail('not_enabled');
+    const epoch = this.lifecycleEpoch;
     const mcpSubject = randomUUID();
     const issuedAt = Math.floor(this.now() / 1000);
     const accessToken = await new SignJWT({
@@ -817,6 +890,12 @@ export class LabDualGrantBroker {
       .setIssuedAt(issuedAt)
       .setExpirationTime(issuedAt + MCP_TOKEN_TTL_SEC)
       .sign(this.privateKey);
+    await this.beforeAdmitMcpToken?.();
+    if (this.lifecycleEpoch !== epoch) fail('reauth_required');
+    const session = this.sessions.get(loginSessionId);
+    if (session === undefined || session.principalId !== upstreamSubject) fail('reauth_required');
+    const grant = this.grants.get(grantFamily);
+    if (grant === undefined || grant.revokedLocally) fail('reauth_required');
     this.mappings.set(this.mcpKey(mcpSubject), {
       mcpIssuer: this.mcpIssuer,
       mcpSubject,
@@ -896,10 +975,8 @@ export class LabDualGrantBroker {
     signal: AbortSignal,
   ): Promise<unknown> {
     await this.ensureFresh(mapping.grantFamily);
-    const grant = this.grants.get(mapping.grantFamily);
-    if (!grant || grant.revokedLocally) fail('reauth_required');
-    if (grant.upstreamSubject !== mapping.upstreamSubject) fail('cross_user');
-    const claims = this.readUpstreamClaims(grant.upstreamAccessToken);
+    const lease = this.captureDispatchLease(mapping);
+    const claims = this.readUpstreamClaims(lease.token);
     if (
       claims.clientId !== mapping.upstreamClientId ||
       claims.subject !== mapping.upstreamSubject
@@ -911,18 +988,20 @@ export class LabDualGrantBroker {
       allowLoopbackHttp: this.allowLoopbackHttp,
       credentials: {
         projectPublishableKey: this.publishableKey,
-        userAccessToken: grant.upstreamAccessToken,
+        userAccessToken: lease.token,
       },
-      fetch: this.guardedFetch(mcpBearer, grant.upstreamAccessToken),
+      fetch: this.guardedFetch(mcpBearer, lease, mapping),
     });
     try {
       const identity = await client.verifyUserIdentity(signal);
-      if (identity.principalId !== mapping.upstreamSubject) fail('cross_user');
+      const current = this.assertDispatchAuthority(mapping, lease);
+      if (identity.principalId !== current.upstreamSubject) fail('cross_user');
       const context = {
-        principalId: mapping.upstreamSubject,
-        clientId: mapping.upstreamClientId,
+        principalId: current.upstreamSubject,
+        clientId: current.upstreamClientId,
         signal,
       };
+      this.assertDispatchAuthority(mapping, lease);
       if (name === 'memory_get') return await createMemoryGet(client)(args, context);
       if (name === 'memory_search') return await createMemorySearch(client)(args, context);
       return await createMemoryListRecent(client)(args, context);
@@ -943,14 +1022,58 @@ export class LabDualGrantBroker {
     }
   }
 
-  private guardedFetch(mcpBearer: string, upstreamToken: string): typeof globalThis.fetch {
+  private captureDispatchLease(mapping: TrustedMapping): DispatchLease {
+    const grant = this.assertDispatchAuthority(mapping);
+    return {
+      epoch: this.lifecycleEpoch,
+      family: grant.grantFamily,
+      generation: grant.generation,
+      token: grant.upstreamAccessToken,
+    };
+  }
+
+  private assertDispatchAuthority(mapping: TrustedMapping, lease?: DispatchLease): StoredGrant {
+    if (lease !== undefined && this.lifecycleEpoch !== lease.epoch) fail('reauth_required');
+    const currentMapping = this.mappings.get(this.mcpKey(mapping.mcpSubject));
+    if (
+      currentMapping === undefined ||
+      currentMapping.grantFamily !== mapping.grantFamily ||
+      currentMapping.loginSessionId !== mapping.loginSessionId ||
+      currentMapping.upstreamSubject !== mapping.upstreamSubject ||
+      currentMapping.upstreamClientId !== mapping.upstreamClientId
+    ) {
+      fail('reauth_required');
+    }
+    const session = this.sessions.get(currentMapping.loginSessionId);
+    if (session === undefined || this.now() >= session.expiresAtMs) fail('reauth_required');
+    if (session.principalId !== mapping.upstreamSubject) fail('cross_user');
+    const grant = this.grants.get(currentMapping.grantFamily);
+    if (grant === undefined || grant.revokedLocally) fail('reauth_required');
+    if (this.now() >= grant.localDispatchDeadlineMs) fail('local_dispatch_deadline');
+    if (grant.upstreamSubject !== mapping.upstreamSubject) fail('cross_user');
+    if (grant.upstreamClientId !== mapping.upstreamClientId) fail('wrong_client');
+    if (lease !== undefined) {
+      if (grant.grantFamily !== lease.family || grant.generation !== lease.generation) {
+        fail('reauth_required');
+      }
+      if (grant.upstreamAccessToken !== lease.token) fail('reauth_required');
+    }
+    return grant;
+  }
+
+  private guardedFetch(
+    mcpBearer: string,
+    lease: DispatchLease,
+    mapping: TrustedMapping,
+  ): typeof globalThis.fetch {
     const inner = this.fetchImpl ?? globalThis.fetch;
-    const expected = `Bearer ${upstreamToken}`;
     return async (input, init) => {
+      const grant = this.assertDispatchAuthority(mapping, lease);
       const headers = new Headers(init?.headers);
       const authorization = headers.get('authorization') ?? '';
       const apikey = headers.get('apikey') ?? '';
       const url = requestUrl(input);
+      const expected = `Bearer ${grant.upstreamAccessToken}`;
       if (url.hostname === 'mcp.loopback.invalid') fail('contract_fixture_not_a_network_target');
       if (
         authorization !== expected ||
@@ -982,9 +1105,10 @@ export class LabDualGrantBroker {
     if (existing) return existing;
     const flight = this.refreshOnce(family);
     this.refreshFlights.set(family, flight);
-    void flight.finally(() => {
+    const clearFlight = (): void => {
       if (this.refreshFlights.get(family) === flight) this.refreshFlights.delete(family);
-    });
+    };
+    void flight.then(clearFlight, clearFlight);
     return flight;
   }
 
@@ -992,33 +1116,47 @@ export class LabDualGrantBroker {
     const grant = this.grants.get(family);
     if (!grant || grant.revokedLocally) fail('reauth_required');
     const generation = grant.generation;
+    const epoch = this.lifecycleEpoch;
+    const refreshToken = grant.upstreamRefreshToken;
     let tokens: LabUpstreamTokenSuccess;
     try {
       tokens = await this.upstream.refresh({
         grantType: 'refresh_token',
-        refreshToken: grant.upstreamRefreshToken,
+        refreshToken,
         clientId: this.upstreamClientId,
         resource: this.upstreamResourceUri,
       });
     } catch (error) {
       if (error instanceof LabDualGrantError) throw error;
+      if (this.lifecycleEpoch !== epoch) return;
       const current = this.grants.get(family);
-      if (current) this.grants.set(family, { ...current, revokedLocally: true });
+      if (current && current.generation === generation && !current.revokedLocally) {
+        this.grants.set(family, { ...current, revokedLocally: true });
+      }
       fail('upstream_refresh_failed');
     }
+    if (this.lifecycleEpoch !== epoch) return;
     const current = this.grants.get(family);
-    if (!current || current.generation !== generation || current.revokedLocally) {
-      fail('grant_family_conflict');
-    }
+    if (!current || current.generation !== generation || current.revokedLocally) return;
     const claims = this.readUpstreamClaims(tokens.accessToken);
+    if (this.lifecycleEpoch !== epoch) return;
     if (
       claims.subject !== current.upstreamSubject ||
       claims.clientId !== current.upstreamClientId
     ) {
       fail('wrong_client');
     }
+    const latest = this.grants.get(family);
+    if (
+      this.lifecycleEpoch !== epoch ||
+      latest === undefined ||
+      latest.generation !== generation ||
+      latest.revokedLocally
+    ) {
+      return;
+    }
     this.grants.set(family, {
-      ...current,
+      ...latest,
       generation: generation + 1,
       upstreamAccessToken: tokens.accessToken,
       upstreamRefreshToken: tokens.refreshToken,
@@ -1148,18 +1286,28 @@ function assertBrokerConfig(config: LabDualGrantBrokerConfig): void {
   assertLabel(config.mcpClientId, 'invalid_client');
   assertLabel(config.upstreamClientId, 'invalid_client');
   if (config.mcpClientId === config.upstreamClientId) fail('invalid_client');
+  const mcpIssuerUrl = assertMcpIssuer(config.mcpIssuer);
   const mcpIssuer = canonicalizeResourceUri(config.mcpIssuer);
-  const upstreamIssuer = canonicalizeResourceUri(config.upstreamIssuer);
+  const upstreamIssuerUrl = assertUpstreamCoordinate(
+    config.upstreamIssuer,
+    '/auth/v1',
+    config.fetch,
+  );
+  const upstreamIssuer = canonicalizeResourceUri(upstreamIssuerUrl.toString());
   if (mcpIssuer === upstreamIssuer) fail('mixup');
-  if (!mcpIssuer.startsWith('http://127.0.0.1')) fail('redirect_not_loopback');
   if (config.mcpResourceUri !== LOCAL_LAB_MCP_RESOURCE_URI) fail('invalid_resource');
-  if (canonicalizeResourceUri(config.upstreamResourceUri) === config.mcpResourceUri) {
+  const upstreamResource = assertUpstreamCoordinate(
+    config.upstreamResourceUri,
+    '/rest/v1',
+    config.fetch,
+  );
+  if (canonicalizeResourceUri(upstreamResource.toString()) === config.mcpResourceUri) {
     fail('invalid_resource');
   }
-  assertLoopbackRedirect(config.exactRedirectUri);
-  assertLoopbackRedirect(config.mcpClientRedirectUri);
-  if (config.exactRedirectUri === config.mcpClientRedirectUri) fail('invalid_redirect');
-  assertDataApiOrigin(config.dataApiOrigin, config.fetch);
+  const exactRedirect = assertLoopbackRedirect(config.exactRedirectUri, mcpIssuerUrl);
+  const mcpRedirect = assertLoopbackRedirect(config.mcpClientRedirectUri, mcpIssuerUrl);
+  if (exactRedirect.pathname === mcpRedirect.pathname) fail('invalid_redirect');
+  assertDataApiOrigin(config.dataApiOrigin, config.fetch, upstreamResource);
   assertLabel(config.maintainedClientName, 'invalid_client');
   assertLabel(config.maintainedClientVersion, 'invalid_client');
   if (config.maintainedClientName === config.maintainedClientVersion) fail('invalid_client');

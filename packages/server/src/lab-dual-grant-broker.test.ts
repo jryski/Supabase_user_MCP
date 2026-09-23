@@ -1043,4 +1043,459 @@ describe('lab dual-grant broker r2', () => {
     expect([400, 404]).toContain(absent.status);
     expect(paths.every((path) => !path.includes('admin'))).toBe(true);
   });
+
+  it('rechecks authority after identity and before /rest/v1', async () => {
+    for (const mode of ['revoke', 'deadline', 'cleanup'] as const) {
+      let now = Date.now();
+      const who = principal();
+      const paths: string[] = [];
+      let release: (() => void) | undefined;
+      const gate = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      const lab = labFor(8765, () => now);
+      const broker = await createBroker({
+        upstream: adapt(lab),
+        now: () => now,
+        fetchImpl: async (input) => {
+          const url = new URL(
+            typeof input === 'string' || input instanceof URL ? input : input.url,
+          );
+          paths.push(url.pathname);
+          if (url.pathname === '/auth/v1/user') {
+            if (mode === 'revoke') broker.revokeLocal(who);
+            if (mode === 'deadline') now += LOCAL_DISPATCH_TTL_MS + 1;
+            if (mode === 'cleanup') await broker.cleanup();
+            await gate;
+            return Response.json({ id: who, aud: 'authenticated' });
+          }
+          return Response.json({ record: null });
+        },
+      });
+      const handler = profile(broker, lab);
+      const token = await login(broker, who, 8765);
+      const pending = handler(toolRequest(token, 'memory_get', { id: ALICE_MEMORY }));
+      for (let attempt = 0; attempt < 40 && !paths.includes('/auth/v1/user'); attempt += 1) {
+        await new Promise((resolve) => setTimeout(resolve, 5));
+      }
+      release?.();
+      const response = await pending;
+      expect([mode, response.status]).not.toEqual([mode, 200]);
+      expect(paths.filter((path) => path.startsWith('/rest/v1'))).toEqual([]);
+      if (mode === 'cleanup') {
+        expect(broker.custodyCounts()).toEqual({
+          grants: 0,
+          pendingFlows: 0,
+          loginSessions: 0,
+          mappings: 0,
+        });
+      }
+      await broker.cleanup();
+    }
+  });
+
+  it('does not dispatch a stale generation after refresh replaces the grant', async () => {
+    let now = Date.now();
+    const who = principal();
+    const paths: string[] = [];
+    const identityTokens: string[] = [];
+    const restTokens: string[] = [];
+    let releaseIdentity: (() => void) | undefined;
+    const identityGate = new Promise<void>((resolve) => {
+      releaseIdentity = resolve;
+    });
+    const lab = labFor(8765, () => now);
+    const broker = await createBroker({
+      upstream: adapt(lab, {
+        exchange: async (input) => {
+          const issued = await lab.exchangeAuthorizationCode(input);
+          return {
+            ...issued,
+            accessToken: await mintSyntheticAccessToken({
+              issuer: UPSTREAM_ISSUER,
+              resourceUri: UPSTREAM_RESOURCE,
+              principalId: who,
+              clientId: UPSTREAM_CLIENT,
+              sessionId: randomUUID(),
+              expiresInSec: 2,
+              now: () => now,
+            }),
+          };
+        },
+      }),
+      now: () => now,
+      fetchImpl: async (input, init) => {
+        const url = new URL(typeof input === 'string' || input instanceof URL ? input : input.url);
+        paths.push(url.pathname);
+        const authorization = new Headers(init?.headers).get('authorization') ?? '';
+        if (url.pathname.startsWith('/rest/v1')) restTokens.push(authorization);
+        if (url.pathname === '/auth/v1/user') {
+          identityTokens.push(authorization);
+          await identityGate;
+          return Response.json({ id: who, aud: 'authenticated' });
+        }
+        return Response.json({ record: null });
+      },
+    });
+    const handler = profile(broker, lab);
+    const token = await login(broker, who);
+    const original = broker.describeUpstreamGrant(who);
+    const stale = handler(toolRequest(token, 'memory_get', { id: ALICE_MEMORY }));
+    for (let attempt = 0; attempt < 40 && !paths.includes('/auth/v1/user'); attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+    now += 3_000;
+    const fresh = handler(toolRequest(token, 'memory_get', { id: ALICE_MEMORY }));
+    for (let attempt = 0; attempt < 40; attempt += 1) {
+      if (broker.describeUpstreamGrant(who)?.generation === 2) break;
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+    expect(broker.describeUpstreamGrant(who)?.generation).toBe(2);
+    expect(broker.describeUpstreamGrant(who)?.grantFamily).toBe(original?.grantFamily);
+    releaseIdentity?.();
+    const [staleResponse, freshResponse] = await Promise.all([stale, fresh]);
+    expect(staleResponse.status).toBe(403);
+    expect(await staleResponse.json()).toEqual({ error: 'reauth_required' });
+    expect(freshResponse.status).toBe(200);
+    expect(paths.filter((path) => path.startsWith('/rest/v1'))).toHaveLength(1);
+    expect(identityTokens.length).toBeGreaterThanOrEqual(2);
+    expect(restTokens).toEqual([identityTokens[1]]);
+    expect(restTokens[0]).not.toBe(identityTokens[0]);
+  });
+
+  it('does not restore custody after cleanup during exchange, signing, or refresh', async () => {
+    const who = principal();
+    const lab = labFor(8765);
+    let releaseExchange: (() => void) | undefined;
+    const exchangeGate = new Promise<void>((resolve) => {
+      releaseExchange = resolve;
+    });
+    let exchangeEntered: (() => void) | undefined;
+    const exchangeEnteredPromise = new Promise<void>((resolve) => {
+      exchangeEntered = resolve;
+    });
+    const exchangeBroker = await createBroker({
+      upstream: adapt(lab, {
+        exchange: async (input) => {
+          const tokens = await lab.exchangeAuthorizationCode(input);
+          exchangeEntered?.();
+          await exchangeGate;
+          return tokens;
+        },
+      }),
+      fetchImpl: scriptedFetch([], [], []),
+    });
+    const sessionId = exchangeBroker.openLoginSession(who);
+    const pkce = generateS256PkceChallenge();
+    const flowId = exchangeBroker.beginMcpAuthorization({
+      loginSessionId: sessionId,
+      clientId: MCP_CLIENT,
+      redirectUri: 'http://127.0.0.1:8765/lab/mcp/callback',
+      codeChallenge: pkce.codeChallenge,
+      codeChallengeMethod: 'S256',
+      state: randomBytes(16).toString('base64url'),
+      resource: RESOURCE,
+    });
+    exchangeBroker.approveMcpConsent(flowId);
+    const upstream = exchangeBroker.beginUpstreamAuthorization({
+      parentFlowId: flowId,
+      loginSessionId: sessionId,
+    });
+    const approved = exchangeBroker.approveUpstreamConsent(upstream.flowId);
+    const inFlight = exchangeBroker.consumeUpstreamCallback({
+      state: approved.searchParams.get('state') ?? '',
+      iss: approved.searchParams.get('iss') ?? '',
+      code: approved.searchParams.get('code') ?? '',
+    });
+    await exchangeEnteredPromise;
+    await exchangeBroker.cleanup();
+    expect(exchangeBroker.custodyCounts().grants).toBe(0);
+    releaseExchange?.();
+    await inFlight;
+    expect(exchangeBroker.custodyCounts()).toEqual({
+      grants: 0,
+      pendingFlows: 0,
+      loginSessions: 0,
+      mappings: 0,
+    });
+
+    let releaseAdmit: (() => void) | undefined;
+    const admitGate = new Promise<void>((resolve) => {
+      releaseAdmit = resolve;
+    });
+    let admitEntered: (() => void) | undefined;
+    const admitEnteredPromise = new Promise<void>((resolve) => {
+      admitEntered = resolve;
+    });
+    const signingLab = labFor(8766);
+    const signingBroker = await createLabDualGrantBroker({
+      optIn: true,
+      mcpIssuer: 'http://127.0.0.1:8766',
+      mcpClientId: MCP_CLIENT,
+      mcpResourceUri: RESOURCE,
+      upstreamIssuer: UPSTREAM_ISSUER,
+      upstreamClientId: UPSTREAM_CLIENT,
+      upstreamResourceUri: UPSTREAM_RESOURCE,
+      exactRedirectUri: 'http://127.0.0.1:8766/lab/oauth/callback',
+      mcpClientRedirectUri: 'http://127.0.0.1:8766/lab/mcp/callback',
+      dataApiOrigin: DATA_ORIGIN,
+      publishableKey: PUBLISHABLE,
+      maintainedClientName: CLIENT_NAME,
+      maintainedClientVersion: CLIENT_VERSION,
+      upstream: adapt(signingLab),
+      fetch: scriptedFetch([], [], []),
+      beforeAdmitMcpToken: async () => {
+        admitEntered?.();
+        await admitGate;
+      },
+    });
+    const signingSession = signingBroker.openLoginSession(who);
+    const signingPkce = generateS256PkceChallenge();
+    const signingFlow = signingBroker.beginMcpAuthorization({
+      loginSessionId: signingSession,
+      clientId: MCP_CLIENT,
+      redirectUri: 'http://127.0.0.1:8766/lab/mcp/callback',
+      codeChallenge: signingPkce.codeChallenge,
+      codeChallengeMethod: 'S256',
+      state: randomBytes(16).toString('base64url'),
+      resource: RESOURCE,
+    });
+    const mcpRedirect = signingBroker.approveMcpConsent(signingFlow);
+    const signingUpstream = signingBroker.beginUpstreamAuthorization({
+      parentFlowId: signingFlow,
+      loginSessionId: signingSession,
+    });
+    const signingApproved = signingBroker.approveUpstreamConsent(signingUpstream.flowId);
+    await signingBroker.consumeUpstreamCallback({
+      state: signingApproved.searchParams.get('state') ?? '',
+      iss: signingApproved.searchParams.get('iss') ?? '',
+      code: signingApproved.searchParams.get('code') ?? '',
+    });
+    const signing = signingBroker.exchangeMcpAuthorizationCode({
+      grantType: 'authorization_code',
+      code: mcpRedirect.searchParams.get('code') ?? '',
+      clientId: MCP_CLIENT,
+      redirectUri: 'http://127.0.0.1:8766/lab/mcp/callback',
+      codeVerifier: signingPkce.codeVerifier,
+      resource: RESOURCE,
+    });
+    await admitEnteredPromise;
+    await signingBroker.cleanup();
+    releaseAdmit?.();
+    await expect(signing).rejects.toMatchObject({ code: 'reauth_required' });
+    expect(signingBroker.custodyCounts().mappings).toBe(0);
+    expect(signingBroker.custodyCounts().grants).toBe(0);
+
+    let now = Date.now();
+    let releaseRefresh: (() => void) | undefined;
+    const refreshGate = new Promise<void>((resolve) => {
+      releaseRefresh = resolve;
+    });
+    let refreshEntered: (() => void) | undefined;
+    const refreshEnteredPromise = new Promise<void>((resolve) => {
+      refreshEntered = resolve;
+    });
+    const refreshLab = labFor(8767, () => now);
+    const refreshBroker = await createBroker({
+      port: 8767,
+      now: () => now,
+      upstream: adapt(refreshLab, {
+        exchange: async (input) => {
+          const issued = await refreshLab.exchangeAuthorizationCode(input);
+          return {
+            ...issued,
+            accessToken: await mintSyntheticAccessToken({
+              issuer: UPSTREAM_ISSUER,
+              resourceUri: UPSTREAM_RESOURCE,
+              principalId: who,
+              clientId: UPSTREAM_CLIENT,
+              sessionId: randomUUID(),
+              expiresInSec: 2,
+              now: () => now,
+            }),
+          };
+        },
+        refresh: async (input) => {
+          refreshEntered?.();
+          await refreshGate;
+          return refreshLab.refresh(input);
+        },
+      }),
+      fetchImpl: scriptedFetch([memory(who, ALICE_MEMORY)], [], []),
+    });
+    const refreshHandler = profile(refreshBroker, refreshLab);
+    const refreshToken = await login(refreshBroker, who, 8767);
+    now += 3_000;
+    const refreshed = refreshHandler(toolRequest(refreshToken, 'memory_get', { id: ALICE_MEMORY }));
+    await refreshEnteredPromise;
+    await refreshBroker.cleanup();
+    releaseRefresh?.();
+    const blocked = await refreshed;
+    expect(blocked.status).toBe(403);
+    expect(refreshBroker.custodyCounts().grants).toBe(0);
+    expect(refreshBroker.custodyCounts().mappings).toBe(0);
+  });
+
+  it('rejects attacker-shaped loopback coordinates without a network call', async () => {
+    const lab = labFor(8765);
+    const base = {
+      optIn: true,
+      mcpIssuer: 'http://127.0.0.1:8765',
+      mcpClientId: MCP_CLIENT,
+      mcpResourceUri: RESOURCE,
+      upstreamIssuer: UPSTREAM_ISSUER,
+      upstreamClientId: UPSTREAM_CLIENT,
+      upstreamResourceUri: UPSTREAM_RESOURCE,
+      exactRedirectUri: 'http://127.0.0.1:8765/lab/oauth/callback',
+      mcpClientRedirectUri: 'http://127.0.0.1:8765/lab/mcp/callback',
+      dataApiOrigin: DATA_ORIGIN,
+      publishableKey: PUBLISHABLE,
+      maintainedClientName: CLIENT_NAME,
+      maintainedClientVersion: CLIENT_VERSION,
+      upstream: adapt(lab),
+      fetch: scriptedFetch([], [], []),
+    };
+    const rejected = [
+      { mcpIssuer: 'http://127.0.0.1.attacker.invalid:8765' },
+      { mcpIssuer: 'http://user:pass@127.0.0.1:8765' },
+      { mcpIssuer: 'http://localhost:8765' },
+      { mcpIssuer: 'https://127.0.0.1:8765' },
+      { dataApiOrigin: 'https://remote.example' },
+      { dataApiOrigin: 'https://remote.example.invalid' },
+      { exactRedirectUri: 'http://127.0.0.1:9999/lab/oauth/callback' },
+      { upstreamIssuer: 'https://auth.example/auth/v1' },
+      {
+        mcpIssuer: 'http://127.0.0.1.attacker.invalid:8765',
+        dataApiOrigin: 'https://remote.example.invalid',
+      },
+    ];
+    for (const override of rejected) {
+      await expect(createLabDualGrantBroker({ ...base, ...override })).rejects.toBeInstanceOf(
+        LabDualGrantError,
+      );
+    }
+    const loopback = await createLabDualGrantBroker({
+      ...base,
+      upstreamIssuer: 'http://127.0.0.1:9/auth/v1',
+      upstreamResourceUri: 'http://127.0.0.1:9/rest/v1',
+      dataApiOrigin: 'http://127.0.0.1:9',
+    });
+    expect(loopback.profileHook.allowInsecureIssuer).toBe(true);
+    await loopback.cleanup();
+  });
+
+  it('handles refresh rejection on every waiter without an unhandled rejection', async () => {
+    const seen: Array<{ name: string | undefined; message: string | undefined }> = [];
+    const capture = (error: unknown): void => {
+      const value = error as { name?: string; message?: string };
+      seen.push({ name: value.name, message: value.message });
+    };
+    process.on('unhandledRejection', capture);
+    try {
+      let now = Date.now();
+      const who = principal();
+      const lab = labFor(8765, () => now);
+      let refreshCalls = 0;
+      let releaseRefresh: (() => void) | undefined;
+      const refreshGate = new Promise<void>((resolve) => {
+        releaseRefresh = resolve;
+      });
+      const broker = await createBroker({
+        upstream: adapt(lab, {
+          exchange: async (input) => {
+            const issued = await lab.exchangeAuthorizationCode(input);
+            return {
+              ...issued,
+              accessToken: await mintSyntheticAccessToken({
+                issuer: UPSTREAM_ISSUER,
+                resourceUri: UPSTREAM_RESOURCE,
+                principalId: who,
+                clientId: UPSTREAM_CLIENT,
+                sessionId: randomUUID(),
+                expiresInSec: 2,
+                now: () => now,
+              }),
+            };
+          },
+          refresh: async () => {
+            refreshCalls += 1;
+            await refreshGate;
+            throw new Error('synthetic-refresh-failure');
+          },
+        }),
+        now: () => now,
+        fetchImpl: scriptedFetch([memory(who, ALICE_MEMORY)], [], []),
+      });
+      const handler = profile(broker, lab);
+      const token = await login(broker, who);
+      now += 3_000;
+      const leftPending = handler(toolRequest(token, 'memory_get', { id: ALICE_MEMORY }));
+      const rightPending = handler(toolRequest(token, 'memory_list_recent', { limit: 1 }));
+      for (let attempt = 0; attempt < 40 && refreshCalls < 1; attempt += 1) {
+        await new Promise((resolve) => setTimeout(resolve, 5));
+      }
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      releaseRefresh?.();
+      const [left, right] = await Promise.all([leftPending, rightPending]);
+      await new Promise((resolve) => setTimeout(resolve, 25));
+      expect(seen).toEqual([]);
+      expect(refreshCalls).toBe(1);
+      expect(left.status).toBe(403);
+      expect(right.status).toBe(403);
+      expect(await left.json()).toEqual({ error: 'upstream_refresh_failed' });
+      expect(await right.json()).toEqual({ error: 'upstream_refresh_failed' });
+
+      let release: (() => void) | undefined;
+      const gate = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      let entered: (() => void) | undefined;
+      const enteredPromise = new Promise<void>((resolve) => {
+        entered = resolve;
+      });
+      const revokeLab = labFor(8768, () => now);
+      const revokeBroker = await createBroker({
+        port: 8768,
+        now: () => now,
+        upstream: adapt(revokeLab, {
+          exchange: async (input) => {
+            const issued = await revokeLab.exchangeAuthorizationCode(input);
+            return {
+              ...issued,
+              accessToken: await mintSyntheticAccessToken({
+                issuer: UPSTREAM_ISSUER,
+                resourceUri: UPSTREAM_RESOURCE,
+                principalId: who,
+                clientId: UPSTREAM_CLIENT,
+                sessionId: randomUUID(),
+                expiresInSec: 2,
+                now: () => now,
+              }),
+            };
+          },
+          refresh: async (input) => {
+            entered?.();
+            await gate;
+            return revokeLab.refresh(input);
+          },
+        }),
+        fetchImpl: scriptedFetch([memory(who, ALICE_MEMORY)], [], []),
+      });
+      const revokeHandler = profile(revokeBroker, revokeLab);
+      const revokeToken = await login(revokeBroker, who, 8768);
+      now += 3_000;
+      const pending = revokeHandler(toolRequest(revokeToken, 'memory_get', { id: ALICE_MEMORY }));
+      await enteredPromise;
+      revokeBroker.revokeLocal(who);
+      release?.();
+      const revoked = await pending;
+      expect(revoked.status).toBe(403);
+      expect(revokeBroker.describeUpstreamGrant(who)?.generation).toBe(1);
+      expect(seen).toEqual([]);
+      await broker.cleanup();
+      await revokeBroker.cleanup();
+    } finally {
+      process.off('unhandledRejection', capture);
+    }
+  });
 });

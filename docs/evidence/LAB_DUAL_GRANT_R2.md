@@ -38,6 +38,34 @@ deadline does not move on refresh. Disconnect aborts the request signal only. Br
 revoke and provider revoke are separate clocks. The MCP verifier's 5 second bound is not a
 Data API guarantee.
 
+Authority is checked again at the outbound Data API fetch. Revoke, local deadline expiry, or
+cleanup during `GET /auth/v1/user` does not let a later `/rest/v1` RPC return 200. Cleanup
+bumps a lifecycle epoch. An in-flight code exchange, MCP signing admission, or refresh that
+finishes after that epoch does not write the access token, refresh token, or mapping back.
+Lab coordinates are parsed URLs: the MCP issuer and redirects are `http://127.0.0.1` with the
+redirect host and port equal to the issuer, and a Data API origin is either that loopback host
+or an `https` `*.invalid` fixture used only with the injected fetch. A rejected refresh clears
+its single-flight entry on both settlement paths so the 403 does not leave an unhandled
+rejection.
+
+## F1–F4 repair
+
+Reviewed head `8a43d81e8b6d3db7557cde8daa109e068dfe8c43` failed four fail-closed checks. The
+repair closes them in the lab broker only:
+
+| Finding | Closure |
+| --- | --- |
+| F1 | Current grant generation, revocation, local deadline, mapping, session, and lifecycle epoch are enforced inside the guarded fetch, immediately before `/auth/v1/user` and `/rest/v1`. |
+| F2 | `cleanup` / `discardMemoryCustody` increment a lifecycle epoch. Post-await parent, session, and flow checks drop stale exchange, signing, and refresh completions. |
+| F3 | Issuer, redirect, upstream, and Data API coordinates use parsed scheme, host, port, and path checks. Prefix lookalikes, userinfo, and non-loopback HTTPS origins are rejected in configuration. |
+| F4 | Refresh flight cleanup handles fulfillment and rejection. Concurrent waiters receive HTTP 403. |
+
+`initialize` is still unimplemented. An authenticated `initialize` request remains HTTP 404 /
+JSON-RPC `-32601`. `tools/list` still returns names without tool schemas. That gap is an
+integration residual, not an F1–F4 regression. T3 (maintained client), T4 (live Postgres RLS),
+T5 (real second registration), T10 (live GoTrue latency), and T17 (full-stack cleanup) are
+still open. Mock owner filtering is not RLS.
+
 `https://mcp.loopback.invalid/mcp` stays a contract fixture. The callback listener binds
 `127.0.0.1` only.
 
@@ -70,5 +98,6 @@ restart -> reauth_required, provider grant untouched
 - Not proof against a live GoTrue project or real RLS policies. The matrix uses a synthetic
   upstream and a scripted Data API.
 - Not an external maintained MCP client binary. The receipt pins the name and version supplied
-  to the lab process.
+  to the lab process. `initialize` still returns 404 / `-32601`.
 - Not encrypted refresh custody, hosted activation, or issue #62 completion.
+- Not a merge, and not a claim that F1–F4 closure finishes r2 acceptance.
