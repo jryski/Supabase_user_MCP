@@ -32,6 +32,18 @@ matrix, then shared/personal store permissions. Policies must cover views, RPCs,
 Storage and alternate API paths as well as tables. Administration remains
 separate from everyday agent access. No production policy rollout is claimed.
 
+## Open lab dual-grant draft
+
+[Draft pull request #79](https://github.com/jryski/Supabase_user_MCP/pull/79)
+at `f01b282ecaeffc6e37f16145fb6a18bd14cc60e1` is a lab-only, default-off
+dual-grant broker stacked on
+[pull request #75](https://github.com/jryski/Supabase_user_MCP/pull/75)
+(`ariadne/remote-oauth-rebased-20260919`), not on `main`. The ordinary remote
+path stays fail-closed. The draft is not merge-ready, not hosted or live
+activation, and not encrypted refresh-at-rest. It does not complete M4 or
+[issue #62](https://github.com/jryski/Supabase_user_MCP/issues/62). See the
+[September 23 status note](status/2026-09-23-lab-dual-grant-draft.md).
+
 ## How milestones work
 
 Milestones are evidence gates, not dates. Work may be prototyped ahead, but a milestone

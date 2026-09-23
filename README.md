@@ -49,6 +49,20 @@ remain unverified for this candidate.
 See the [candidate testing guide](docs/status/2026-09-15-controlled-client-candidate.md)
 for supported behavior, reproducible checks and the remaining enablement gates.
 
+## September 23, 2026: open lab dual-grant draft
+
+[Draft pull request #79](https://github.com/jryski/Supabase_user_MCP/pull/79)
+at `f01b282ecaeffc6e37f16145fb6a18bd14cc60e1` is a lab-only dual-grant broker
+(r2, default off). It is stacked on the remote-oauth lineage in
+[pull request #75](https://github.com/jryski/Supabase_user_MCP/pull/75), base
+`ariadne/remote-oauth-rebased-20260919`, not on `main`. The ordinary remote
+path stays fail-closed; the broker is lab opt-in only. The draft is not
+merge-ready, not hosted or live activation, and not encrypted refresh-at-rest.
+[Issue #62](https://github.com/jryski/Supabase_user_MCP/issues/62) is not
+complete.
+
+See the [status note](docs/status/2026-09-23-lab-dual-grant-draft.md).
+
 ## Why this exists
 
 Supabase's hosted MCP server is a developer control-plane tool. Supabase User MCP explores the complementary **application data-plane** problem:
