@@ -35,7 +35,7 @@ separate from everyday agent access. No production policy rollout is claimed.
 ## Open lab dual-grant draft
 
 [Draft pull request #79](https://github.com/jryski/Supabase_user_MCP/pull/79)
-at `f01b282ecaeffc6e37f16145fb6a18bd14cc60e1` is a lab-only, default-off
+at `68639ec21f4c737af991cdb3db1f517ad28cb9a0` is a lab-only, default-off
 dual-grant broker stacked on
 [pull request #75](https://github.com/jryski/Supabase_user_MCP/pull/75)
 (`ariadne/remote-oauth-rebased-20260919`), not on `main`. The ordinary remote

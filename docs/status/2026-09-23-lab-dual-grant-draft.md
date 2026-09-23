@@ -7,7 +7,9 @@ mark remote OAuth complete.
 
 [Pull request #79](https://github.com/jryski/Supabase_user_MCP/pull/79),
 "feat: lab-only dual-grant broker (r2, default off)", is open and still a
-draft. Its head is `f01b282ecaeffc6e37f16145fb6a18bd14cc60e1`.
+draft. Its head is `68639ec21f4c737af991cdb3db1f517ad28cb9a0`. That
+replaces the previously cited head
+`f01b282ecaeffc6e37f16145fb6a18bd14cc60e1`.
 
 The draft is stacked on the remote-oauth lineage in
 [pull request #75](https://github.com/jryski/Supabase_user_MCP/pull/75). Its
@@ -19,6 +21,17 @@ commit recorded with this note is
 On that draft, the ordinary remote path stays fail-closed. Dispatch through
 the dual-grant broker requires the lab opt-in. Default-off behavior there is
 not an enablement switch on `main`.
+
+## Current head
+
+On `68639ec21f4c737af991cdb3db1f517ad28cb9a0`:
+
+- Authenticated lab `initialize` and `tools/list` schemas are present on that
+  draft.
+- The in-process MCP SDK path was exercised. That is not full T3: no external
+  client binary and no live GoTrue.
+- The draft is still not merge-ready. Issue #62 is not complete. Residual F3
+  is still awaiting an independent Ariadne re-probe.
 
 ## Non-claims
 
