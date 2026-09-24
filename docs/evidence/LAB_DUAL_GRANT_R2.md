@@ -70,9 +70,10 @@ Authenticated lab `initialize` and `tools/list` are answered by the same `McpSer
 as the local read-only server (`supabase-user-mcp` / `0.1.0-alpha.1`, the three memory tool
 schemas). An in-process `@modelcontextprotocol/client` drives `initialize`, then `tools/list`,
 then `tools/call`. The receipt records that client's name and version. Ordinary remote without
-the lab hook still returns `403` and does not call the Data API. T4 live Postgres RLS, T5 a real
-second OAuth registration, T10 live GoTrue revocation latency, and T17 full-stack cleanup remain
-open. Mock owner filtering is not RLS. An external MCP client binary was not run.
+the lab hook still returns `403` and does not call the Data API. Mock owner filtering is not
+RLS. An external MCP client binary was not run. The disposable loopback harness below is the
+closest executable form of T3, T4, T5, T10, and T17 against local GoTrue and Postgres RLS.
+A synthetic pass is not that receipt.
 
 `https://mcp.loopback.invalid/mcp` stays a contract fixture. The callback listener binds
 `127.0.0.1` only.
@@ -81,11 +82,24 @@ open. Mock owner filtering is not RLS. An external MCP client binary was not run
 
 ```bash
 npm run test:lab-dual-grant
+npm run test:lab-dual-grant-m4
 ```
 
-That builds, then runs the broker matrix, the ordinary remote HTTP profile tests, and the
-OAuth policy contract tests. It does not start Docker or Supabase. `npm run test:remote-oauth`
-remains the separate M4 loopback script and still expects fail-closed dispatch.
+`test:lab-dual-grant` builds, then runs the broker matrix, the ordinary remote HTTP profile
+tests, and the OAuth policy contract tests. It does not start Docker or Supabase.
+`npm run test:remote-oauth` remains the separate M4 loopback script and still expects
+fail-closed dispatch. It does not set `SUPABASE_USER_MCP_LAB_DUAL_GRANT`.
+
+`test:lab-dual-grant-m4` (`supabase/tests/run-lab-dual-grant-m4.sh`) is the live harness.
+It needs Docker and the local Supabase CLI. The stack binds with
+`host_binding_ipv4=127.0.0.1`. The script registers two temporary public OAuth clients,
+builds `createLabDualGrantBroker` with loopback `fetch`, and passes the profile hook into
+remote HTTP startup only together with `SUPABASE_USER_MCP_LAB_DUAL_GRANT=1`. Either control
+alone stays fail-closed. If the Docker daemon is not available, the script exits without a
+pass receipt. Cursor cloud VMs often cannot run this live path; the harness is still the
+command to run on a Docker host such as Locutus. The receipt names the in-process
+`@modelcontextprotocol/client` package and version. It is not an external MCP binary, not
+hosted Auth, and not issue #62 completion.
 
 ## State machine
 
@@ -103,11 +117,12 @@ restart -> reauth_required, provider grant untouched
 ## Non-claims
 
 - Not a native Supabase token exchange.
-- Not proof against a live GoTrue project or real RLS policies. The matrix uses a synthetic
-  upstream. Loopback tests supply a fetch double. `.invalid` fixtures use the broker-owned
-  scripted responder and do not treat a caller fetch as a no-network proof.
-- Not an external maintained MCP client binary and not live GoTrue. The in-process SDK client
-  does exercise `initialize`, `tools/list`, and `tools/call`. The receipt pins that client's
-  name and version. T3 is not fully accepted.
+- Not proof, by itself, against a live GoTrue project or real RLS policies. The synthetic
+  matrix uses a scripted upstream. Loopback tests in that suite supply a fetch double.
+  `.invalid` fixtures use the broker-owned scripted responder and do not treat a caller fetch
+  as a no-network proof. `npm run test:lab-dual-grant-m4` is the separate live loopback run.
+- Not an external maintained MCP client binary. The in-process SDK client does exercise
+  `initialize`, `tools/list`, and `tools/call`. The live receipt pins that package name and
+  version when the Docker harness passes. T3 is not an external-binary claim.
 - Not encrypted refresh custody, hosted activation, or issue #62 completion.
 - Not a merge, and not a claim that F1–F4 closure finishes r2 acceptance.

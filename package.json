@@ -34,6 +34,7 @@
     "test:m2": "bash supabase/tests/run-m2-memory-lab.sh",
     "test:remote-oauth": "bash supabase/tests/run-m4-remote-oauth-lab.sh",
     "test:lab-dual-grant": "npm run build && vitest run packages/server/src/lab-dual-grant-broker.test.ts packages/server/src/remote-http-profile.test.ts packages/contracts/src/remote-oauth-http-policy.test.ts",
+    "test:lab-dual-grant-m4": "bash supabase/tests/run-lab-dual-grant-m4.sh",
     "test:s1": "bash supabase/tests/run-s1-lab.sh",
     "typecheck": "tsc -b --pretty false && tsc -p tsconfig.test.json --noEmit --pretty false"
   },

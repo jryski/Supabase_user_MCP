@@ -148,21 +148,25 @@ export async function registerLocalPublicOAuthClient(input: {
   readonly serviceRoleKey: string;
   readonly clientName: string;
   readonly redirectUri: string;
+  readonly fetch?: FetchLike;
 }): Promise<LocalOAuthClientRegistration> {
-  const response = await fetch(new URL('/auth/v1/admin/oauth/clients', input.authOrigin), {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${input.serviceRoleKey}`,
-      apikey: input.serviceRoleKey,
-      'Content-Type': 'application/json',
+  const response = await resolveFetch(input.fetch)(
+    new URL('/auth/v1/admin/oauth/clients', input.authOrigin),
+    {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${input.serviceRoleKey}`,
+        apikey: input.serviceRoleKey,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        name: input.clientName,
+        redirect_uris: [input.redirectUri],
+        client_type: 'public',
+        token_endpoint_auth_method: 'none',
+      }),
     },
-    body: JSON.stringify({
-      name: input.clientName,
-      redirect_uris: [input.redirectUri],
-      client_type: 'public',
-      token_endpoint_auth_method: 'none',
-    }),
-  });
+  );
   if (!response.ok) {
     throw new Error(`oauth client registration failed: ${response.status}`);
   }
@@ -185,6 +189,7 @@ export async function startLocalAuthorization(input: {
   readonly state: string;
   readonly scope?: string;
   readonly projectPublishableKey?: string;
+  readonly fetch?: FetchLike;
 }): Promise<{ readonly authorizationId: string; readonly location: string }> {
   const resource = canonicalizeResourceUri(input.resource);
   const authorize = new URL('/auth/v1/oauth/authorize', input.authOrigin);
@@ -200,7 +205,7 @@ export async function startLocalAuthorization(input: {
   if (input.projectPublishableKey !== undefined) {
     headers.apikey = input.projectPublishableKey;
   }
-  const response = await fetch(authorize, {
+  const response = await resolveFetch(input.fetch)(authorize, {
     redirect: 'manual',
     ...(Object.keys(headers).length === 0 ? {} : { headers }),
   });
@@ -262,7 +267,12 @@ export async function exchangeLocalAuthorizationCode(input: {
   readonly codeVerifier: string;
   readonly resource: string;
   readonly projectPublishableKey?: string;
-}): Promise<{ readonly accessToken: string; readonly refreshToken: string | null }> {
+  readonly fetch?: FetchLike;
+}): Promise<{
+  readonly accessToken: string;
+  readonly refreshToken: string | null;
+  readonly expiresIn?: number;
+}> {
   const body = new URLSearchParams({
     grant_type: 'authorization_code',
     client_id: input.clientId,
@@ -271,20 +281,26 @@ export async function exchangeLocalAuthorizationCode(input: {
     code_verifier: input.codeVerifier,
     resource: canonicalizeResourceUri(input.resource),
   });
-  const response = await fetch(new URL('/auth/v1/oauth/token', input.authOrigin), {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/x-www-form-urlencoded',
-      ...(input.projectPublishableKey === undefined ? {} : { apikey: input.projectPublishableKey }),
+  const response = await resolveFetch(input.fetch)(
+    new URL('/auth/v1/oauth/token', input.authOrigin),
+    {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/x-www-form-urlencoded',
+        ...(input.projectPublishableKey === undefined
+          ? {}
+          : { apikey: input.projectPublishableKey }),
+      },
+      body,
     },
-    body,
-  });
+  );
   if (!response.ok) {
     throw new Error(`token exchange failed: ${response.status}`);
   }
   const payload = (await response.json()) as {
     access_token?: string;
     refresh_token?: string;
+    expires_in?: number;
   };
   if (!payload.access_token) {
     throw new Error('token exchange did not return access_token');
@@ -292,6 +308,7 @@ export async function exchangeLocalAuthorizationCode(input: {
   return {
     accessToken: payload.access_token,
     refreshToken: payload.refresh_token ?? null,
+    ...(typeof payload.expires_in === 'number' ? { expiresIn: payload.expires_in } : {}),
   };
 }
 
@@ -299,23 +316,34 @@ export async function refreshLocalAccessToken(input: {
   readonly authOrigin: string;
   readonly clientId: string;
   readonly refreshToken: string;
-}): Promise<{ readonly accessToken: string; readonly refreshToken: string | null }> {
+  readonly resource?: string;
+  readonly fetch?: FetchLike;
+}): Promise<{
+  readonly accessToken: string;
+  readonly refreshToken: string | null;
+  readonly expiresIn?: number;
+}> {
   const body = new URLSearchParams({
     grant_type: 'refresh_token',
     client_id: input.clientId,
     refresh_token: input.refreshToken,
+    ...(input.resource === undefined ? {} : { resource: canonicalizeResourceUri(input.resource) }),
   });
-  const response = await fetch(new URL('/auth/v1/oauth/token', input.authOrigin), {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-    body,
-  });
+  const response = await resolveFetch(input.fetch)(
+    new URL('/auth/v1/oauth/token', input.authOrigin),
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body,
+    },
+  );
   if (!response.ok) {
     throw new Error(`refresh failed: ${response.status}`);
   }
   const payload = (await response.json()) as {
     access_token?: string;
     refresh_token?: string;
+    expires_in?: number;
   };
   if (!payload.access_token) {
     throw new Error('refresh did not return access_token');
@@ -323,6 +351,7 @@ export async function refreshLocalAccessToken(input: {
   return {
     accessToken: payload.access_token,
     refreshToken: payload.refresh_token ?? null,
+    ...(typeof payload.expires_in === 'number' ? { expiresIn: payload.expires_in } : {}),
   };
 }
 
@@ -331,10 +360,11 @@ export async function revokeLocalGrant(input: {
   readonly clientId: string;
   readonly userAccessToken: string;
   readonly projectPublishableKey: string;
-}): Promise<void> {
+  readonly fetch?: FetchLike;
+}): Promise<number> {
   const url = new URL('/auth/v1/user/oauth/grants', input.authOrigin);
   url.searchParams.set('client_id', input.clientId);
-  const response = await fetch(url, {
+  const response = await resolveFetch(input.fetch)(url, {
     method: 'DELETE',
     headers: {
       Authorization: `Bearer ${input.userAccessToken}`,
@@ -344,14 +374,16 @@ export async function revokeLocalGrant(input: {
   if (!response.ok && response.status !== 204) {
     throw new Error(`grant revoke failed: ${response.status}`);
   }
+  return response.status;
 }
 
 export async function logoutLocalSession(input: {
   readonly authOrigin: string;
   readonly userAccessToken: string;
   readonly projectPublishableKey: string;
+  readonly fetch?: FetchLike;
 }): Promise<void> {
-  const response = await fetch(new URL('/auth/v1/logout', input.authOrigin), {
+  const response = await resolveFetch(input.fetch)(new URL('/auth/v1/logout', input.authOrigin), {
     method: 'POST',
     headers: {
       Authorization: `Bearer ${input.userAccessToken}`,

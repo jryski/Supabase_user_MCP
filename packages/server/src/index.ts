@@ -124,6 +124,14 @@ export {
   type LabUpstreamOAuth,
 } from './lab-dual-grant-broker.js';
 export {
+  buildLabDualGrantM4Receipt,
+  createLiveGoTrueLabUpstream,
+  LAB_DUAL_GRANT_M4_RECEIPT_SCHEMA,
+  LiveGoTrueLabUpstream,
+  type LabDualGrantM4Receipt,
+  type LiveGoTrueLabUpstreamConfig,
+} from './live-gotrue-lab-upstream.js';
+export {
   createRemoteHttpHandlerFromEnvironment,
   handleRemoteHttpConnection,
   listenRemoteHttpHandler,
