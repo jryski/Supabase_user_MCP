@@ -51,19 +51,23 @@ for supported behavior, reproducible checks and the remaining enablement gates.
 
 ## September 23, 2026: open lab dual-grant draft
 
+Updated September 24, 2026.
+
 [Draft pull request #79](https://github.com/jryski/Supabase_user_MCP/pull/79)
-at `68639ec21f4c737af991cdb3db1f517ad28cb9a0` is a lab-only dual-grant broker
+at `b6d83e04508774644c2d20d4ec85314bff333d8a` is a lab-only dual-grant broker
 (r2, default off). It is stacked on the remote-oauth lineage in
 [pull request #75](https://github.com/jryski/Supabase_user_MCP/pull/75), base
 `ariadne/remote-oauth-rebased-20260919`, not on `main`. The ordinary remote
-path stays fail-closed; the broker is lab opt-in only. That head includes
-authenticated lab `initialize` and `tools/list` schemas on the in-process MCP
-SDK path, which is not full T3. The draft is not merge-ready, not hosted or
-live activation, and not encrypted refresh-at-rest.
+path stays fail-closed; the broker is lab opt-in only. Ariadne's lab-only
+residual-F3 review passed at that head
+([comment 5806808083](https://github.com/jryski/Supabase_user_MCP/pull/79#issuecomment-5806808083)).
+That PASS is not full adoption. The draft is still a draft: not a merge, not
+hosted or live activation, and not encrypted refresh-at-rest.
 [Issue #62](https://github.com/jryski/Supabase_user_MCP/issues/62) is not
-complete. Residual F3 is still awaiting an independent Ariadne re-probe.
+complete. T3, T4, T5, T10, T17, and the adoption and hosted gates remain open.
 
-See the [status note](docs/status/2026-09-23-lab-dual-grant-draft.md).
+See the [status note](docs/status/2026-09-23-lab-dual-grant-draft.md) for the
+dated lineage, including the earlier heads.
 
 ## Why this exists
 

@@ -34,15 +34,19 @@ separate from everyday agent access. No production policy rollout is claimed.
 
 ## Open lab dual-grant draft
 
+Updated September 24, 2026.
+
 [Draft pull request #79](https://github.com/jryski/Supabase_user_MCP/pull/79)
-at `68639ec21f4c737af991cdb3db1f517ad28cb9a0` is a lab-only, default-off
+at `b6d83e04508774644c2d20d4ec85314bff333d8a` is a lab-only, default-off
 dual-grant broker stacked on
 [pull request #75](https://github.com/jryski/Supabase_user_MCP/pull/75)
 (`ariadne/remote-oauth-rebased-20260919`), not on `main`. The ordinary remote
-path stays fail-closed. The draft is not merge-ready, not hosted or live
-activation, and not encrypted refresh-at-rest. It does not complete M4 or
-[issue #62](https://github.com/jryski/Supabase_user_MCP/issues/62). See the
-[September 23 status note](status/2026-09-23-lab-dual-grant-draft.md).
+path stays fail-closed. Ariadne's lab-only residual-F3 PASS at that head is
+not full adoption and is not a merge. The draft does not complete M4 or
+[issue #62](https://github.com/jryski/Supabase_user_MCP/issues/62). T3, T4,
+T5, T10, T17, and the adoption and hosted gates remain open. See the
+[September 23 status note](status/2026-09-23-lab-dual-grant-draft.md) for the
+dated lineage and earlier heads.
 
 ## How milestones work
 
