@@ -64,6 +64,26 @@ Supabase's hosted MCP server is a developer control-plane tool. Supabase User MC
 
 The goal is not to make prompt injection impossible. The goal is to make the blast radius of a compromised model no larger than the mechanically enforced authority of its verified principal/client capability.
 
+## September 23, 2026: open lab dual-grant draft
+
+Updated September 24, 2026.
+
+[Draft pull request #79](https://github.com/jryski/Supabase_user_MCP/pull/79)
+at `b6d83e04508774644c2d20d4ec85314bff333d8a` is a lab-only dual-grant broker
+(r2, default off). It is stacked on the remote-oauth lineage in
+[pull request #75](https://github.com/jryski/Supabase_user_MCP/pull/75), base
+`ariadne/remote-oauth-rebased-20260919`, not on `main`. The ordinary remote
+path stays fail-closed; the broker is lab opt-in only. Ariadne's lab-only
+residual-F3 review passed at that head
+([comment 5806808083](https://github.com/jryski/Supabase_user_MCP/pull/79#issuecomment-5806808083)).
+That PASS is not full adoption. The draft is still a draft: not a merge, not
+hosted or live activation, and not encrypted refresh-at-rest.
+[Issue #62](https://github.com/jryski/Supabase_user_MCP/issues/62) is not
+complete. T3, T4, T5, T10, T17, and the adoption and hosted gates remain open.
+
+See the [status note](docs/status/2026-09-23-lab-dual-grant-draft.md) for the
+dated lineage, including the earlier heads.
+
 ## Relationship to the Sovereign Memory program
 
 This repository owns **authenticated application data-plane capability**, not the protocol and not a deployment.
