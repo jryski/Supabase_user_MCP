@@ -1,9 +1,9 @@
 import { execFileSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { writeFileSync } from 'node:fs';
-import { createRequire } from 'node:module';
+import { readFileSync, writeFileSync } from 'node:fs';
 import { createServer as createNetServer } from 'node:net';
 import type { AddressInfo } from 'node:net';
+import { fileURLToPath } from 'node:url';
 
 import { Client } from '@modelcontextprotocol/client';
 import type { JSONRPCMessage, Transport } from '@modelcontextprotocol/server';
@@ -321,10 +321,7 @@ liveDescribe('lab dual-grant disposable GoTrue M4', () => {
       if (requested.pathname.startsWith('/rest/v1')) restPaths.push(requested.pathname);
       return globalThis.fetch(input, init);
     };
-    const sdk = createRequire(import.meta.url)('@modelcontextprotocol/client/package.json') as {
-      name: string;
-      version: string;
-    };
+    const sdk = readInstalledMcpClientPackage();
     const upstream = await createLiveGoTrueLabUpstream({
       authOrigin,
       publishableKey,
@@ -662,6 +659,20 @@ liveDescribe('lab dual-grant disposable GoTrue M4', () => {
     }
   }, 180_000);
 });
+
+function readInstalledMcpClientPackage(): { readonly name: string; readonly version: string } {
+  const packagePath = fileURLToPath(
+    new URL('../../../node_modules/@modelcontextprotocol/client/package.json', import.meta.url),
+  );
+  const parsed = JSON.parse(readFileSync(packagePath, 'utf8')) as {
+    name?: unknown;
+    version?: unknown;
+  };
+  if (parsed.name !== '@modelcontextprotocol/client' || typeof parsed.version !== 'string') {
+    throw new Error('installed MCP client package metadata is not readable');
+  }
+  return { name: parsed.name, version: parsed.version };
+}
 
 async function probeMemory(input: {
   readonly origin: string;
