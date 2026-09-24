@@ -80,6 +80,16 @@ function loopbackOrigin(value: string): URL {
   return url;
 }
 
+function assertLoopbackDatabase(value: string): void {
+  const url = new URL(value);
+  if (
+    (url.protocol !== 'postgres:' && url.protocol !== 'postgresql:') ||
+    url.hostname !== '127.0.0.1'
+  ) {
+    throw new Error('non_loopback_origin');
+  }
+}
+
 async function freeLoopbackPort(): Promise<number> {
   const server = createNetServer();
   await new Promise<void>((resolve) => {
@@ -287,7 +297,7 @@ liveDescribe('lab dual-grant disposable GoTrue M4', () => {
     const publishableKey = env('M4_PUBLISHABLE_KEY');
     const serviceRoleKey = env('M4_SERVICE_ROLE_KEY');
     const dbUrl = env('M4_DB_URL');
-    loopbackOrigin(dbUrl);
+    assertLoopbackDatabase(dbUrl);
     if (publishableKey.split('.').length === 3 || publishableKey.includes('service_role')) {
       throw new Error('publishable key is not a lab publishable key');
     }
