@@ -65,6 +65,9 @@ const LAB_TOOL_ANNOTATIONS = Object.freeze({
   openWorldHint: false,
 });
 
+/** Literal selector for the broker-owned `.invalid` responder. Not a fetch callback. */
+export const LAB_DUAL_GRANT_FIXTURE_TRANSPORT = 'broker-scripted' as const;
+
 /**
  * r2 Phase 1 state machine. Browser login does not authorize memory tools.
  * Restart clears this process only.
@@ -157,7 +160,16 @@ export interface LabDualGrantBrokerConfig {
   readonly maintainedClientName: string;
   readonly maintainedClientVersion: string;
   readonly upstream: LabUpstreamOAuth;
+  /**
+   * Loopback `http://127.0.0.1` transport only. Rejected for `https://*.invalid`
+   * fixtures, including a wrapper that forwards to `globalThis.fetch`.
+   */
   readonly fetch?: typeof globalThis.fetch;
+  /**
+   * Required for `https://*.invalid` coordinates and forbidden on loopback.
+   * Selects the broker-owned scripted responder. A function value is not accepted.
+   */
+  readonly fixtureTransport?: typeof LAB_DUAL_GRANT_FIXTURE_TRANSPORT;
   readonly now?: () => number;
   /**
    * Test seam. Awaited after MCP signing and before the mapping is stored so a
@@ -293,24 +305,10 @@ function isNoNetworkFixtureHost(hostname: string): boolean {
   return hostname.endsWith('.invalid') && !hostname.startsWith('127.0.0.1');
 }
 
-function isProcessNetworkFetch(fetchImpl: typeof globalThis.fetch): boolean {
-  if (fetchImpl === globalThis.fetch || fetchImpl === global.fetch) return true;
-  try {
-    return Function.prototype.toString.call(fetchImpl).includes('[native code]');
-  } catch {
-    return true;
-  }
-}
-
-function assertNoNetworkAdapter(
-  url: URL,
-  fetchImpl: typeof globalThis.fetch | undefined,
-  code: string,
-): void {
-  if (!isNoNetworkFixtureHost(url.hostname)) return;
-  if (url.protocol !== 'https:' || fetchImpl === undefined || isProcessNetworkFetch(fetchImpl)) {
-    fail(code);
-  }
+function classifyTransport(url: URL): 'loopback' | 'fixture' | undefined {
+  if (isExactLoopbackHost(url)) return 'loopback';
+  if (url.protocol === 'https:' && isNoNetworkFixtureHost(url.hostname)) return 'fixture';
+  return undefined;
 }
 
 function assertMcpIssuer(value: string): URL {
@@ -330,39 +328,70 @@ function assertLoopbackRedirect(value: string, issuer: URL): URL {
   return url;
 }
 
-function assertUpstreamCoordinate(
-  value: string,
-  pathname: string,
-  fetchImpl: typeof globalThis.fetch | undefined,
-): URL {
+function assertUpstreamCoordinate(value: string, pathname: string): URL {
   const url = parseLabUrl(value, 'invalid_resource');
-  const loopback = isExactLoopbackHost(url);
-  const fixture = url.protocol === 'https:' && isNoNetworkFixtureHost(url.hostname);
-  if (!loopback && !fixture) fail('invalid_resource');
+  if (classifyTransport(url) === undefined) fail('invalid_resource');
   if (url.pathname !== pathname || url.search !== '') fail('invalid_resource');
-  assertNoNetworkAdapter(url, fetchImpl, 'contract_fixture_not_a_network_target');
   return url;
 }
 
-function assertDataApiOrigin(
-  value: string,
-  fetchImpl: typeof globalThis.fetch | undefined,
-  upstreamResource: URL,
-): string {
+function assertDataApiOrigin(value: string, upstreamResource: URL): string {
   const url = parseLabUrl(value, 'invalid_data_api_origin');
   if (url.hostname === 'mcp.loopback.invalid') fail('contract_fixture_not_a_network_target');
   if (url.pathname !== '/' || url.search !== '' || url.origin !== value) {
     fail('invalid_data_api_origin');
   }
-  const loopback = isExactLoopbackHost(url);
-  const fixture = url.protocol === 'https:' && isNoNetworkFixtureHost(url.hostname);
-  if (!loopback && !fixture) fail('invalid_data_api_origin');
-  assertNoNetworkAdapter(url, fetchImpl, 'contract_fixture_not_a_network_target');
+  if (classifyTransport(url) === undefined) fail('invalid_data_api_origin');
   if (url.protocol !== upstreamResource.protocol || url.host !== upstreamResource.host) {
     fail('invalid_data_api_origin');
   }
   return url.origin;
 }
+
+function assertSeparatedTransports(config: LabDualGrantBrokerConfig): void {
+  const classes = [
+    classifyTransport(parseLabUrl(config.upstreamIssuer, 'invalid_resource')),
+    classifyTransport(parseLabUrl(config.upstreamResourceUri, 'invalid_resource')),
+    classifyTransport(parseLabUrl(config.dataApiOrigin, 'invalid_data_api_origin')),
+  ];
+  const fixture = classes.every((value) => value === 'fixture');
+  const loopback = classes.every((value) => value === 'loopback');
+  if (!fixture && !loopback) fail('contract_fixture_not_a_network_target');
+  if (fixture) {
+    if (
+      config.fetch !== undefined ||
+      config.fixtureTransport !== LAB_DUAL_GRANT_FIXTURE_TRANSPORT
+    ) {
+      fail('contract_fixture_not_a_network_target');
+    }
+    return;
+  }
+  if (config.fixtureTransport !== undefined) fail('contract_fixture_not_a_network_target');
+}
+
+const brokerScriptedFixtureFetch: typeof globalThis.fetch = async (input, init) => {
+  const url = requestUrl(input);
+  if (url.protocol !== 'https:' || !isNoNetworkFixtureHost(url.hostname)) {
+    fail('contract_fixture_not_a_network_target');
+  }
+  if (url.pathname === '/auth/v1/user') {
+    const authorization = new Headers(init?.headers).get('authorization') ?? '';
+    const token = authorization.startsWith('Bearer ') ? authorization.slice('Bearer '.length) : '';
+    const subject = decodeJwtPayload(token).sub;
+    if (typeof subject !== 'string') fail('invalid_grant');
+    return jsonResponse(200, { id: subject, aud: 'authenticated' });
+  }
+  if (url.pathname.endsWith('/authorized_memory_get_v1')) {
+    return jsonResponse(200, { record: null });
+  }
+  if (
+    url.pathname.endsWith('/authorized_memory_search_v1') ||
+    url.pathname.endsWith('/authorized_memory_list_recent_v1')
+  ) {
+    return jsonResponse(200, { rows: [] });
+  }
+  return jsonResponse(404, { error: 'not_found' });
+};
 
 function decodeJwtPayload(token: string): JWTPayload & Record<string, unknown> {
   const parts = token.split('.');
@@ -515,21 +544,11 @@ export class LabDualGrantBroker {
     this.maintainedClientName = config.maintainedClientName;
     this.maintainedClientVersion = config.maintainedClientVersion;
     this.upstream = config.upstream;
-    const fixtureHosts = [
-      config.upstreamIssuer,
-      config.upstreamResourceUri,
-      config.dataApiOrigin,
-    ].some((value) => isNoNetworkFixtureHost(new URL(value).hostname));
-    this.fixtureTransport = fixtureHosts;
-    const injected = config.fetch;
-    if (fixtureHosts) {
-      if (injected === undefined || isProcessNetworkFetch(injected)) {
-        fail('contract_fixture_not_a_network_target');
-      }
-      this.fetchImpl = injected;
-    } else {
-      this.fetchImpl = injected ?? globalThis.fetch;
-    }
+    assertSeparatedTransports(config);
+    this.fixtureTransport = config.fixtureTransport === LAB_DUAL_GRANT_FIXTURE_TRANSPORT;
+    this.fetchImpl = this.fixtureTransport
+      ? brokerScriptedFixtureFetch
+      : (config.fetch ?? globalThis.fetch);
     this.now = config.now ?? Date.now;
     this.beforeAdmitMcpToken = config.beforeAdmitMcpToken;
   }
@@ -1192,7 +1211,11 @@ export class LabDualGrantBroker {
       const expected = `Bearer ${grant.upstreamAccessToken}`;
       if (url.hostname === 'mcp.loopback.invalid') fail('contract_fixture_not_a_network_target');
       if (this.fixtureTransport) {
-        if (!isNoNetworkFixtureHost(url.hostname) || isProcessNetworkFetch(inner)) {
+        if (
+          url.protocol !== 'https:' ||
+          !isNoNetworkFixtureHost(url.hostname) ||
+          inner !== brokerScriptedFixtureFetch
+        ) {
           fail('contract_fixture_not_a_network_target');
         }
       } else if (!isExactLoopbackHost(url)) {
@@ -1411,26 +1434,19 @@ function assertBrokerConfig(config: LabDualGrantBrokerConfig): void {
   if (config.mcpClientId === config.upstreamClientId) fail('invalid_client');
   const mcpIssuerUrl = assertMcpIssuer(config.mcpIssuer);
   const mcpIssuer = canonicalizeResourceUri(config.mcpIssuer);
-  const upstreamIssuerUrl = assertUpstreamCoordinate(
-    config.upstreamIssuer,
-    '/auth/v1',
-    config.fetch,
-  );
+  const upstreamIssuerUrl = assertUpstreamCoordinate(config.upstreamIssuer, '/auth/v1');
   const upstreamIssuer = canonicalizeResourceUri(upstreamIssuerUrl.toString());
   if (mcpIssuer === upstreamIssuer) fail('mixup');
   if (config.mcpResourceUri !== LOCAL_LAB_MCP_RESOURCE_URI) fail('invalid_resource');
-  const upstreamResource = assertUpstreamCoordinate(
-    config.upstreamResourceUri,
-    '/rest/v1',
-    config.fetch,
-  );
+  const upstreamResource = assertUpstreamCoordinate(config.upstreamResourceUri, '/rest/v1');
   if (canonicalizeResourceUri(upstreamResource.toString()) === config.mcpResourceUri) {
     fail('invalid_resource');
   }
   const exactRedirect = assertLoopbackRedirect(config.exactRedirectUri, mcpIssuerUrl);
   const mcpRedirect = assertLoopbackRedirect(config.mcpClientRedirectUri, mcpIssuerUrl);
   if (exactRedirect.pathname === mcpRedirect.pathname) fail('invalid_redirect');
-  assertDataApiOrigin(config.dataApiOrigin, config.fetch, upstreamResource);
+  assertDataApiOrigin(config.dataApiOrigin, upstreamResource);
+  assertSeparatedTransports(config);
   assertLabel(config.maintainedClientName, 'invalid_client');
   assertLabel(config.maintainedClientVersion, 'invalid_client');
   if (config.maintainedClientName === config.maintainedClientVersion) fail('invalid_client');

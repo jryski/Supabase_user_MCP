@@ -16,6 +16,7 @@ import { describe, expect, it } from 'vitest';
 import { createAuthorizationServerMetadata } from './authorization-server-metadata.js';
 import {
   createLabDualGrantBroker,
+  LAB_DUAL_GRANT_FIXTURE_TRANSPORT,
   LAB_DUAL_GRANT_STATE_MACHINE,
   type LabDualGrantBroker,
   LabDualGrantError,
@@ -36,9 +37,9 @@ import {
 } from './synthetic-oauth-lab.js';
 
 const RESOURCE = LOCAL_LAB_MCP_RESOURCE_URI;
-const UPSTREAM_ISSUER = 'https://auth.loopback.invalid/auth/v1';
-const UPSTREAM_RESOURCE = 'https://data.loopback.invalid/rest/v1';
-const DATA_ORIGIN = 'https://data.loopback.invalid';
+const UPSTREAM_ISSUER = 'http://127.0.0.1:54321/auth/v1';
+const UPSTREAM_RESOURCE = 'http://127.0.0.1:54321/rest/v1';
+const DATA_ORIGIN = 'http://127.0.0.1:54321';
 const MCP_CLIENT = 'smp-lab-mcp-client';
 const UPSTREAM_CLIENT = 'smp-lab-upstream-client';
 const OTHER_CLIENT = 'smp-lab-other-client';
@@ -916,6 +917,8 @@ describe('lab dual-grant broker r2', () => {
     expect(source).not.toContain('ACCESS_TOKEN_REVOCATION_LATENCY_BOUND_MS');
     expect(source).not.toContain('urn:ietf:params:oauth:grant-type:token-exchange');
     expect(source).not.toContain("alg: 'HS256'");
+    expect(source).not.toContain('Function.prototype.toString');
+    expect(source).not.toContain('[native code]');
     const who = principal();
     const paths: string[] = [];
     const lab = labFor(8765);
@@ -1511,46 +1514,107 @@ describe('lab dual-grant broker r2', () => {
     await loopback.cleanup();
   });
 
-  it('rejects the process network fetch for remote .invalid fixture coordinates', async () => {
-    const lab = labFor(8765);
+  it('rejects a thin global fetch wrapper for invalid fixtures', async () => {
+    const fixtureIssuer = 'https://auth.remote.example.invalid/auth/v1';
+    const fixtureResource = 'https://data.remote.example.invalid/rest/v1';
+    const fixtureOrigin = 'https://data.remote.example.invalid';
+    const lab = new SyntheticOAuthLab({
+      issuer: fixtureIssuer,
+      resourceUri: fixtureResource,
+      client: {
+        clientId: UPSTREAM_CLIENT,
+        redirectUri: 'http://127.0.0.1:8765/lab/oauth/callback',
+        tokenEndpointAuthMethod: 'none',
+      },
+    });
     const remoteFixture = {
       optIn: true,
       mcpIssuer: 'http://127.0.0.1:8765',
       mcpClientId: MCP_CLIENT,
       mcpResourceUri: RESOURCE,
-      upstreamIssuer: 'https://auth.remote.example.invalid/auth/v1',
+      upstreamIssuer: fixtureIssuer,
       upstreamClientId: UPSTREAM_CLIENT,
-      upstreamResourceUri: 'https://data.remote.example.invalid/rest/v1',
+      upstreamResourceUri: fixtureResource,
       exactRedirectUri: 'http://127.0.0.1:8765/lab/oauth/callback',
       mcpClientRedirectUri: 'http://127.0.0.1:8765/lab/mcp/callback',
-      dataApiOrigin: 'https://data.remote.example.invalid',
+      dataApiOrigin: fixtureOrigin,
       publishableKey: PUBLISHABLE,
       maintainedClientName: CLIENT_NAME,
       maintainedClientVersion: CLIENT_VERSION,
       upstream: adapt(lab),
     };
+    let calls = 0;
+    const wrapper: typeof globalThis.fetch = async (input, init) => {
+      calls += 1;
+      return globalThis.fetch(input, init);
+    };
+    const rejected = [
+      { fetch: wrapper },
+      { fetch: globalThis.fetch },
+      { fetch: globalThis.fetch.bind(globalThis) },
+      {},
+      { fetch: wrapper, fixtureTransport: LAB_DUAL_GRANT_FIXTURE_TRANSPORT },
+      {
+        fetch: async () => new Response(null, { status: 599 }),
+      },
+    ] as const;
+    for (const override of rejected) {
+      await expect(
+        createLabDualGrantBroker({ ...remoteFixture, ...override }),
+      ).rejects.toMatchObject({ code: 'contract_fixture_not_a_network_target' });
+    }
+    expect(calls).toBe(0);
     await expect(
-      createLabDualGrantBroker({ ...remoteFixture, fetch: globalThis.fetch }),
+      createLabDualGrantBroker({
+        ...remoteFixture,
+        upstreamIssuer: UPSTREAM_ISSUER,
+        upstreamResourceUri: UPSTREAM_RESOURCE,
+        dataApiOrigin: DATA_ORIGIN,
+        fixtureTransport: LAB_DUAL_GRANT_FIXTURE_TRANSPORT,
+      }),
     ).rejects.toMatchObject({ code: 'contract_fixture_not_a_network_target' });
     await expect(
       createLabDualGrantBroker({
         ...remoteFixture,
-        fetch: globalThis.fetch.bind(globalThis),
+        upstreamResourceUri: UPSTREAM_RESOURCE,
+        dataApiOrigin: DATA_ORIGIN,
+        fixtureTransport: LAB_DUAL_GRANT_FIXTURE_TRANSPORT,
       }),
     ).rejects.toMatchObject({ code: 'contract_fixture_not_a_network_target' });
-    await expect(createLabDualGrantBroker(remoteFixture)).rejects.toMatchObject({
-      code: 'contract_fixture_not_a_network_target',
-    });
-    let invoked = false;
-    const scripted = await createLabDualGrantBroker({
-      ...remoteFixture,
-      fetch: async () => {
-        invoked = true;
-        return new Response(null, { status: 599 });
-      },
-    });
-    expect(invoked).toBe(false);
-    await scripted.cleanup();
+
+    const originalFetch = globalThis.fetch;
+    let networkCalls = 0;
+    globalThis.fetch = async (input, init) => {
+      networkCalls += 1;
+      return originalFetch(input, init);
+    };
+    try {
+      const broker = await createLabDualGrantBroker({
+        ...remoteFixture,
+        fixtureTransport: LAB_DUAL_GRANT_FIXTURE_TRANSPORT,
+      });
+      const who = principal();
+      const handler = createRemoteHttpProfile({
+        resourceUri: RESOURCE,
+        issuer: fixtureIssuer,
+        expectedClientId: UPSTREAM_CLIENT,
+        signingKey: { kind: 'hmac', secret: SYNTHETIC_OAUTH_HMAC_SECRET },
+        revocationAuthority: lab,
+        authorizationServerMetadata: createAuthorizationServerMetadata(fixtureIssuer),
+        allowInsecureIssuer: true,
+        labDualGrant: broker.profileHook,
+      });
+      const token = await login(broker, who);
+      const response = await handler(toolRequest(token, 'memory_get', { id: ALICE_MEMORY }));
+      expect(response.status).toBe(200);
+      expect(await structured(response)).toMatchObject({ ok: false });
+      expect(calls).toBe(0);
+      expect(networkCalls).toBe(0);
+      await broker.cleanup();
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+
     const loopbackNetwork = await createLabDualGrantBroker({
       ...remoteFixture,
       upstreamIssuer: 'http://127.0.0.1:9/auth/v1',

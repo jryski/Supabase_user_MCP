@@ -44,10 +44,13 @@ bumps a lifecycle epoch. An in-flight code exchange, MCP signing admission, or r
 finishes after that epoch does not write the access token, refresh token, or mapping back.
 Lab coordinates are parsed URLs: the MCP issuer and redirects are `http://127.0.0.1` with the
 redirect host and port equal to the issuer, and a Data API origin is either that loopback host
-or an `https` `*.invalid` fixture. Fixture coordinates use a scripted adapter only. Passing
-`globalThis.fetch`, another native fetch, or no adapter is rejected with
-`contract_fixture_not_a_network_target` before any request. Loopback `http://127.0.0.1`
-coordinates are the only route that may use the process network fetch. A rejected refresh
+or an `https` `*.invalid` fixture. Those routes stay separate. Loopback coordinates may use a
+caller fetch, including the process network fetch. Fixture coordinates reject every caller
+fetch. The only fixture selector is the literal `fixtureTransport: 'broker-scripted'`, and the
+broker then answers `/auth/v1/user` and the memory RPCs itself. A thin wrapper around
+`globalThis.fetch`, a native fetch, a bound fetch, or a missing selector is rejected with
+`contract_fixture_not_a_network_target` before the callback runs. Mixing that literal with a
+fetch callback, or setting it on loopback coordinates, is the same rejection. A rejected refresh
 clears its single-flight entry on both settlement paths so the 403 does not leave an unhandled
 rejection.
 
@@ -60,7 +63,7 @@ repair closes them in the lab broker only:
 | --- | --- |
 | F1 | Current grant generation, revocation, local deadline, mapping, session, and lifecycle epoch are enforced inside the guarded fetch, immediately before `/auth/v1/user` and `/rest/v1`. |
 | F2 | `cleanup` / `discardMemoryCustody` increment a lifecycle epoch. Post-await parent, session, and flow checks drop stale exchange, signing, and refresh completions. |
-| F3 | Issuer, redirect, upstream, and Data API coordinates use parsed scheme, host, port, and path checks. Prefix lookalikes, userinfo, and non-loopback HTTPS origins are rejected in configuration. `https://*.invalid` fixtures stay on the scripted adapter route; the process network fetch is not that adapter. |
+| F3 | Issuer, redirect, upstream, and Data API coordinates use parsed scheme, host, port, and path checks. Prefix lookalikes, userinfo, and non-loopback HTTPS origins are rejected in configuration. `https://*.invalid` fixtures use the broker-owned scripted responder selected by `fixtureTransport: 'broker-scripted'`. Caller fetch callbacks are not that responder. Loopback `http://127.0.0.1` is the runtime transport and may receive a fetch function. |
 | F4 | Refresh flight cleanup handles fulfillment and rejection. Concurrent waiters receive HTTP 403. |
 
 Authenticated lab `initialize` and `tools/list` are answered by the same `McpServer` registration
@@ -101,7 +104,8 @@ restart -> reauth_required, provider grant untouched
 
 - Not a native Supabase token exchange.
 - Not proof against a live GoTrue project or real RLS policies. The matrix uses a synthetic
-  upstream and a scripted Data API.
+  upstream. Loopback tests supply a fetch double. `.invalid` fixtures use the broker-owned
+  scripted responder and do not treat a caller fetch as a no-network proof.
 - Not an external maintained MCP client binary and not live GoTrue. The in-process SDK client
   does exercise `initialize`, `tools/list`, and `tools/call`. The receipt pins that client's
   name and version. T3 is not fully accepted.
