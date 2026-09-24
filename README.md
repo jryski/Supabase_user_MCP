@@ -49,6 +49,21 @@ remain unverified for this candidate.
 See the [candidate testing guide](docs/status/2026-09-15-controlled-client-candidate.md)
 for supported behavior, reproducible checks and the remaining enablement gates.
 
+## Why this exists
+
+Supabase's hosted MCP server is a developer control-plane tool. Supabase User MCP explores the complementary **application data-plane** problem:
+
+| | Supabase hosted MCP | Supabase User MCP |
+| --- | --- | --- |
+| Primary user | Developer/operator | Application user or bounded agent |
+| Plane | Project control plane | Application data plane |
+| Typical actions | Schema, migration, project operations | Fixed domain capabilities |
+| Authorization | Developer/project authority | User, client, tenant, capability, RLS |
+| Database boundary | Administrative tooling | RLS must remain effective |
+| Intended environment | Development and operations | Production only after identity/security gates pass |
+
+The goal is not to make prompt injection impossible. The goal is to make the blast radius of a compromised model no larger than the mechanically enforced authority of its verified principal/client capability.
+
 ## September 23, 2026: open lab dual-grant draft
 
 Updated September 24, 2026.
@@ -68,21 +83,6 @@ complete. T3, T4, T5, T10, T17, and the adoption and hosted gates remain open.
 
 See the [status note](docs/status/2026-09-23-lab-dual-grant-draft.md) for the
 dated lineage, including the earlier heads.
-
-## Why this exists
-
-Supabase's hosted MCP server is a developer control-plane tool. Supabase User MCP explores the complementary **application data-plane** problem:
-
-| | Supabase hosted MCP | Supabase User MCP |
-| --- | --- | --- |
-| Primary user | Developer/operator | Application user or bounded agent |
-| Plane | Project control plane | Application data plane |
-| Typical actions | Schema, migration, project operations | Fixed domain capabilities |
-| Authorization | Developer/project authority | User, client, tenant, capability, RLS |
-| Database boundary | Administrative tooling | RLS must remain effective |
-| Intended environment | Development and operations | Production only after identity/security gates pass |
-
-The goal is not to make prompt injection impossible. The goal is to make the blast radius of a compromised model no larger than the mechanically enforced authority of its verified principal/client capability.
 
 ## Relationship to the Sovereign Memory program
 
