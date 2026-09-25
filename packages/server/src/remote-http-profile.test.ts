@@ -82,6 +82,8 @@ describe('remote HTTP profile', () => {
     expect(source).not.toMatch(/userAccessToken:\s*auth\.token/);
     expect(source).not.toContain('createFixedSupabaseClient');
     expect(source).not.toContain('createReadOnlyServer');
+    expect(source).not.toContain('service_role');
+    expect(source).not.toContain('urn:ietf:params:oauth:grant-type:token-exchange');
     expect(source).toContain('DOWNSTREAM_CREDENTIAL_UNRESOLVED');
   });
 

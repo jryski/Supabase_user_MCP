@@ -1,17 +1,18 @@
 import {
+  type AuthorizationServerMetadata,
   getOAuthProtectedResourceMetadataUrl,
   oauthMetadataResponse,
   requireBearerAuth,
-  type AuthorizationServerMetadata,
 } from '@modelcontextprotocol/server';
 import {
-  DOWNSTREAM_CREDENTIAL_UNRESOLVED,
   canonicalizeResourceUri,
+  DOWNSTREAM_CREDENTIAL_UNRESOLVED,
 } from '@supabase-user-mcp/contracts';
 
+import type { LabDualGrantProfileHook } from './lab-dual-grant-broker.js';
 import {
-  createRemoteAccessTokenVerifier,
   type AccessTokenRevocationAuthority,
+  createRemoteAccessTokenVerifier,
   type RemoteTokenSigningKey,
 } from './remote-token-verifier.js';
 import { assertBoundAuthorizationServerMetadata } from './validate-bound-authorization-server-metadata.js';
@@ -26,6 +27,8 @@ export interface RemoteHttpProfileConfig {
   readonly fetch?: typeof globalThis.fetch;
   readonly now?: () => number;
   readonly allowInsecureIssuer?: boolean;
+  /** Explicit lab opt-in. Absent or disabled keeps Data API dispatch fail-closed. */
+  readonly labDualGrant?: LabDualGrantProfileHook;
 }
 
 export type RemoteHttpHandler = (request: Request) => Promise<Response>;
@@ -35,10 +38,13 @@ const JSON_HEADERS = Object.freeze({
   'cache-control': 'no-store',
 });
 
-function hostMatchesResource(request: Request, resource: URL): boolean {
+function hostMatchesResource(request: Request, resource: URL, allowLoopbackHost: boolean): boolean {
   const host = request.headers.get('host');
   if (host === null || host.length === 0) return true;
-  return host === resource.host || host === resource.hostname;
+  if (host === resource.host || host === resource.hostname) return true;
+  if (!allowLoopbackHost) return false;
+  const hostname = host.startsWith('[') ? host : (host.split(':')[0] ?? host);
+  return hostname === '127.0.0.1';
 }
 
 function isMcpResourcePath(request: Request, resource: URL): boolean {
@@ -48,24 +54,31 @@ function isMcpResourcePath(request: Request, resource: URL): boolean {
 }
 
 export function createRemoteHttpProfile(config: RemoteHttpProfileConfig): RemoteHttpHandler {
+  const lab = config.labDualGrant?.enabled === true ? config.labDualGrant : undefined;
   const resourceUri = canonicalizeResourceUri(config.resourceUri);
   const resourceUrl = new URL(resourceUri);
-  const issuer = canonicalizeResourceUri(config.issuer);
-  assertBoundAuthorizationServerMetadata(issuer, config.authorizationServerMetadata);
-  const verifier = createRemoteAccessTokenVerifier({
-    issuer,
-    resourceUri,
-    expectedClientId: config.expectedClientId,
-    signingKey: config.signingKey,
-    revocationAuthority: config.revocationAuthority,
-    ...(config.now === undefined ? {} : { now: config.now }),
-    ...(config.fetch === undefined ? {} : { fetch: config.fetch }),
-  });
+  const issuer = canonicalizeResourceUri(lab?.mcpIssuer ?? config.issuer);
+  const authorizationServerMetadata =
+    lab?.authorizationServerMetadata() ?? config.authorizationServerMetadata;
+  assertBoundAuthorizationServerMetadata(issuer, authorizationServerMetadata);
+  const verifier = lab
+    ? lab.mcpTokenVerifier
+    : createRemoteAccessTokenVerifier({
+        issuer,
+        resourceUri,
+        expectedClientId: config.expectedClientId,
+        signingKey: config.signingKey,
+        revocationAuthority: config.revocationAuthority,
+        ...(config.now === undefined ? {} : { now: config.now }),
+        ...(config.fetch === undefined ? {} : { fetch: config.fetch }),
+      });
   const resourceMetadataUrl = getOAuthProtectedResourceMetadataUrl(resourceUrl);
+  const allowInsecureIssuer =
+    config.allowInsecureIssuer === true || lab?.allowInsecureIssuer === true;
   const metadataOptions = {
-    oauthMetadata: config.authorizationServerMetadata,
+    oauthMetadata: authorizationServerMetadata,
     resourceServerUrl: resourceUrl,
-    ...(config.allowInsecureIssuer === true ? { dangerouslyAllowInsecureIssuerUrl: true } : {}),
+    ...(allowInsecureIssuer ? { dangerouslyAllowInsecureIssuerUrl: true } : {}),
   };
   const requireAuth = requireBearerAuth({
     verifier,
@@ -73,9 +86,13 @@ export function createRemoteHttpProfile(config: RemoteHttpProfileConfig): Remote
   });
 
   return async (request: Request): Promise<Response> => {
+    if (lab) {
+      const handled = await lab.handleHttp(request);
+      if (handled !== undefined) return handled;
+    }
     const metadata = oauthMetadataResponse(request, metadataOptions);
     if (metadata !== undefined) return metadata;
-    if (!hostMatchesResource(request, resourceUrl)) {
+    if (!hostMatchesResource(request, resourceUrl, lab !== undefined)) {
       return new Response(JSON.stringify({ error: 'invalid_request' }), {
         status: 400,
         headers: JSON_HEADERS,
@@ -90,6 +107,7 @@ export function createRemoteHttpProfile(config: RemoteHttpProfileConfig): Remote
 
     const auth = await requireAuth(request);
     if (auth instanceof Response) return auth;
+    if (lab) return lab.dispatchAuthorizedCall(request, auth);
 
     // MCP 2026-07-28 forbids forwarding the inbound bearer to the Data API.
     // Dual aud/resource is not a substitute. No supported separate downstream

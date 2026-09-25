@@ -2,11 +2,13 @@ import { createServer, type IncomingMessage, type ServerResponse } from 'node:ht
 
 import type { AuthorizationServerMetadata } from '@modelcontextprotocol/server';
 import {
+  canonicalizeResourceUri,
+  LAB_DUAL_GRANT_OPT_IN_ENV,
   MAX_RESPONSE_BYTES,
   MAX_TOOL_EXECUTION_MS,
-  canonicalizeResourceUri,
 } from '@supabase-user-mcp/contracts';
 
+import type { LabDualGrantProfileHook } from './lab-dual-grant-broker.js';
 import { createRemoteHttpProfile, type RemoteHttpHandler } from './remote-http-profile.js';
 import type { AccessTokenRevocationAuthority } from './remote-token-verifier.js';
 import { assertBoundAuthorizationServerMetadata } from './validate-bound-authorization-server-metadata.js';
@@ -19,6 +21,7 @@ export const PUBLISHABLE_KEY_ENV = 'SUPABASE_USER_MCP_PUBLISHABLE_KEY';
 export const OAUTH_CLIENT_ID_ENV = 'SUPABASE_USER_MCP_OAUTH_CLIENT_ID';
 export const JWT_HMAC_SECRET_ENV = 'SUPABASE_USER_MCP_JWT_HMAC_SECRET';
 export const LISTEN_PORT_ENV = 'SUPABASE_USER_MCP_LISTEN_PORT';
+export const LAB_DUAL_GRANT_ENV = LAB_DUAL_GRANT_OPT_IN_ENV;
 export const REMOTE_HTTP_INGRESS_MAX_BYTES = MAX_RESPONSE_BYTES;
 export const REMOTE_HTTP_INGRESS_DEADLINE_MS = MAX_TOOL_EXECUTION_MS;
 
@@ -54,6 +57,11 @@ export interface RemoteHttpStartupOptions {
   readonly revocationAuthority: AccessTokenRevocationAuthority;
   readonly authorizationServerMetadata: AuthorizationServerMetadata;
   readonly fetch?: typeof globalThis.fetch;
+  /**
+   * Lab dual-grant hook. Attached only when SUPABASE_USER_MCP_LAB_DUAL_GRANT
+   * is exactly `1` and the hook is enabled. Any other value keeps fail-closed.
+   */
+  readonly labDualGrant?: LabDualGrantProfileHook;
 }
 
 export interface BoundedIngressOptions {
@@ -108,6 +116,7 @@ export function createRemoteHttpHandlerFromEnvironment(
   } catch {
     invalid();
   }
+  const labRequested = env[LAB_DUAL_GRANT_ENV] === '1' && options.labDualGrant?.enabled === true;
   return createRemoteHttpProfile({
     resourceUri: canonicalizeResourceUri(resourceUri),
     issuer,
@@ -117,6 +126,7 @@ export function createRemoteHttpHandlerFromEnvironment(
     authorizationServerMetadata: options.authorizationServerMetadata,
     allowInsecureIssuer: issuer.startsWith('http://127.0.0.1'),
     ...(options.fetch === undefined ? {} : { fetch: options.fetch }),
+    ...(labRequested && options.labDualGrant ? { labDualGrant: options.labDualGrant } : {}),
   });
 }
 

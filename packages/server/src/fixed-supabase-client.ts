@@ -1,12 +1,12 @@
-import type { LocalCredentials } from './local-credential-loader.js';
 import {
-  MemoryGetInputSchema,
   type MemoryGetInput,
-  MemoryListRecentInputSchema,
+  MemoryGetInputSchema,
   type MemoryListRecentInput,
-  MemorySearchInputSchema,
+  MemoryListRecentInputSchema,
   type MemorySearchInput,
+  MemorySearchInputSchema,
 } from '@supabase-user-mcp/contracts';
+import type { LocalCredentials } from './local-credential-loader.js';
 
 const FIXED_PATH = '/rest/v1/memories?select=id%2Ccontent&limit=100';
 const FIXED_SCHEMA = 'memory';
@@ -57,6 +57,11 @@ export interface FixedSupabaseClientConfig {
   readonly fetch?: typeof globalThis.fetch;
   readonly timeoutMs?: number;
   readonly maxResponseBytes?: number;
+  /**
+   * Lab dual-grant only. When true, `http://127.0.0.1` (optional port) is
+   * accepted. Every other origin stays https.
+   */
+  readonly allowLoopbackHttp?: boolean;
 }
 
 export interface FixedMemoryGetRow {
@@ -279,8 +284,12 @@ export function createFixedSupabaseClient(
   } catch {
     invalid();
   }
+  const loopbackHttp =
+    config.allowLoopbackHttp === true &&
+    parsedOrigin.protocol === 'http:' &&
+    parsedOrigin.hostname === '127.0.0.1';
   if (
-    parsedOrigin.protocol !== 'https:' ||
+    (!loopbackHttp && parsedOrigin.protocol !== 'https:') ||
     parsedOrigin.origin !== config.origin ||
     parsedOrigin.username !== '' ||
     parsedOrigin.password !== ''
