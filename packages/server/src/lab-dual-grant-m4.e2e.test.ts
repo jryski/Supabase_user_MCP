@@ -1,8 +1,8 @@
 import { execFileSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { readFileSync, writeFileSync } from 'node:fs';
-import { createServer as createNetServer } from 'node:net';
 import type { AddressInfo } from 'node:net';
+import { createServer as createNetServer } from 'node:net';
 import { fileURLToPath } from 'node:url';
 
 import { Client } from '@modelcontextprotocol/client';
@@ -27,18 +27,19 @@ import {
 import {
   approveLocalAuthorization,
   exchangeLocalAuthorizationCode,
+  fetchLabCredentialRequest,
   generateS256PkceChallenge,
   startLocalAuthorization,
 } from './local-oauth-pkce-client.js';
 import { containsSecretMaterial, createRemoteHttpProfile } from './remote-http-profile.js';
 import {
   AUTHORIZATION_SERVER_ENV,
+  createRemoteHttpHandlerFromEnvironment,
   LAB_DUAL_GRANT_ENV,
   OAUTH_CLIENT_ID_ENV,
   PUBLISHABLE_KEY_ENV,
   RESOURCE_URI_ENV,
   SUPABASE_ORIGIN_ENV,
-  createRemoteHttpHandlerFromEnvironment,
 } from './remote-http-startup.js';
 import { SERVER_NAME, SERVER_VERSION } from './server.js';
 
@@ -305,6 +306,8 @@ liveDescribe('lab dual-grant disposable GoTrue M4', () => {
     const redirectUri = `http://127.0.0.1:${port}/lab/oauth/callback`;
     const mcpRedirectUri = `http://127.0.0.1:${port}/lab/mcp/callback`;
     const restPaths: string[] = [];
+    const credentialFetch: typeof fetch = (input, init) =>
+      fetchLabCredentialRequest(globalThis.fetch, input, init);
     const guardedFetch: typeof fetch = async (input, init) => {
       const requested = new URL(
         typeof input === 'string' || input instanceof URL ? input : input.url,
@@ -312,26 +315,31 @@ liveDescribe('lab dual-grant disposable GoTrue M4', () => {
       if (requested.protocol !== 'http:' || requested.hostname !== '127.0.0.1') {
         throw new Error('non_loopback_fetch');
       }
-      const headers = new Headers(init?.headers);
+      const headers = new Headers(
+        init?.headers ?? (input instanceof Request ? input.headers : undefined),
+      );
       const authorization = headers.get('authorization') ?? '';
       const apikey = headers.get('apikey') ?? '';
       if (authorization.includes(serviceRoleKey) || apikey === serviceRoleKey) {
         throw new Error('service_role_on_request_path');
       }
       if (requested.pathname.startsWith('/rest/v1')) restPaths.push(requested.pathname);
-      return globalThis.fetch(input, init);
+      return credentialFetch(input, init);
     };
     const sdk = readInstalledMcpClientPackage();
-    const upstream = await createLiveGoTrueLabUpstream({
-      authOrigin,
-      publishableKey,
-      serviceRoleKey,
-      exactRedirectUri: redirectUri,
-      principals: [
-        { principalId: ALICE, userAccessToken: env('M4_ALICE_TOKEN') },
-        { principalId: BOB, userAccessToken: env('M4_BOB_TOKEN') },
-      ],
-    });
+    const upstream = await createLiveGoTrueLabUpstream(
+      {
+        authOrigin,
+        publishableKey,
+        serviceRoleKey,
+        exactRedirectUri: redirectUri,
+        principals: [
+          { principalId: ALICE, userAccessToken: env('M4_ALICE_TOKEN') },
+          { principalId: BOB, userAccessToken: env('M4_BOB_TOKEN') },
+        ],
+      },
+      { fetch: credentialFetch },
+    );
     let broker: LabDualGrantBroker | undefined;
     let listener: ReturnType<typeof listenLabOAuthCallback> | undefined;
     try {
@@ -687,18 +695,22 @@ async function probeMemory(input: {
   readonly slaClaimed: false;
 }> {
   const started = performance.now();
-  const response = await fetch(new URL('/rest/v1/rpc/authorized_memory_get_v1', input.origin), {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${input.token}`,
-      apikey: input.publishableKey,
-      Accept: 'application/json',
-      'Accept-Profile': 'memory',
-      'Content-Type': 'application/json',
-      'Content-Profile': 'memory',
+  const response = await fetchLabCredentialRequest(
+    globalThis.fetch,
+    new URL('/rest/v1/rpc/authorized_memory_get_v1', input.origin),
+    {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${input.token}`,
+        apikey: input.publishableKey,
+        Accept: 'application/json',
+        'Accept-Profile': 'memory',
+        'Content-Type': 'application/json',
+        'Content-Profile': 'memory',
+      },
+      body: JSON.stringify({ id: input.memoryId }),
     },
-    body: JSON.stringify({ id: input.memoryId }),
-  });
+  );
   const latencyMs = Math.round(performance.now() - started);
   const text = await response.text();
   let recordVisible = false;

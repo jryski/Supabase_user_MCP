@@ -1,6 +1,6 @@
 import { existsSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { MessageChannel, Worker, receiveMessageOnPort } from 'node:worker_threads';
+import { MessageChannel, receiveMessageOnPort, Worker } from 'node:worker_threads';
 
 import {
   ACCESS_TOKEN_REVOCATION_LATENCY_BOUND_MS,
@@ -16,14 +16,15 @@ import {
   type LabUpstreamTokenSuccess,
 } from './lab-dual-grant-broker.js';
 import {
+  approveLocalAuthorization,
   decodeJwtPayloadClaims,
+  denyLocalAuthorization,
   exchangeLocalAuthorizationCode,
+  fetchLabCredentialRequest,
   refreshLocalAccessToken,
   registerLocalPublicOAuthClient,
   revokeLocalGrant,
   startLocalAuthorization,
-  approveLocalAuthorization,
-  denyLocalAuthorization,
 } from './local-oauth-pkce-client.js';
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -359,6 +360,8 @@ export async function performLiveUpstreamOperation(
   assertNoPrivilegedKeys(operation);
   assertLiveLabLoopbackOrigin(operation.authOrigin, 'redirect_not_loopback');
   assertPublishableKey(operation.publishableKey);
+  const credentialFetch: FetchLike = (input, init) =>
+    fetchLabCredentialRequest(fetchImpl, input, init);
   if (operation.op === 'startAuthorization') {
     assertLiveLabLoopbackOrigin(operation.redirectUri, 'invalid_redirect');
     assertLiveLabLoopbackOrigin(operation.resource, 'invalid_resource');
@@ -370,7 +373,7 @@ export async function performLiveUpstreamOperation(
       codeChallenge: operation.codeChallenge,
       state: operation.state,
       projectPublishableKey: operation.publishableKey,
-      fetch: fetchImpl,
+      fetch: credentialFetch,
     });
     return { authorizationId: started.authorizationId };
   }
@@ -380,7 +383,7 @@ export async function performLiveUpstreamOperation(
       authorizationId: operation.authorizationId,
       userAccessToken: operation.userAccessToken,
       projectPublishableKey: operation.publishableKey,
-      fetch: fetchImpl,
+      fetch: credentialFetch,
     });
     return { location: approved.location };
   }
@@ -390,7 +393,7 @@ export async function performLiveUpstreamOperation(
       authorizationId: operation.authorizationId,
       userAccessToken: operation.userAccessToken,
       projectPublishableKey: operation.publishableKey,
-      fetch: fetchImpl,
+      fetch: credentialFetch,
     });
     return { denied: true };
   }
@@ -400,7 +403,7 @@ export async function performLiveUpstreamOperation(
     clientId: operation.clientId,
     userAccessToken: operation.userAccessToken,
     projectPublishableKey: operation.publishableKey,
-    fetch: fetchImpl,
+    fetch: credentialFetch,
   });
   const providerRevokeLatencyMs = Math.round(performance.now() - revokeStarted);
   const refreshStarted = performance.now();
@@ -411,7 +414,7 @@ export async function performLiveUpstreamOperation(
       clientId: operation.clientId,
       refreshToken: operation.refreshToken,
       resource: operation.resource,
-      fetch: fetchImpl,
+      fetch: credentialFetch,
     });
   } catch {
     refreshDenied = true;
@@ -520,7 +523,8 @@ export class LiveGoTrueLabUpstream implements LabUpstreamOAuth {
       }
       seen.add(principal.principalId);
     }
-    const fetchImpl = options.fetch ?? globalThis.fetch;
+    const fetchImpl: FetchLike = (input, init) =>
+      fetchLabCredentialRequest(options.fetch ?? globalThis.fetch, input, init);
     const upstreamIssuer = await discoverLoopbackIssuer(origin.origin, fetchImpl);
     const upstream = await registerLocalPublicOAuthClient({
       authOrigin: origin.origin,

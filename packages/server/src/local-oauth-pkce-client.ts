@@ -57,8 +57,127 @@ export function extractConsentRedirectUrl(payload: unknown): string {
 
 type FetchLike = typeof globalThis.fetch;
 
+const MAX_LAB_CREDENTIAL_REDIRECTS = 20;
+
+function requestHeaders(input: Parameters<FetchLike>[0], init?: RequestInit): Headers {
+  const headers = new Headers(input instanceof Request ? input.headers : undefined);
+  if (init?.headers !== undefined) {
+    new Headers(init.headers).forEach((value, key) => {
+      headers.set(key, value);
+    });
+  }
+  return headers;
+}
+
+function hasSensitiveHeader(headers: Headers): boolean {
+  return headers.has('authorization') || headers.has('apikey');
+}
+
+function sameCredentialOrigin(current: URL, next: URL): boolean {
+  return (
+    next.protocol === current.protocol &&
+    next.host === current.host &&
+    next.username === '' &&
+    next.password === ''
+  );
+}
+
+function initialCredentialInit(
+  input: Parameters<FetchLike>[0],
+  init: RequestInit | undefined,
+): RequestInit {
+  if (!(input instanceof Request)) return { ...init, redirect: 'manual' };
+  return {
+    method: init?.method ?? input.method,
+    headers: requestHeaders(input, init),
+    body: init !== undefined && 'body' in init ? init.body : input.body,
+    signal: init?.signal ?? input.signal,
+    redirect: 'manual',
+  };
+}
+
+function redirectedCredentialInit(init: RequestInit, status: number): RequestInit {
+  const method = (init.method ?? 'GET').toUpperCase();
+  const postConverted = (status === 301 || status === 302) && method === 'POST';
+  const seeOtherConverted = status === 303 && method !== 'GET' && method !== 'HEAD';
+  if (!postConverted && !seeOtherConverted) return { ...init, redirect: 'manual' };
+  const headers = new Headers(init.headers);
+  headers.delete('content-type');
+  headers.delete('content-length');
+  const redirected: RequestInit = {
+    method: 'GET',
+    headers,
+    redirect: 'manual',
+  };
+  if (init.signal != null) redirected.signal = init.signal;
+  return redirected;
+}
+
+async function releaseRedirectBody(response: Response): Promise<void> {
+  try {
+    await response.body?.cancel();
+  } catch {
+    // The redirect body is unused.
+  }
+}
+
+/**
+ * Follows a credentialed lab request only when every redirect target stays on
+ * the same origin. A different origin is rejected before that request is sent,
+ * so Authorization and apikey are not forwarded. `manual` and `error` redirect
+ * modes are left unchanged.
+ */
+export async function fetchLabCredentialRequest(
+  fetchImpl: FetchLike,
+  input: Parameters<FetchLike>[0],
+  init?: RequestInit,
+): Promise<Response> {
+  const mode = init?.redirect ?? (input instanceof Request ? input.redirect : 'follow');
+  if (mode !== 'follow' || !hasSensitiveHeader(requestHeaders(input, init))) {
+    return fetchImpl(input, init);
+  }
+  let current = new URL(input instanceof Request ? input.url : input);
+  let nextInit = initialCredentialInit(input, init);
+  for (let followed = 0; ; followed += 1) {
+    const response = await fetchImpl(current, nextInit);
+    if (
+      response.status !== 301 &&
+      response.status !== 302 &&
+      response.status !== 303 &&
+      response.status !== 307 &&
+      response.status !== 308
+    ) {
+      return response;
+    }
+    const location = response.headers.get('location')?.trim();
+    if (
+      location === undefined ||
+      location.length === 0 ||
+      followed >= MAX_LAB_CREDENTIAL_REDIRECTS
+    ) {
+      await releaseRedirectBody(response);
+      throw new Error('lab credential redirect was rejected');
+    }
+    let target: URL;
+    try {
+      target = new URL(location, current);
+    } catch {
+      await releaseRedirectBody(response);
+      throw new Error('lab credential redirect was rejected');
+    }
+    if (!sameCredentialOrigin(current, target)) {
+      await releaseRedirectBody(response);
+      throw new Error('lab credential redirect was rejected');
+    }
+    await releaseRedirectBody(response);
+    current = target;
+    nextInit = redirectedCredentialInit(nextInit, response.status);
+  }
+}
+
 function resolveFetch(fetchImpl: FetchLike | undefined): FetchLike {
-  return fetchImpl ?? globalThis.fetch;
+  const inner = fetchImpl ?? globalThis.fetch;
+  return (input, init) => fetchLabCredentialRequest(inner, input, init);
 }
 
 function userAuthHeaders(input: {
