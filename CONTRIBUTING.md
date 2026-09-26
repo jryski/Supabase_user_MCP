@@ -22,11 +22,22 @@ The current contributor execution map is [the v0.1 read-only implementation plan
 
 To take a work package:
 
-1. choose an issue labeled `status:ready`;
-2. comment that you are taking it and name the intended files;
+1. choose an issue labeled `status:ready`; that label is the ready signal;
+2. comment interest and name the intended files; the assigning steward records or
+   confirms the claim on the issue;
 3. open a bounded draft PR early and link the issue;
 4. attach exact verification output before requesting review; and
-5. release the claim if you cannot continue so another contributor is not blocked.
+5. tell the assigning steward if you cannot continue, so the steward can release
+   the claim and another contributor is not blocked.
+
+The assigning steward for this repository is proposed as Ariadne, subject to
+confirmation by Primary Users. Follow the parent proposed steward map once it is
+published. Until then, see
+[WireSpeedComputing/sovereign-ai-os#55](https://github.com/WireSpeedComputing/sovereign-ai-os/issues/55).
+Volunteers may comment interest, but the steward owns assignment hygiene.
+
+The author of a pull request is not an independent reviewer of that change. This
+section grants no merge authority.
 
 Blocked issues name their dependencies. Do not start around a security or identity gate by implementing a broader shortcut.
 
