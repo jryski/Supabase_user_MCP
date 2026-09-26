@@ -116,16 +116,18 @@ authority boundary.
 
 ## Contributor workflow
 
-1. Pick one issue labeled `status:ready`.
-2. Comment on the issue that you are taking it and state the intended files.
-3. Create a focused branch named from the issue, for example `feat/14-memory-search`.
-4. Open a draft PR early and link the issue.
-5. Keep the PR within that issue's named scope; propose extra work in a separate issue.
-6. Add the required positive, denial, cross-identity, malformed-input, and boundary tests.
-7. Run the exact verification commands below and include the results in the PR.
-8. Do not merge your own authority-expanding change without the repository's required review.
+Claim recording, confirmation, release (including a stale claim), and how to reach the assigning
+steward are defined only in [CONTRIBUTING.md](../CONTRIBUTING.md#active-implementation-plan)
+("Active implementation plan"). This plan does not add or replace those rules.
 
-A stale claim can be released if the assignee/commenter has shown no activity for seven days and does not respond to a maintainer check. This is coordination policy, not a code lease.
+After the claim is recorded under that section:
+
+1. Create a focused branch named from the issue, for example `feat/14-memory-search`.
+2. Open a draft PR early and link the issue.
+3. Keep the PR within that issue's named scope; propose extra work in a separate issue.
+4. Add the required positive, denial, cross-identity, malformed-input, and boundary tests.
+5. Run the exact verification commands below and include the results in the PR.
+6. Do not merge your own authority-expanding change without the repository's required review.
 
 ## Baseline development environment
 
