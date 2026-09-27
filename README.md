@@ -66,23 +66,27 @@ The goal is not to make prompt injection impossible. The goal is to make the bla
 
 ## September 23, 2026: open lab dual-grant draft
 
-Updated September 24, 2026.
+Updated September 27, 2026.
 
 [Draft pull request #79](https://github.com/jryski/Supabase_user_MCP/pull/79)
-at `b6d83e04508774644c2d20d4ec85314bff333d8a` is a lab-only dual-grant broker
+at `527839070b034b4bb7c60ac8f89628ef8e5d9e30` is a lab-only dual-grant broker
 (r2, default off). It is stacked on the remote-oauth lineage in
 [pull request #75](https://github.com/jryski/Supabase_user_MCP/pull/75), base
 `ariadne/remote-oauth-rebased-20260919`, not on `main`. The ordinary remote
-path stays fail-closed; the broker is lab opt-in only. Ariadne's lab-only
-residual-F3 review passed at that head
-([comment 5806808083](https://github.com/jryski/Supabase_user_MCP/pull/79#issuecomment-5806808083)).
-That PASS is not full adoption. The draft is still a draft: not a merge, not
-hosted or live activation, and not encrypted refresh-at-rest.
+path stays fail-closed; the broker is lab opt-in only. Ariadne (`ariryski`)
+recorded a narrow APPROVE at that exact head
+([review 5328415015](https://github.com/jryski/Supabase_user_MCP/pull/79#pullrequestreview-5328415015)).
+The approval covers that head only. It is not a merge, not hosted or live
+activation, and not encrypted refresh-at-rest. M4 live evidence is still open
+and was not re-run on this head. A prior loopback receipt is not evidence for
+this head.
 [Issue #62](https://github.com/jryski/Supabase_user_MCP/issues/62) is not
 complete. T3, T4, T5, T10, T17, and the adoption and hosted gates remain open.
+No live M4 expansion is claimed here without Primary Users.
 
 See the [status note](docs/status/2026-09-23-lab-dual-grant-draft.md) for the
-dated lineage, including the earlier heads.
+dated lineage, including the September 24 residual-F3 head
+`b6d83e04508774644c2d20d4ec85314bff333d8a`.
 
 ## Relationship to the Sovereign Memory program
 
