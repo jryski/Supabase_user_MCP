@@ -66,27 +66,41 @@ The goal is not to make prompt injection impossible. The goal is to make the bla
 
 ## September 23, 2026: open lab dual-grant draft
 
-Updated September 27, 2026.
+Updated September 28, 2026.
 
 [Draft pull request #79](https://github.com/jryski/Supabase_user_MCP/pull/79)
 at `527839070b034b4bb7c60ac8f89628ef8e5d9e30` is a lab-only dual-grant broker
 (r2, default off). It is stacked on the remote-oauth lineage in
 [pull request #75](https://github.com/jryski/Supabase_user_MCP/pull/75), base
-`ariadne/remote-oauth-rebased-20260919`, not on `main`. The ordinary remote
-path stays fail-closed; the broker is lab opt-in only. Ariadne (`ariryski`)
-recorded a narrow APPROVE at that exact head
+`ariadne/remote-oauth-rebased-20260919` at
+`fcbaca121d0717ee8ff98df90b2f12475b05bb78`, not on `main`
+(`ab64f58bc29d4dda1620177660c25d4ba71ef831`). The ordinary remote path stays
+fail-closed; the broker is lab opt-in only. Ariadne recorded a narrow APPROVE
+at that exact head
 ([review 5328415015](https://github.com/jryski/Supabase_user_MCP/pull/79#pullrequestreview-5328415015)).
-The approval covers that head only. It is not a merge, not hosted or live
-activation, and not encrypted refresh-at-rest. M4 live evidence is still open
-and was not re-run on this head. A prior loopback receipt is not evidence for
-this head.
+The approval covers that head only. It is not a merge of #79, not hosted or
+live activation, and not encrypted refresh-at-rest.
+
+A disposable loopback dual-grant M4 receipt at that exact head passed
+([comment 5869208644](https://github.com/jryski/Supabase_user_MCP/pull/79#issuecomment-5869208644)).
+Reviewed head `527839070b034b4bb7c60ac8f89628ef8e5d9e30`, tree
+`7149476ff9acc3e9db07ae30fa5d9b923b2d23c2`. Receipt schema
+`supabase-user-mcp.lab-dual-grant-m4.v1`; result `pass`. Runtime: Node
+v22.23.2, npm 12.1.0, Supabase CLI 2.115.0. Nine named lab cases passed. The
+MCP client was in-process `@modelcontextprotocol/client` 2.0.0
+(`externalMcpBinary=false`). That is not an external MCP client binary and not
+T3 full external maintained client acceptance. Provider revoke returned HTTP
+204 in 65 ms and refresh was denied. An already-issued Data API JWT still
+returned HTTP 200 in 6 ms. That still-200 result is not a revocation SLA.
+Loopback `127.0.0.1` only; two temporary public clients; memory-only custody.
 [Issue #62](https://github.com/jryski/Supabase_user_MCP/issues/62) is not
-complete. T3, T4, T5, T10, T17, and the adoption and hosted gates remain open.
-No live M4 expansion is claimed here without Primary Users.
+complete. T3, T4, T5, T10, T17, and the adoption and hosted gates remain open
+as broader gates. No live M4 expansion is claimed here without Primary Users.
 
 See the [status note](docs/status/2026-09-23-lab-dual-grant-draft.md) for the
 dated lineage, including the September 24 residual-F3 head
-`b6d83e04508774644c2d20d4ec85314bff333d8a`.
+`b6d83e04508774644c2d20d4ec85314bff333d8a` and the September 28 live-lab
+receipt.
 
 ## Relationship to the Sovereign Memory program
 
