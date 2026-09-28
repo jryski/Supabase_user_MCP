@@ -42,10 +42,12 @@ Authority is checked again at the outbound Data API fetch. Revoke, local deadlin
 cleanup during `GET /auth/v1/user` does not let a later `/rest/v1` RPC return 200. Cleanup
 bumps a lifecycle epoch. An in-flight code exchange, MCP signing admission, or refresh that
 finishes after that epoch does not write the access token, refresh token, or mapping back.
-Lab coordinates are parsed URLs: the MCP issuer and redirects are `http://127.0.0.1` with the
-redirect host and port equal to the issuer, and a Data API origin is either that loopback host
-or an `https` `*.invalid` fixture. Those routes stay separate. Loopback coordinates may use a
-caller fetch, including the process network fetch. Fixture coordinates reject every caller
+Lab coordinates are parsed URLs. The MCP issuer and the upstream callback are `http://127.0.0.1`
+with that callback's host and port equal to the issuer. The registered MCP client callback is an
+exact `http://127.0.0.1:<port>/<path>` and may use a different port from the issuer. Matching is
+exact: a wildcard, hostname alias, userinfo, query, or fragment is rejected. A Data API origin is
+either that loopback host or an `https` `*.invalid` fixture. Those routes stay separate. Loopback
+coordinates may use a caller fetch, including the process network fetch. Fixture coordinates reject every caller
 fetch. The only fixture selector is the literal `fixtureTransport: 'broker-scripted'`, and the
 broker then answers `/auth/v1/user` and the memory RPCs itself. A thin wrapper around
 `globalThis.fetch`, a native fetch, a bound fetch, or a missing selector is rejected with
@@ -77,6 +79,29 @@ A synthetic pass is not that receipt.
 
 `https://mcp.loopback.invalid/mcp` stays a contract fixture. The callback listener binds
 `127.0.0.1` only.
+
+## MCP-facing HTTP authorization
+
+When the lab hook is enabled, the broker is the MCP authorization server for its issuer:
+
+- `GET /oauth/authorize` validates `response_type=code`, the fixed client, the exact registered
+  redirect, S256 PKCE, `state`, and `resource`. The login session comes from the
+  `lab_login_session` cookie established by `openLoginSession` in the lab harness. A query or
+  body principal is rejected. The response is an HTML consent form. It does not redirect and
+  does not issue a code.
+- `POST /oauth/authorize` with `decision=approve` or `decision=deny` is the explicit consent
+  step. Approve redirects to the registered callback with `code`, `state`, and `iss`. Deny
+  redirects with `error=access_denied` and the same `state`. The consent token and the login
+  session must match the pending flow. A second decision is a replay.
+- `GET /.well-known/jwks.json` returns the process-ephemeral ES256 public key, with `kid` set
+  to the JWK thumbprint. The private scalar is not included.
+- `POST /oauth/revoke` revokes an issued MCP access token for the registered public client.
+  `token_type_hint=refresh_token` does not revoke an access token, because this issuer does not
+  issue MCP refresh tokens. A revocation response is HTTP 200 and does not echo the token.
+  Provider revoke stays on `revokeAtProvider` and is a separate clock.
+- These routes run only after the same Host check as `/oauth/token` and `/lab/oauth/callback`.
+  Ordinary remote HTTP, env without the hook, and the hook without
+  `SUPABASE_USER_MCP_LAB_DUAL_GRANT=1` do not serve them.
 
 ## How to run
 

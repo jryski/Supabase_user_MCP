@@ -1,4 +1,4 @@
-import { createHash, randomBytes, randomUUID } from 'node:crypto';
+import { createHash, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
 import { createServer, type Server } from 'node:http';
 
 import {
@@ -50,6 +50,21 @@ const JSON_HEADERS = Object.freeze({
   'content-type': 'application/json',
   'cache-control': 'no-store',
 });
+const HTML_HEADERS = Object.freeze({
+  'content-type': 'text/html; charset=utf-8',
+  'cache-control': 'no-store',
+});
+const LOGIN_SESSION_COOKIE = 'lab_login_session';
+const CALLER_IDENTITY_FIELDS = new Set([
+  'principal_id',
+  'principalid',
+  'sub',
+  'user_id',
+  'userid',
+  'expected_principal_id',
+  'expectedprincipalid',
+]);
+const UNSAFE_REDIRECT = /%(?:2e|2f|5c)|[\\*]|[.][.]/iu;
 const FORBIDDEN_CONFIG_KEYS = Object.freeze([
   'projectJwtSecret',
   'jwtHmacSecret',
@@ -275,6 +290,16 @@ interface DispatchLease {
   readonly token: string;
 }
 
+interface LabPublicJwk {
+  readonly kty: 'EC';
+  readonly crv: 'P-256';
+  readonly x: string;
+  readonly y: string;
+  readonly alg: 'ES256';
+  readonly use: 'sig';
+  readonly kid: string;
+}
+
 function fail(code: string): never {
   throw new LabDualGrantError(code);
 }
@@ -324,12 +349,21 @@ function assertMcpIssuer(value: string): URL {
   return url;
 }
 
-function assertLoopbackRedirect(value: string, issuer: URL): URL {
+function assertIssuerBoundRedirect(value: string, issuer: URL): URL {
+  const url = assertExactLoopbackCallback(value);
+  if (url.host !== issuer.host) fail('invalid_redirect');
+  return url;
+}
+
+function assertRegisteredClientCallback(value: string): URL {
+  return assertExactLoopbackCallback(value);
+}
+
+function assertExactLoopbackCallback(value: string): URL {
+  if (UNSAFE_REDIRECT.test(value)) fail('invalid_redirect');
   const url = parseLabUrl(value, 'redirect_not_loopback');
   if (!isExactLoopbackHost(url) || url.search !== '') fail('redirect_not_loopback');
-  if (url.host !== issuer.host || url.pathname === '/' || url.pathname === '') {
-    fail('invalid_redirect');
-  }
+  if (url.pathname === '/' || url.pathname === '') fail('invalid_redirect');
   return url;
 }
 
@@ -414,6 +448,70 @@ function decodeJwtPayload(token: string): JWTPayload & Record<string, unknown> {
 
 function jsonResponse(status: number, body: unknown): Response {
   return new Response(JSON.stringify(body), { status, headers: JSON_HEADERS });
+}
+
+function redirectResponse(location: URL): Response {
+  return new Response(null, {
+    status: 302,
+    headers: {
+      location: location.toString(),
+      'cache-control': 'no-store',
+    },
+  });
+}
+
+function htmlConsent(flowId: string, consentToken: string): Response {
+  const body = `<!DOCTYPE html>
+<html lang="en">
+<head><meta charset="utf-8"><title>Lab consent</title></head>
+<body>
+<p>Consent is required before a code is issued.</p>
+<form method="post" action="/oauth/authorize">
+<input type="hidden" name="flow_id" value="${escapeHtml(flowId)}">
+<input type="hidden" name="consent_token" value="${escapeHtml(consentToken)}">
+<button type="submit" name="decision" value="approve">Approve</button>
+<button type="submit" name="decision" value="deny">Deny</button>
+</form>
+</body>
+</html>`;
+  return new Response(body, { status: 200, headers: HTML_HEADERS });
+}
+
+function escapeHtml(value: string): string {
+  return value
+    .replaceAll('&', '&amp;')
+    .replaceAll('"', '&quot;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;');
+}
+
+function sameSecret(expected: string, presented: string): boolean {
+  const left = Buffer.from(expected);
+  const right = Buffer.from(presented);
+  if (left.length === 0 || left.length !== right.length) return false;
+  return timingSafeEqual(left, right);
+}
+
+function assertNoCallerIdentity(params: URLSearchParams): void {
+  for (const key of params.keys()) {
+    if (CALLER_IDENTITY_FIELDS.has(key.toLowerCase())) fail('caller_mapping_rejected');
+  }
+}
+
+function readSingleLoginCookie(request: Request): string {
+  const header = request.headers.get('cookie');
+  if (header === null || header.length === 0) fail('stale');
+  const values: string[] = [];
+  for (const part of header.split(';')) {
+    const separator = part.indexOf('=');
+    if (separator < 0) continue;
+    if (part.slice(0, separator).trim() !== LOGIN_SESSION_COOKIE) continue;
+    values.push(part.slice(separator + 1).trim());
+  }
+  if (values.length !== 1) fail('invalid_request');
+  const value = values[0] ?? '';
+  if (!UUID.test(value)) fail('stale');
+  return value;
 }
 
 async function answerWithRegisteredMcpServer(
@@ -531,7 +629,9 @@ export class LabDualGrantBroker {
     string,
     { readonly sessionId: string; revoked: boolean }
   >();
+  private readonly consentTokens = new Map<string, string>();
   private readonly refreshFlights = new Map<string, Promise<void>>();
+  private publicJwk: LabPublicJwk | undefined;
 
   private constructor(config: LabDualGrantBrokerConfig, enabled: boolean) {
     this.enabled = enabled;
@@ -865,6 +965,7 @@ export class LabDualGrantBroker {
     this.pending.clear();
     this.stateIndex.clear();
     this.mcpCodes.clear();
+    this.consentTokens.clear();
     this.grants.clear();
     this.grantIndex.clear();
     this.mappings.clear();
@@ -880,6 +981,9 @@ export class LabDualGrantBroker {
   async handleHttp(request: Request): Promise<Response | undefined> {
     if (!this.enabled) return undefined;
     const url = new URL(request.url);
+    if (url.pathname === '/oauth/authorize') return this.handleAuthorize(request);
+    if (url.pathname === '/.well-known/jwks.json') return this.handleJwks(request);
+    if (url.pathname === '/oauth/revoke') return this.handleRevoke(request);
     if (url.pathname === '/lab/oauth/callback') {
       try {
         await this.consumeUpstreamCallback({
@@ -1369,9 +1473,136 @@ export class LabDualGrantBroker {
     this.publicKey = publicKey;
     this.privateKey = privateKey;
     const jwk = await exportJWK(publicKey);
+    if (
+      jwk.kty !== 'EC' ||
+      jwk.crv !== 'P-256' ||
+      typeof jwk.x !== 'string' ||
+      typeof jwk.y !== 'string' ||
+      typeof jwk.d === 'string'
+    ) {
+      fail('not_enabled');
+    }
     jwk.alg = 'ES256';
     jwk.use = 'sig';
-    this.thumbprint = await calculateJwkThumbprint(jwk, 'sha256');
+    const thumbprint = await calculateJwkThumbprint(jwk, 'sha256');
+    this.thumbprint = thumbprint;
+    this.publicJwk = {
+      kty: 'EC',
+      crv: 'P-256',
+      x: jwk.x,
+      y: jwk.y,
+      alg: 'ES256',
+      use: 'sig',
+      kid: thumbprint,
+    };
+  }
+
+  private async handleAuthorize(request: Request): Promise<Response> {
+    if (request.method !== 'GET' && request.method !== 'POST') {
+      return jsonResponse(405, { error: 'invalid_request' });
+    }
+    try {
+      if (request.method === 'GET') {
+        const pending = this.beginHttpAuthorization(request);
+        return htmlConsent(pending.flowId, pending.consentToken);
+      }
+      return await this.finishConsentDecision(request);
+    } catch (error) {
+      return jsonResponse(400, {
+        error: error instanceof LabDualGrantError ? error.code : 'invalid_request',
+      });
+    }
+  }
+
+  private beginHttpAuthorization(request: Request): {
+    readonly flowId: string;
+    readonly consentToken: string;
+  } {
+    const url = new URL(request.url);
+    assertNoCallerIdentity(url.searchParams);
+    if (url.searchParams.has(LOGIN_SESSION_COOKIE)) fail('invalid_request');
+    if (
+      url.searchParams.get('prompt') === 'none' ||
+      url.searchParams.has('decision') ||
+      url.searchParams.has('code')
+    ) {
+      fail('consent_required');
+    }
+    if (url.searchParams.get('response_type') !== 'code') fail('invalid_request');
+    const flowId = this.beginMcpAuthorization({
+      loginSessionId: readSingleLoginCookie(request),
+      clientId: url.searchParams.get('client_id') ?? '',
+      redirectUri: url.searchParams.get('redirect_uri') ?? '',
+      codeChallenge: url.searchParams.get('code_challenge') ?? '',
+      codeChallengeMethod: url.searchParams.get('code_challenge_method') ?? '',
+      state: url.searchParams.get('state') ?? '',
+      resource: url.searchParams.get('resource') ?? '',
+    });
+    const consentToken = randomBytes(32).toString('base64url');
+    this.consentTokens.set(flowId, consentToken);
+    return { flowId, consentToken };
+  }
+
+  private async finishConsentDecision(request: Request): Promise<Response> {
+    const fields = await readTokenFields(request);
+    assertNoCallerIdentity(new URLSearchParams(Object.entries(fields)));
+    if (fields[LOGIN_SESSION_COOKIE] !== undefined) fail('invalid_request');
+    const decision = fields.decision ?? '';
+    if (decision !== 'approve' && decision !== 'deny') fail('invalid_request');
+    const flowId = fields.flow_id ?? '';
+    const flow = this.pending.get(flowId);
+    if (flow === undefined || flow.kind !== 'mcp' || flow.consent !== 'pending') fail('replay');
+    if (this.now() >= flow.expiresAtMs) fail('stale');
+    const session = this.requireSession(readSingleLoginCookie(request));
+    if (session.id !== flow.loginSessionId || session.principalId !== flow.expectedPrincipalId) {
+      fail('cross_user');
+    }
+    const expected = this.consentTokens.get(flow.id);
+    const presented = fields.consent_token ?? '';
+    if (expected === undefined || !sameSecret(expected, presented)) fail('invalid_grant');
+    this.consentTokens.delete(flow.id);
+    const redirect =
+      decision === 'approve' ? this.approveMcpConsent(flow.id) : this.denyMcpConsent(flow.id);
+    return redirectResponse(redirect);
+  }
+
+  private handleJwks(request: Request): Response {
+    try {
+      if (request.method !== 'GET') return jsonResponse(405, { error: 'invalid_request' });
+      if (this.publicJwk === undefined) fail('not_enabled');
+      return jsonResponse(200, { keys: [this.publicJwk] });
+    } catch (error) {
+      return jsonResponse(400, {
+        error: error instanceof LabDualGrantError ? error.code : 'invalid_request',
+      });
+    }
+  }
+
+  private async handleRevoke(request: Request): Promise<Response> {
+    if (request.method !== 'POST') return jsonResponse(405, { error: 'invalid_request' });
+    try {
+      const fields = await readTokenFields(request);
+      if (fields.client_id !== this.mcpClientId) fail('invalid_client');
+      const token = fields.token ?? '';
+      if (token.length === 0) fail('invalid_request');
+      const hint = fields.token_type_hint;
+      if (hint !== undefined && hint !== 'access_token' && hint !== 'refresh_token') {
+        fail('invalid_request');
+      }
+      if (hint !== 'refresh_token') this.revokeIssuedAccessToken(token);
+      return jsonResponse(200, {});
+    } catch (error) {
+      return jsonResponse(400, {
+        error: error instanceof LabDualGrantError ? error.code : 'invalid_request',
+      });
+    }
+  }
+
+  private revokeIssuedAccessToken(token: string): void {
+    const fingerprint = fingerprintAccessToken(token);
+    const issued = this.issuedMcpTokens.get(fingerprint);
+    if (issued === undefined || issued.revoked) return;
+    this.issuedMcpTokens.set(fingerprint, { sessionId: issued.sessionId, revoked: true });
   }
 
   private requireEnabled(): void {
@@ -1450,9 +1681,11 @@ function assertBrokerConfig(config: LabDualGrantBrokerConfig): void {
   if (canonicalizeResourceUri(upstreamResource.toString()) === config.mcpResourceUri) {
     fail('invalid_resource');
   }
-  const exactRedirect = assertLoopbackRedirect(config.exactRedirectUri, mcpIssuerUrl);
-  const mcpRedirect = assertLoopbackRedirect(config.mcpClientRedirectUri, mcpIssuerUrl);
-  if (exactRedirect.pathname === mcpRedirect.pathname) fail('invalid_redirect');
+  const exactRedirect = assertIssuerBoundRedirect(config.exactRedirectUri, mcpIssuerUrl);
+  const mcpRedirect = assertRegisteredClientCallback(config.mcpClientRedirectUri);
+  if (exactRedirect.href === mcpRedirect.href || exactRedirect.pathname === mcpRedirect.pathname) {
+    fail('invalid_redirect');
+  }
   assertDataApiOrigin(config.dataApiOrigin, upstreamResource);
   assertSeparatedTransports(config);
   assertLabel(config.maintainedClientName, 'invalid_client');

@@ -27,6 +27,10 @@ the first public package is released.
 - Lab-only dual-grant broker (custody proposal r2), opt-in and default off, memory-only upstream
   tokens and ephemeral MCP signing keys. Not issue #62 completion. See
   [the lab note](docs/evidence/LAB_DUAL_GRANT_R2.md).
+- Lab dual-grant HTTP authorization on that same opt-in: an exact registered
+  `http://127.0.0.1` client callback may use its own port, `GET /oauth/authorize` requires
+  explicit consent, and the lab issuer serves the revocation and JWKS documents it advertises.
+  Ordinary remote HTTP stays fail-closed. This is not an external MCP client result.
 
 ### Fixed
 

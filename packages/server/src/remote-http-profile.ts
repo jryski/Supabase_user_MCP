@@ -92,8 +92,9 @@ export function createRemoteHttpProfile(config: RemoteHttpProfileConfig): Remote
 
   return async (request: Request): Promise<Response> => {
     // Discovery metadata may precede the Host check. Lab OAuth routes may not:
-    // /oauth/token and /lab/oauth/callback run only after hostMatchesResource,
-    // matching listenLabOAuthCallback.
+    // /oauth/authorize, /oauth/token, /oauth/revoke, /.well-known/jwks.json, and
+    // /lab/oauth/callback run only after hostMatchesResource, matching
+    // listenLabOAuthCallback.
     const metadata = oauthMetadataResponse(request, metadataOptions);
     if (metadata !== undefined) return metadata;
     if (!hostMatchesResource(request, resourceUrl, lab !== undefined)) {
