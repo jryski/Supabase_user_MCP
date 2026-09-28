@@ -3,31 +3,47 @@
 Updated September 28, 2026.
 
 This page cites an open draft. It does not merge that draft, change `main`, or
-mark remote OAuth complete. The September 28, 2026 subsection below is the
-current live-lab citation. Earlier heads, the September 24 residual-F3 PASS,
-and the September 27 head note stay in this note as history.
+mark remote OAuth complete. It does not pin a `main` commit or the live head
+of the draft. Pull request #79 is the live state, and that head may move.
+Earlier heads, the September 24 residual-F3 PASS, the September 27 narrow
+APPROVE, and the September 28 loopback receipt stay in this note as dated
+history.
 
 ## Open draft
 
 [Pull request #79](https://github.com/jryski/Supabase_user_MCP/pull/79),
 "feat: lab-only dual-grant broker (r2, default off)", is open and still a
-draft. Its current head is `527839070b034b4bb7c60ac8f89628ef8e5d9e30`.
+draft. Read that pull request for the live head. This note does not record a
+current tip.
 
-Earlier heads cited here:
+On 2026-09-28, Warden recorded CHANGES REQUESTED (MC1394) on that draft
+([comment 5870116692](https://github.com/jryski/Supabase_user_MCP/pull/79#issuecomment-5870116692)).
+The review examined `527839070b034b4bb7c60ac8f89628ef8e5d9e30`. It is not a
+PASS, and it is not a merge. A later push is a different head.
+
+Dated heads cited below are history:
 
 - `f01b282ecaeffc6e37f16145fb6a18bd14cc60e1`, the head in the first version of
   this note.
 - `68639ec21f4c737af991cdb3db1f517ad28cb9a0`, the head cited on the September 23
-  update. It is an ancestor of the current head, not its parent.
+  update. When the September 27 review was recorded, it was an ancestor of
+  `527839070b034b4bb7c60ac8f89628ef8e5d9e30`, not its parent. This note does
+  not claim it remains an ancestor of a later tip.
 - `b6d83e04508774644c2d20d4ec85314bff333d8a`, the September 24 residual-F3 PASS
-  head. It is an ancestor of the current head.
+  head. When the September 27 review was recorded, it was an ancestor of
+  `527839070b034b4bb7c60ac8f89628ef8e5d9e30`. This note does not claim it
+  remains an ancestor of a later tip.
+- `527839070b034b4bb7c60ac8f89628ef8e5d9e30`, the September 27 narrow APPROVE
+  and the September 28 loopback M4 receipt. Warden MC1394 also reviewed this
+  commit. It is a dated coordinate, not the live tip.
 
 The draft is stacked on the remote-oauth lineage in
 [pull request #75](https://github.com/jryski/Supabase_user_MCP/pull/75). Its
 base branch is `ariadne/remote-oauth-rebased-20260919`, not `main`. The base
 commit recorded with this note is
-`fcbaca121d0717ee8ff98df90b2f12475b05bb78`. `main` at this note is
-`ab64f58bc29d4dda1620177660c25d4ba71ef831`.
+`fcbaca121d0717ee8ff98df90b2f12475b05bb78`. This note does not pin `main`.
+An earlier version named a `main` SHA. That assertion is dropped because
+`main` has moved, including the merge of pull request #96.
 
 On that draft, the ordinary remote path stays fail-closed. Dispatch through
 the dual-grant broker requires the lab opt-in. Default-off behavior there is
@@ -43,7 +59,7 @@ not an enablement switch on `main`.
    `b6d83e04508774644c2d20d4ec85314bff333d8a`. The commit owns the scripted
    responder for `https://*.invalid` coordinates and rejects caller fetch,
    including a thin wrapper around `globalThis.fetch`.
-3. **2026-09-24 03:13 UTC.** Ariadne lab-only residual-F3 PASS at that same
+3. **2026-09-24 03:13 UTC.** Maintainer lab-only residual-F3 PASS at that same
    head, `b6d83e04508774644c2d20d4ec85314bff333d8a`.
    [Comment 5806808083](https://github.com/jryski/Supabase_user_MCP/pull/79#issuecomment-5806808083).
    The review says residual F3 is closed at that exact head. The PASS is
@@ -54,21 +70,24 @@ not an enablement switch on `main`.
 1. **2026-09-25 16:18 UTC.** The draft head moved from
    `b6d83e04508774644c2d20d4ec85314bff333d8a` to
    `527839070b034b4bb7c60ac8f89628ef8e5d9e30`. Four lab commits separate those
-   heads. The base is still `ariadne/remote-oauth-rebased-20260919` at
+   heads. The base recorded then was still
+   `ariadne/remote-oauth-rebased-20260919` at
    `fcbaca121d0717ee8ff98df90b2f12475b05bb78`.
-2. **2026-09-27 01:31 UTC.** Ariadne recorded a narrow APPROVE on
+2. **2026-09-27 01:31 UTC.** Maintainer `ariryski` recorded a narrow APPROVE on
    pull request #79 at `527839070b034b4bb7c60ac8f89628ef8e5d9e30`.
    [Review 5328415015](https://github.com/jryski/Supabase_user_MCP/pull/79#pullrequestreview-5328415015).
-   The review says the approval covers this head only and a new push needs
+   The review says the approval covers that commit only and a new push needs
    re-review. This page cites that review. It is not itself the independent
    review, and it is not merge readiness.
 
-### September 28, 2026 live-lab evidence
+### September 28, 2026 loopback receipt
 
 [Comment 5869208644](https://github.com/jryski/Supabase_user_MCP/pull/79#issuecomment-5869208644)
-records a pass of the disposable loopback dual-grant M4 harness at the current
-draft head. The comment describes existing execution evidence re-inspected on
-this date. It is not a broader acceptance, a merge of pull request #79, or
+records a pass of the disposable loopback dual-grant M4 harness at
+`527839070b034b4bb7c60ac8f89628ef8e5d9e30`. That commit is the reviewed head
+for this receipt. It is not a pin of the live tip. The comment describes
+existing execution evidence re-inspected on this date. It is not a broader
+acceptance, a merge of pull request #79, or
 completion of
 [issue #62](https://github.com/jryski/Supabase_user_MCP/issues/62).
 
@@ -101,20 +120,24 @@ Provider revoke returned HTTP 204 in 65 ms. Refresh was denied (probe latency
 the Data API with HTTP 200 in 6 ms. That still-200 result is not a revocation
 SLA. Broker next-call denial is a separate lab case.
 
-Those named cases are lab-scope results at this head. T3, T4, T5, T10, T17,
-and the adoption and hosted gates remain open as broader gates. No live M4
-expansion is recorded here without Primary Users.
+Those named cases are lab-scope results at that dated head. T3, T4, T5, T10,
+T17, and the adoption and hosted gates remain open as broader gates. No live
+M4 expansion is recorded here without the maintainer.
 
 The narrow APPROVE remains
 [review 5328415015](https://github.com/jryski/Supabase_user_MCP/pull/79#pullrequestreview-5328415015).
-That review covers this head only. It is not merge readiness. The September 24
-residual-F3 PASS at `b6d83e04508774644c2d20d4ec85314bff333d8a` stays history
-and is a different result from this receipt.
+That review covers `527839070b034b4bb7c60ac8f89628ef8e5d9e30` only. It is not
+merge readiness. Warden CHANGES REQUESTED (MC1394) at that same commit is a
+later review and is not a PASS. The September 24 residual-F3 PASS at
+`b6d83e04508774644c2d20d4ec85314bff333d8a` stays history and is a different
+result from this receipt.
 
 ## September 23, 2026 head, retained
 
 These points were recorded for `68639ec21f4c737af991cdb3db1f517ad28cb9a0`.
-That commit remains an ancestor of the current head:
+When the September 27 review was recorded, that commit was an ancestor of
+`527839070b034b4bb7c60ac8f89628ef8e5d9e30`. This note does not claim it remains
+an ancestor of a later tip:
 
 - Authenticated lab `initialize` and `tools/list` schemas are present on that
   draft.
@@ -127,10 +150,10 @@ That commit remains an ancestor of the current head:
   pull request #79. The narrow APPROVE is not merge readiness.
 - The lab-only residual-F3 PASS at `b6d83e04508774644c2d20d4ec85314bff333d8a`
   is not full adoption, is not merge authorization, and is not the September 28
-  live-lab receipt. That receipt is the citation for
+  loopback receipt. That receipt is the citation for
   `527839070b034b4bb7c60ac8f89628ef8e5d9e30`.
 - It is not hosted or live activation, and it is not publication approval.
-  No live M4 expansion is recorded here without Primary Users.
+  No live M4 expansion is recorded here without the maintainer.
 - It is not encrypted refresh-at-rest.
 - The September 28 MCP client is in-process `@modelcontextprotocol/client`
   2.0.0 (`externalMcpBinary=false`). It is not an external MCP client binary

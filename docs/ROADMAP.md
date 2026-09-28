@@ -37,34 +37,24 @@ separate from everyday agent access. No production policy rollout is claimed.
 Updated September 28, 2026.
 
 [Draft pull request #79](https://github.com/jryski/Supabase_user_MCP/pull/79)
-at `527839070b034b4bb7c60ac8f89628ef8e5d9e30` is a lab-only, default-off
-dual-grant broker stacked on
-[pull request #75](https://github.com/jryski/Supabase_user_MCP/pull/75)
-(base `ariadne/remote-oauth-rebased-20260919` at
-`fcbaca121d0717ee8ff98df90b2f12475b05bb78`), not on `main`
-(`ab64f58bc29d4dda1620177660c25d4ba71ef831`). The ordinary remote path stays
-fail-closed. Lab opt-in only. Ariadne recorded a narrow APPROVE at that head
-([review 5328415015](https://github.com/jryski/Supabase_user_MCP/pull/79#pullrequestreview-5328415015)).
-The approval covers that head only. It is not a merge of #79, not hosted or
-live activation, and not encrypted refresh-at-rest.
+is the live state of a lab-only, default-off dual-grant broker. It is stacked
+on [pull request #75](https://github.com/jryski/Supabase_user_MCP/pull/75)
+(base `ariadne/remote-oauth-rebased-20260919`), not on `main`. This roadmap
+does not pin a `main` commit or the draft tip. The head may move while
+[Warden CHANGES REQUESTED (MC1394)](https://github.com/jryski/Supabase_user_MCP/pull/79#issuecomment-5870116692)
+is open.
 
-A disposable loopback dual-grant M4 receipt at that exact head passed
-([comment 5869208644](https://github.com/jryski/Supabase_user_MCP/pull/79#issuecomment-5869208644);
-tree `7149476ff9acc3e9db07ae30fa5d9b923b2d23c2`; schema
-`supabase-user-mcp.lab-dual-grant-m4.v1`; result `pass`). Nine named lab cases
-passed. The client was in-process `@modelcontextprotocol/client` 2.0.0
-(`externalMcpBinary=false`). That is not an external MCP client binary and not
-T3 full external maintained client acceptance. Provider revoke returned HTTP
-204 in 65 ms and refresh was denied. An already-issued Data API JWT still
-returned HTTP 200 in 6 ms. That still-200 result is not a revocation SLA. The
-draft does not complete M4 or
-[issue #62](https://github.com/jryski/Supabase_user_MCP/issues/62). No live M4
-expansion is claimed here without Primary Users. T3, T4, T5, T10, T17, and the
-adoption and hosted gates remain open as broader gates. See the
-[September 23 status note](status/2026-09-23-lab-dual-grant-draft.md) for the
-dated lineage, including the September 24 residual-F3 head
-`b6d83e04508774644c2d20d4ec85314bff333d8a` and the September 28 live-lab
-receipt.
+The ordinary remote path stays fail-closed. Lab opt-in only. The draft does
+not complete M4 or
+[issue #62](https://github.com/jryski/Supabase_user_MCP/issues/62).
+No live M4 expansion is claimed here without the maintainer. T3, T4, T5, T10,
+T17, and the adoption and hosted gates remain open as broader gates.
+
+Dated heads stay in the
+[September 23 status note](status/2026-09-23-lab-dual-grant-draft.md).
+That note keeps the September 24 residual-F3 head and the September 28
+loopback M4 receipt at `527839070b034b4bb7c60ac8f89628ef8e5d9e30`. Those
+coordinates are history, not the live tip.
 
 ## How milestones work
 
