@@ -60,6 +60,8 @@ export interface RemoteHttpStartupOptions {
   /**
    * Lab dual-grant hook. Attached only when SUPABASE_USER_MCP_LAB_DUAL_GRANT
    * is exactly `1` and the hook is enabled. Any other value keeps fail-closed.
+   * This function is the only env-and-hook enforcement point. Broker `optIn`
+   * and `createRemoteHttpProfile` do not read the env var.
    */
   readonly labDualGrant?: LabDualGrantProfileHook;
 }

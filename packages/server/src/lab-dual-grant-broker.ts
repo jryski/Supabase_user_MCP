@@ -146,6 +146,11 @@ export interface LabUpstreamOAuth {
 }
 
 export interface LabDualGrantBrokerConfig {
+  /**
+   * Enables this in-process broker when true. Does not read
+   * `SUPABASE_USER_MCP_LAB_DUAL_GRANT`. The env-and-hook conjunction is
+   * enforced only by `createRemoteHttpHandlerFromEnvironment`.
+   */
   readonly optIn?: boolean;
   readonly mcpIssuer: string;
   readonly mcpClientId: string;
@@ -555,6 +560,7 @@ export class LabDualGrantBroker {
 
   static async create(config: LabDualGrantBrokerConfig): Promise<LabDualGrantBroker> {
     assertBrokerConfig(config);
+    // optIn is process-local. The env-and-hook gate is not applied here.
     const broker = new LabDualGrantBroker(config, config.optIn === true);
     if (broker.enabled) await broker.installSigningKey();
     return broker;
@@ -846,7 +852,9 @@ export class LabDualGrantBroker {
   revokeAtProvider(principalId: string): void {
     const grant = this.findGrant(principalId, this.upstreamClientId);
     if (!grant) fail('reauth_required');
-    this.upstream.revokeGrant?.(grant.upstreamRefreshToken);
+    const revokeGrant = this.upstream.revokeGrant;
+    if (revokeGrant === undefined) fail('reauth_required');
+    revokeGrant(grant.upstreamRefreshToken);
     this.providerRevokeCalls += 1;
     this.grants.set(grant.grantFamily, { ...grant, revokedLocally: true });
   }

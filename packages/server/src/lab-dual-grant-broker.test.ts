@@ -946,6 +946,47 @@ describe('lab dual-grant broker r2', () => {
     expect(paths.filter((path) => path.startsWith('/rest/v1'))).toEqual([]);
   });
 
+  it('counts a provider revoke only when upstream.revokeGrant runs', async () => {
+    const who = principal();
+    const lab = labFor(8765);
+    let providerCalls = 0;
+    const broker = await createBroker({
+      upstream: adapt(lab, {
+        onRevoke: () => {
+          providerCalls += 1;
+        },
+      }),
+      fetchImpl: scriptedFetch([memory(who, ALICE_MEMORY)], [], []),
+    });
+    const token = await login(broker, who);
+    broker.revokeAtProvider(who);
+    expect(providerCalls).toBe(1);
+    expect(broker.providerRevocationCount()).toBe(1);
+    const denied = await profile(
+      broker,
+      lab,
+    )(toolRequest(token, 'memory_get', { id: ALICE_MEMORY }));
+    expect(denied.status).toBe(403);
+
+    const other = principal();
+    const adapted = adapt(lab);
+    const { revokeGrant: _omit, ...withoutRevoke } = adapted;
+    const silent = await createBroker({
+      upstream: withoutRevoke,
+      fetchImpl: scriptedFetch([memory(other, ALICE_MEMORY)], [], []),
+    });
+    const silentToken = await login(silent, other);
+    const before = silent.custodyCounts();
+    expect(() => silent.revokeAtProvider(other)).toThrow(LabDualGrantError);
+    expect(silent.providerRevocationCount()).toBe(0);
+    expect(silent.custodyCounts()).toEqual(before);
+    const stillAuthorized = await profile(
+      silent,
+      lab,
+    )(toolRequest(silentToken, 'memory_get', { id: ALICE_MEMORY }));
+    expect(stillAuthorized.status).toBe(200);
+  });
+
   it('denies the next call when the provider rejects the upstream token', async () => {
     const who = principal();
     const paths: string[] = [];
@@ -1126,6 +1167,94 @@ describe('lab dual-grant broker r2', () => {
     await new Promise<void>((resolve, reject) =>
       server.close((error) => (error ? reject(error) : resolve())),
     );
+  });
+
+  it('rejects an attacker Host on lab token and callback before broker state changes', async () => {
+    const who = principal();
+    const port = 8765;
+    const lab = labFor(port);
+    const broker = await createBroker({
+      upstream: adapt(lab),
+      fetchImpl: scriptedFetch([], [], []),
+      port,
+    });
+    const handler = profile(broker, lab);
+    const sessionId = broker.openLoginSession(who);
+    const pkce = generateS256PkceChallenge();
+    const redirectUri = `http://127.0.0.1:${port}/lab/mcp/callback`;
+    const flowId = broker.beginMcpAuthorization({
+      loginSessionId: sessionId,
+      clientId: MCP_CLIENT,
+      redirectUri,
+      codeChallenge: pkce.codeChallenge,
+      codeChallengeMethod: 'S256',
+      state: randomBytes(16).toString('base64url'),
+      resource: RESOURCE,
+    });
+    const mcpRedirect = broker.approveMcpConsent(flowId);
+    const code = mcpRedirect.searchParams.get('code') ?? '';
+    const upstream = broker.beginUpstreamAuthorization({
+      parentFlowId: flowId,
+      loginSessionId: sessionId,
+    });
+    const approved = broker.approveUpstreamConsent(upstream.flowId);
+    const before = broker.custodyCounts();
+    expect(before.pendingFlows).toBe(2);
+    expect(before.loginSessions).toBe(1);
+    expect(before.grants).toBe(0);
+    const tokenBody = (): string =>
+      new URLSearchParams({
+        grant_type: 'authorization_code',
+        code,
+        client_id: MCP_CLIENT,
+        redirect_uri: redirectUri,
+        code_verifier: pkce.codeVerifier,
+        resource: RESOURCE,
+      }).toString();
+
+    const hostileToken = await handler(
+      new Request(`http://127.0.0.1:${port}/oauth/token`, {
+        method: 'POST',
+        headers: {
+          host: 'attacker.example',
+          'content-type': 'application/x-www-form-urlencoded',
+        },
+        body: tokenBody(),
+      }),
+    );
+    expect(hostileToken.status).toBe(400);
+    expect(await hostileToken.json()).toEqual({ error: 'invalid_request' });
+
+    const hostileCallback = await handler(
+      new Request(approved, {
+        method: 'GET',
+        headers: { host: 'attacker.example' },
+      }),
+    );
+    expect(hostileCallback.status).toBe(400);
+    expect(await hostileCallback.json()).toEqual({ error: 'invalid_request' });
+    expect(broker.custodyCounts()).toEqual(before);
+    expect(broker.providerRevocationCount()).toBe(0);
+
+    const callback = await handler(
+      new Request(approved, {
+        method: 'GET',
+        headers: { host: `127.0.0.1:${port}` },
+      }),
+    );
+    expect(callback.status).toBe(200);
+    const issued = await handler(
+      new Request(`http://127.0.0.1:${port}/oauth/token`, {
+        method: 'POST',
+        headers: {
+          host: `127.0.0.1:${port}`,
+          'content-type': 'application/x-www-form-urlencoded',
+        },
+        body: tokenBody(),
+      }),
+    );
+    expect(issued.status).toBe(200);
+    expect(await issued.json()).toMatchObject({ token_type: 'Bearer' });
   });
 
   it('requires the startup flag before the lab hook can dispatch', async () => {

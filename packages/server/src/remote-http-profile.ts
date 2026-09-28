@@ -27,7 +27,12 @@ export interface RemoteHttpProfileConfig {
   readonly fetch?: typeof globalThis.fetch;
   readonly now?: () => number;
   readonly allowInsecureIssuer?: boolean;
-  /** Explicit lab opt-in. Absent or disabled keeps Data API dispatch fail-closed. */
+  /**
+   * Explicit lab opt-in for this handler. Absent or disabled keeps Data API
+   * dispatch fail-closed. This constructor does not read
+   * `SUPABASE_USER_MCP_LAB_DUAL_GRANT`. The env-and-hook conjunction is
+   * enforced only by `createRemoteHttpHandlerFromEnvironment`.
+   */
   readonly labDualGrant?: LabDualGrantProfileHook;
 }
 
@@ -86,10 +91,9 @@ export function createRemoteHttpProfile(config: RemoteHttpProfileConfig): Remote
   });
 
   return async (request: Request): Promise<Response> => {
-    if (lab) {
-      const handled = await lab.handleHttp(request);
-      if (handled !== undefined) return handled;
-    }
+    // Discovery metadata may precede the Host check. Lab OAuth routes may not:
+    // /oauth/token and /lab/oauth/callback run only after hostMatchesResource,
+    // matching listenLabOAuthCallback.
     const metadata = oauthMetadataResponse(request, metadataOptions);
     if (metadata !== undefined) return metadata;
     if (!hostMatchesResource(request, resourceUrl, lab !== undefined)) {
@@ -97,6 +101,10 @@ export function createRemoteHttpProfile(config: RemoteHttpProfileConfig): Remote
         status: 400,
         headers: JSON_HEADERS,
       });
+    }
+    if (lab) {
+      const handled = await lab.handleHttp(request);
+      if (handled !== undefined) return handled;
     }
     if (!isMcpResourcePath(request, resourceUrl)) {
       return new Response(JSON.stringify({ error: 'not_found' }), {
