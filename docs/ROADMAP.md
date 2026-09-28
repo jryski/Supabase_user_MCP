@@ -40,9 +40,7 @@ Updated September 28, 2026.
 is the live state of a lab-only, default-off dual-grant broker. It is stacked
 on [pull request #75](https://github.com/jryski/Supabase_user_MCP/pull/75)
 (base `ariadne/remote-oauth-rebased-20260919`), not on `main`. This roadmap
-does not pin a `main` commit or the draft tip. The head may move while
-[Warden CHANGES REQUESTED (MC1394)](https://github.com/jryski/Supabase_user_MCP/pull/79#issuecomment-5870116692)
-is open.
+does not pin a `main` commit or the draft tip. The head may move.
 
 The ordinary remote path stays fail-closed. Lab opt-in only. The draft does
 not complete M4 or

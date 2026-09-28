@@ -74,22 +74,14 @@ stacked on the remote-oauth lineage in
 [pull request #75](https://github.com/jryski/Supabase_user_MCP/pull/75)
 (base `ariadne/remote-oauth-rebased-20260919`), not on `main`. This page does
 not pin a `main` commit or the draft tip. The head may move.
-[Warden CHANGES REQUESTED (MC1394)](https://github.com/jryski/Supabase_user_MCP/pull/79#issuecomment-5870116692)
-is open on that draft.
 
 The ordinary remote path stays fail-closed. The broker is lab opt-in only.
-Dated history, not the live tip: maintainer `ariryski` recorded a narrow
-APPROVE at `527839070b034b4bb7c60ac8f89628ef8e5d9e30`
-([review 5328415015](https://github.com/jryski/Supabase_user_MCP/pull/79#pullrequestreview-5328415015)),
-and a disposable loopback dual-grant M4 receipt passed at that same head
-([comment 5869208644](https://github.com/jryski/Supabase_user_MCP/pull/79#issuecomment-5869208644)).
-That approval and receipt cover that head only. They are not a merge of #79,
-not hosted or live activation, not encrypted refresh-at-rest, and not
-completion of
+This page does not merge #79, does not claim hosted or live activation, does
+not claim encrypted refresh-at-rest, and does not complete
 [issue #62](https://github.com/jryski/Supabase_user_MCP/issues/62).
 No live M4 expansion is claimed here without the maintainer.
 
-Receipt limits and the earlier residual-F3 head stay in the
+Dated review history stays in the
 [status note](docs/status/2026-09-23-lab-dual-grant-draft.md). The
 [roadmap](docs/ROADMAP.md) points at the same draft.
 
