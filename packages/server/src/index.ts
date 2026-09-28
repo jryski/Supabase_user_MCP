@@ -113,6 +113,25 @@ export {
   type RemoteHttpProfileConfig,
 } from './remote-http-profile.js';
 export {
+  createLabDualGrantBroker,
+  LAB_DUAL_GRANT_STATE_MACHINE,
+  LabDualGrantBroker,
+  LabDualGrantError,
+  listenLabOAuthCallback,
+  type LabDualGrantBrokerConfig,
+  type LabDualGrantProfileHook,
+  type LabDualGrantReceipt,
+  type LabUpstreamOAuth,
+} from './lab-dual-grant-broker.js';
+export {
+  buildLabDualGrantM4Receipt,
+  createLiveGoTrueLabUpstream,
+  LAB_DUAL_GRANT_M4_RECEIPT_SCHEMA,
+  LiveGoTrueLabUpstream,
+  type LabDualGrantM4Receipt,
+  type LiveGoTrueLabUpstreamConfig,
+} from './live-gotrue-lab-upstream.js';
+export {
   createRemoteHttpHandlerFromEnvironment,
   handleRemoteHttpConnection,
   listenRemoteHttpHandler,

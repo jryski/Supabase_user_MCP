@@ -165,7 +165,11 @@ An experimental local remote HTTP + OAuth 2.1 profile (`npm run start:remote`,
 `npm run test:remote-oauth`) validates JWKS verification, dual resource binding, PKCE, and live
 access-token revocation inside the disposable loopback lab. The inbound MCP bearer is not forwarded
 to the Data API; dispatch is fail-closed until a supported separate downstream credential exists.
-Downstream credential and hosted live OAuth remain unmet. This is not completion of issue #62.
+[ADR-0006](docs/decisions/0006-downstream-credential-recheck.md) records that recheck. A lab-only
+dual-grant broker can be opted in with `SUPABASE_USER_MCP_LAB_DUAL_GRANT=1` plus an explicit
+in-process hook (`npm run test:lab-dual-grant`). The flag defaults off. Custody is memory-only.
+That path is not hosted activation, not a merge to `main`, and not completion of issue #62.
+Downstream credential and hosted live OAuth remain unmet.
 
 The intended local path is:
 

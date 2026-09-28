@@ -85,3 +85,12 @@ the disposable lab only.
 
 No access token, refresh token, JWT secret, or service-role key is written to this document
 or to operational events.
+
+## Lab dual-grant broker (r2), not #62 completion
+
+[ADR-0006](../decisions/0006-downstream-credential-recheck.md) stays the ordinary-path recheck.
+It does not accept Option 2 for merge or hosted use. A separate lab hook, default off, can
+dispatch fixed `memory_get`, `memory_list_recent`, and `memory_search` with an upstream user
+token held only in process memory. See [LAB_DUAL_GRANT_R2.md](LAB_DUAL_GRANT_R2.md). The
+ordinary handler still returns `403 downstream_credential_unresolved` after a valid MCP bearer
+and still makes zero `/rest/v1` calls. This note does not complete issue #62.

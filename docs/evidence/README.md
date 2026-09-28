@@ -38,7 +38,8 @@ Draft candidates are listed separately and must not be described as merged or ac
 
 | Scope | Evidence | Executable seam | Notes |
 | --- | --- | --- | --- |
-| Experimental local remote HTTP + OAuth 2.1 | [Issue #62 evidence](ISSUE_62_REMOTE_OAUTH_HTTP.md) | `packages/server/src/remote-http-profile.test.ts`, `packages/server/src/local-oauth-pkce.e2e.test.ts`, and `npm run test:remote-oauth` | Fail-closed Data API dispatch. Downstream credential unresolved. Hosted live OAuth unmet. Not #62 completion. |
+| Experimental local remote HTTP + OAuth 2.1 | [Issue #62 evidence](ISSUE_62_REMOTE_OAUTH_HTTP.md) | `packages/server/src/remote-http-profile.test.ts`, `packages/server/src/local-oauth-pkce.e2e.test.ts`, and `npm run test:remote-oauth` | Fail-closed Data API dispatch. [ADR-0006](../decisions/0006-downstream-credential-recheck.md) rechecked 2026-09-22. Hosted live OAuth unmet. Not #62 completion. |
+| Lab-only dual-grant broker r2 | [Lab dual-grant note](LAB_DUAL_GRANT_R2.md) | `npm run test:lab-dual-grant` | Opt-in, default off, memory-only. Ordinary remote stays fail-closed. Not #62 completion. |
 
 Live S5 operational adoption remains gated on an approved caller-context Storage adapter and
 durable evidence backend. S6 semantic summaries have not started.

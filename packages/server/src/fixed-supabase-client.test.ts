@@ -361,6 +361,33 @@ describe('createFixedSupabaseClient', () => {
     });
   });
 
+  it('accepts only an explicit http://127.0.0.1 origin when loopback HTTP is opted in', () => {
+    const fetch = vi.fn<typeof globalThis.fetch>();
+    expect(() =>
+      createFixedSupabaseClient({
+        origin: 'http://127.0.0.1:54321',
+        credentials: { projectPublishableKey: 'sb_publishable_key', userAccessToken: token },
+        fetch,
+      }),
+    ).toThrowError(expect.objectContaining({ code: 'FIXED_CLIENT_INVALID_CREDENTIAL' }));
+    expect(() =>
+      createFixedSupabaseClient({
+        origin: 'http://127.0.0.1:54321',
+        allowLoopbackHttp: true,
+        credentials: { projectPublishableKey: 'sb_publishable_key', userAccessToken: token },
+        fetch,
+      }),
+    ).not.toThrow();
+    expect(() =>
+      createFixedSupabaseClient({
+        origin: 'http://localhost:54321',
+        allowLoopbackHttp: true,
+        credentials: { projectPublishableKey: 'sb_publishable_key', userAccessToken: token },
+        fetch,
+      }),
+    ).toThrowError(expect.objectContaining({ code: 'FIXED_CLIENT_INVALID_CREDENTIAL' }));
+  });
+
   it.each([
     [
       'invalid credential',

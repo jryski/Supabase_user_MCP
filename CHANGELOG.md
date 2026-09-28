@@ -22,6 +22,15 @@ the first public package is released.
   Dual audience does not authorize MCP bearer passthrough. Downstream credential unresolved; hosted
   live OAuth unmet. See [ADR-0005](docs/decisions/0005-dual-resource-data-api-binding.md)
   and [issue 62 evidence](docs/evidence/ISSUE_62_REMOTE_OAUTH_HTTP.md).
+- [ADR-0006](docs/decisions/0006-downstream-credential-recheck.md) records a 2026-09-22 recheck.
+  Ordinary remote dispatch stays fail-closed. The ADR does not accept Option 2 for merge or hosted use.
+- Lab-only dual-grant broker (custody proposal r2), opt-in and default off, memory-only upstream
+  tokens and ephemeral MCP signing keys. Not issue #62 completion. See
+  [the lab note](docs/evidence/LAB_DUAL_GRANT_R2.md).
+- Lab dual-grant HTTP authorization on that same opt-in: an exact registered
+  `http://127.0.0.1` client callback may use its own port, `GET /oauth/authorize` requires
+  explicit consent, and the lab issuer serves the revocation and JWKS documents it advertises.
+  Ordinary remote HTTP stays fail-closed. This is not an external MCP client result.
 
 ### Fixed
 
