@@ -14,23 +14,27 @@ baseline hook packet. `sql/07` is the additive B and external-A mapping.
 | Forbidden | `lygftpbjgqgvuunkwnxf`, HOUSE, VAULT, production |
 | B profile | `TEST_ONLY_PUBLIC_PKCE` — public client, S256, no secret, scope `email`, no `openid`, no refresh retention |
 | F1 | `sql/06` covers `public.ari_probe_marker` only. Production F1 is every protected surface. |
-| N4 | The real user revokes the OAuth grant from a first-party session, or an admin deletes that session. Do not substitute a service-role shortcut as the N4 proof. |
+| N4 | A-session revocation only. Revoke or delete the Token A source session. Not the B grant. |
 
 ## G5 before any hosted write
 
-Warden reviews the exact commit you are about to apply. Stop if the reviewed
-tree is not the pushed Lane B head. Do not enable Authentication → Hooks,
-do not run the SQL, and do not start the external client until that review
-is recorded.
+Warden reviews the exact commit you are about to apply. Stop if that review
+is not recorded for the commit you will execute. Do not enable
+Authentication → Hooks, do not run the SQL, and do not start the external
+client until then.
+
+G5 PASS for the Lane B packet is
+`8f2de7ecadaad023ac9d292a5577ad69bdd8d8e8` (tree
+`f3e06397770fdc4a60a036529896ffe030e8b6f4`). Lane A is closed at
+`6e142ed510bab5c6b15312e0d25530f5840d0424`, which is the parent of the first
+Lane B commit, not the parent of later orchestration commits. A later tip is
+not a G5 re-PASS and is not acceptance.
 
 ```bash
 git fetch origin cursor/supabase-native-user-mcp-g2
 git rev-parse origin/cursor/supabase-native-user-mcp-g2
 git rev-parse origin/cursor/supabase-native-user-mcp-g2^{tree}
 ```
-
-Parent of the Lane B commit must be
-`6e142ed510bab5c6b15312e0d25530f5840d0424`.
 
 ## Stop and report (N25)
 
@@ -73,41 +77,107 @@ select set_config('ari.project_ref', 'odbcejsuuqdzhabjmozi', false);
 Leave Authentication → Hooks disabled until G5 names this function:
 `ari_probe.custom_access_token_hook`.
 
-## Live loopback, after G5
+## Safe controller input
+
+`run` reads the parent environment and prints line-delimited JSON on stdout.
+Stderr is an error code. The child environment is an allowlist: loopback MCP
+URL, external A client id, external A redirect, timeout, and process basics
+such as `PATH`. It is forced to `ARI_LANE_B_LIVE=controller-g5` and
+`ARI_LANE_B_EXECUTE=1`.
+
+Do not put these in the child, and do not pass them on the command line:
+
+- access tokens, refresh tokens, passwords, or service-role keys
+- `ARI_FIRST_PARTY_ACCESS_TOKEN`
+- `ARI_TEST_PUBLISHABLE_KEY` (parent only)
+- `ARI_TEST_JWKS_JSON` (parent only)
+- `ARI_TEST_SUPABASE_URL` (parent only; the child discovers the issuer)
+
+First-party consent stays in the browser. The CLI never reads a bearer from
+stdin. Stdout `controller_action` lines are the only consent prompt:
+
+```json
+{"type":"controller_action","action":"open_authorization","flow":"external_a","authorizationUrl":"https://…","state":"…"}
+```
+
+`flow` is `external_a` or `downstream_b`. Open `authorizationUrl` in the
+browser. The redirect returns to loopback with `code` and `state` only. Do
+not copy the code into the shell. The last stdout line is a receipt with
+`acceptance: false`. It has no token, code, or refresh token.
+
+Without `ARI_LANE_B_EXECUTE=1`, `run` exits 2 and prints
+`live_runtime_not_started`. It does not listen and does not spawn the child.
+
+## Local proof, not a hosted run
+
+This proves the CLI entrypoints call the SDK and the loopback handler. It
+does not contact `odbcejsuuqdzhabjmozi`. It is not G5 re-PASS and not
+acceptance. The hook is not installed.
+
+```bash
+npm run build
+node --test scripts/ari-test-external-ipc.test.mjs
+```
+
+## Live loopback, after a review of the exact commit
 
 ```bash
 unset SUPABASE_SERVICE_ROLE_KEY SUPABASE_SECRET_KEY SERVICE_ROLE_KEY SUPABASE_SERVICE_KEY
+unset ARI_FIRST_PARTY_ACCESS_TOKEN
 export ARI_LANE_B_LIVE=controller-g5
+export ARI_LANE_B_EXECUTE=1
 export ARI_LANE_B_G5_HEAD=<reviewed commit sha>
+export ARI_LANE_B_TIMEOUT_MS=120000
 export ARI_TEST_PROJECT_REF=odbcejsuuqdzhabjmozi
 export ARI_TEST_SUPABASE_URL=https://odbcejsuuqdzhabjmozi.supabase.co
+export ARI_TEST_PUBLISHABLE_KEY=<publishable key>
+export ARI_TEST_JWKS_JSON='<public jwks json>'
 export ARI_EXTERNAL_MCP_URL=http://127.0.0.1:8788/mcp
+export ARI_EXTERNAL_A_CLIENT_ID=<external A client id>
+export ARI_EXTERNAL_A_REDIRECT_URI=http://127.0.0.1:8788/oauth/callback
+export ARI_DOWNSTREAM_CLIENT_ID=<B client id>
 export ARI_DOWNSTREAM_REDIRECT_URI=http://127.0.0.1:8788/oauth/downstream/callback
+export ARI_AGENT_ID=<trusted agent id>
 node scripts/run-ari-test-external-e2e.mjs plan
 node scripts/run-ari-test-external-e2e.mjs run
 ```
 
-The child process may print authorization URLs, authorization codes, and
-OAuth `state` only. It must not print Token A, Token B, or a refresh token.
-The parent completes consent in the browser. B is bound only when the
-callback `state` matches the handshake minted for that verified A.
+When a `controller_action` line appears, open that URL in the browser where
+the TEST user already has a session. External A redirects to
+`/oauth/callback`. B redirects to `/oauth/downstream/callback`. The parent
+binds B only when that callback `state` matches the handshake for the
+verified A. A green receipt still has `acceptance: false`. Hosted contact is
+not acceptance, not a hook install, and not a G5 re-PASS.
 
 Positive checks the controller records later, without pasting tokens:
 
-- P1. External A calls the loopback MCP resource and receives
-  `downstream_authorization_required` plus one handshake.
-- P2. After the B callback, a marker read returns the TEST marker using B.
-- P3. The Data API request's bearer is B, not A.
-- P4. Liveness is called on that request with A's `source_session_id` and
-  A's client id.
-- P5. Restarting the process loses B and the next call asks for a new handshake.
+- P1. External A reaches the loopback MCP resource and the receipt shows one
+  downstream handshake.
+- P2. After the B callback, the marker tool is called with B.
+- P3. The Data API bearer is B, not A.
+- P4. Liveness is called with A's `source_session_id` and A's client id.
+- P5. Restarting the process loses B. The next call asks for a new handshake.
+  This CLI does not prove P5. B is in memory only.
 
-Negative checks:
+Negative checks. Not executed by `run`. Atlas J keeps A-session revocation
+and B-session revocation as separate cases. This runbook used to fold both
+into N4. That was drift.
 
-- N1. Token A used as B is rejected and not stored.
+- N1. Token A used as B is rejected and is not stored.
 - N2. A second synthetic user is a controller step. This packet does not create one.
 - N3. A dead or mismatched A session fails closed before tool dispatch.
-- N4. From a first-party session for the same user, revoke the B grant:
+- N4. A-session revocation. Revoke or delete the Token A `source_session_id`.
+  The next MCP call must fail closed at liveness, before tool dispatch. Do
+  not use a service-role shortcut. This is not the B grant delete.
+- N5. An unbound B token, or a B token whose handshake fields do not all
+  match, is not stored.
+- N6. `openid` on A or B is a structured 403 from the hook.
+- N7. B-session revocation. From a first-party session for the same user,
+  delete the B grant, or admin-delete that B `auth.sessions` row. The next
+  MCP call must fail closed. N7 is not a refresh-token exercise. This packet
+  does not keep refresh tokens.
+
+N7 grant delete, parent shell only. The CLI does not accept this bearer:
 
 ```bash
 curl -sS -X DELETE \
@@ -116,13 +186,15 @@ curl -sS -X DELETE \
   -H "apikey: $ARI_TEST_PUBLISHABLE_KEY"
 ```
 
-  `$ARI_FIRST_PARTY_ACCESS_TOKEN` is the user's own session, not Token A and
-  not a service-role key. An admin delete of that `auth.sessions` row is the
-  other N4 path. The next MCP call must fail closed. N4 is not a refresh-token
-  exercise. This packet does not keep refresh tokens.
-- N5. An unbound B token, or a B token whose handshake fields do not all
-  match, is not stored.
-- N6. `openid` on A or B is a structured 403 from the hook.
+`$ARI_FIRST_PARTY_ACCESS_TOKEN` is the user's own session, not Token A and
+not a service-role key. Unset it before `run`.
+
+## Honest gaps
+
+`run` does not execute N1–N7 or P5. The subprocess test is synthetic
+loopback. It is not hosted client delivery, not acceptance, and not a new
+G5 PASS. The hook is not installed. SQL is not applied. No client is
+registered. No durable B custody and no refresh retention.
 
 ## Rollback
 
