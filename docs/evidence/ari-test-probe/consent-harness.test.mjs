@@ -104,7 +104,8 @@ test('Auth session control is 403 session_not_found and is not revocation', () =
   assert.equal(held.revocationClaimed, false);
   assert.equal(authSessionControl(401, JSON.stringify({ error: 'session_not_found' })).ok, false);
   assert.equal(
-    authSessionControl(403, JSON.stringify({ error: 'session_not_found', access_token: 'x' })).reason,
+    authSessionControl(403, JSON.stringify({ error: 'session_not_found', access_token: 'x' }))
+      .reason,
     'credential_in_body',
   );
 });

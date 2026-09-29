@@ -144,7 +144,12 @@ export function redactCallback(value) {
 
 export function redactTokenBody(body) {
   const parsed = parseJson(body);
-  if (parsed === undefined || parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+  if (
+    parsed === undefined ||
+    parsed === null ||
+    typeof parsed !== 'object' ||
+    Array.isArray(parsed)
+  ) {
     return { ok: false, reason: 'token_body_unreadable', revocationClaimed: false };
   }
   const keys = Object.keys(parsed);
@@ -251,7 +256,9 @@ async function main() {
     }
     return;
   }
-  process.stderr.write('usage: node docs/evidence/ari-test-probe/consent-harness.mjs [plan|redact]\n');
+  process.stderr.write(
+    'usage: node docs/evidence/ari-test-probe/consent-harness.mjs [plan|redact]\n',
+  );
   process.exitCode = 2;
 }
 
