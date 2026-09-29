@@ -29,8 +29,10 @@ import {
  * the handler runs. This adapter never calls either client.
  *
  * Token B, a distinct Data API credential, is unresolved. Authenticated MCP
- * requests fail closed with `downstream_credential_unresolved`. Same-bearer
- * passthrough is not the Data API design (MCP 2026-07-28, G5 / MC1418).
+ * requests fail closed with `downstream_credential_unresolved`.
+ *
+ * Accepted Token A must include aud "authenticated", so it is also a valid
+ * Data API bearer. Separation is not achieved. See the G2 evidence note.
  */
 export const SUPABASE_SERVER_PIN = '1.7.2' as const;
 export const SUPABASE_JS_PIN = '2.117.2' as const;
@@ -88,10 +90,47 @@ function invalidConfig(): never {
   throw new NativeUserMcpConfigError();
 }
 
+const ADAPTER_AUTH_ERROR = 'invalid_token' as const;
+const LIBRARY_ERROR_CODE_HEADER = 'x-supabase-server-error';
+
 function jsonResponse(status: number, error: string): Response {
   return new Response(JSON.stringify({ error }), {
     status,
     headers: JSON_HEADERS,
+  });
+}
+
+function isAdapterAuthBody(body: string): boolean {
+  try {
+    const parsed = JSON.parse(body) as unknown;
+    if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) return false;
+    const record = parsed as Record<string, unknown>;
+    return Object.keys(record).length === 1 && record.error === ADAPTER_AUTH_ERROR;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * `@supabase/server` 1.7.2 still returns `{ code, message }` on auth failure
+ * when `errors.detailed` is false, including the `[@supabase/server]` message
+ * prefix, and sets `x-supabase-server-error`. Map every such 401 onto the
+ * adapter body `{ error: "invalid_token" }`.
+ */
+async function normalizeLibraryAuthFailure(response: Response): Promise<Response> {
+  if (response.status !== 401) return response;
+  const body = await response.text();
+  if (isAdapterAuthBody(body)) {
+    return new Response(body, { status: 401, headers: response.headers });
+  }
+  const headers = new Headers(response.headers);
+  headers.delete('content-length');
+  headers.delete(LIBRARY_ERROR_CODE_HEADER);
+  headers.set('content-type', 'application/json');
+  headers.set('cache-control', 'no-store');
+  return new Response(JSON.stringify({ error: ADAPTER_AUTH_ERROR }), {
+    status: 401,
+    headers,
   });
 }
 
@@ -196,10 +235,10 @@ function respondAfterVerifiedMcpAuth(
   expected: ResolvedNativeUserMcpConfig,
 ): Response {
   if (ctx.authMode !== 'user' || ctx.jwtClaims === null || ctx.userClaims === null) {
-    return jsonResponse(401, 'invalid_token');
+    return jsonResponse(401, ADAPTER_AUTH_ERROR);
   }
   if (ctx.userClaims.id !== ctx.jwtClaims.sub || mcpClaimsRejected(ctx.jwtClaims, expected)) {
-    return jsonResponse(401, 'invalid_token');
+    return jsonResponse(401, ADAPTER_AUTH_ERROR);
   }
   return jsonResponse(403, DOWNSTREAM_CREDENTIAL_UNRESOLVED);
 }
@@ -287,6 +326,6 @@ export function createNativeUserMcpHandler(
   return async (request: Request): Promise<Response> => {
     const bounded = await boundIngress(request);
     if (bounded instanceof Response) return bounded;
-    return gated(bounded);
+    return normalizeLibraryAuthFailure(await gated(bounded));
   };
 }

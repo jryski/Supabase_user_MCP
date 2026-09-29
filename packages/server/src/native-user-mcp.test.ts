@@ -43,8 +43,10 @@ async function signToken(
   claims: {
     readonly audience?: string | string[];
     readonly clientId?: string;
+    readonly issuer?: string;
     readonly role?: string;
     readonly sessionId?: string;
+    readonly omitSessionId?: boolean;
     readonly resource?: string;
     readonly expiresIn?: string;
     readonly userMetadata?: Record<string, unknown>;
@@ -53,18 +55,29 @@ async function signToken(
   const payload: Record<string, unknown> = {
     role: claims.role ?? 'authenticated',
     client_id: claims.clientId ?? CLIENT,
-    session_id: claims.sessionId ?? SESSION,
   };
+  if (claims.omitSessionId !== true) payload.session_id = claims.sessionId ?? SESSION;
   if (claims.resource !== undefined) payload.resource = claims.resource;
   if (claims.userMetadata !== undefined) payload.user_metadata = claims.userMetadata;
   let jwt = new SignJWT(payload)
     .setProtectedHeader({ alg: 'ES256', kid: 'g2-test', typ: 'JWT' })
     .setSubject(PRINCIPAL)
-    .setIssuer(ISSUER)
+    .setIssuer(claims.issuer ?? ISSUER)
     .setAudience(claims.audience ?? [DATA_API_AUDIENCE, RESOURCE])
     .setIssuedAt();
   jwt = jwt.setExpirationTime(claims.expiresIn ?? '2m');
   return jwt.sign(privateKey);
+}
+
+async function expectInvalidToken(response: Response, token?: string): Promise<void> {
+  expect(response.status).toBe(401);
+  expect(response.headers.get('x-supabase-server-error')).toBeNull();
+  const body = await response.text();
+  expect(JSON.parse(body)).toEqual({ error: 'invalid_token' });
+  expect(body).not.toContain('[@supabase/server]');
+  expect(body).not.toContain('INVALID_JWT');
+  expect(body).not.toContain(DOWNSTREAM_CREDENTIAL_UNRESOLVED);
+  if (token !== undefined) expect(body).not.toContain(token);
 }
 
 function handlerFor(jwks: NativeUserMcpConfig['jwks']): (request: Request) => Promise<Response> {
@@ -129,11 +142,10 @@ describe('native user MCP adapter', () => {
     const { jwks } = await es256Jwks();
     const handler = handlerFor(jwks);
     const response = await handler(mcpPost(undefined));
-    expect(response.status).toBe(401);
     const challenge = response.headers.get('WWW-Authenticate') ?? '';
     expect(challenge).toContain('resource_metadata');
     expect(challenge).toContain(`${RESOURCE}/oauth-protected-resource`);
-    expect(await response.text()).not.toContain(DOWNSTREAM_CREDENTIAL_UNRESOLVED);
+    await expectInvalidToken(response);
   });
 
   it('verifies Token A then fail-closes without a Data API call', async () => {
@@ -181,11 +193,34 @@ describe('native user MCP adapter', () => {
       signToken(privateKey, { resource: 'https://other.loopback.invalid/mcp' }),
     ]);
     for (const token of tokens) {
-      const response = await handler(mcpPost(token));
-      expect(response.status).toBe(401);
-      const body = await response.text();
-      expect(body).not.toContain(DOWNSTREAM_CREDENTIAL_UNRESOLVED);
-      expect(body).not.toContain(token);
+      await expectInvalidToken(await handler(mcpPost(token)), token);
+    }
+  });
+
+  it('known gap: resource-only aud is 401, so accepted Token A stays Data API-capable', async () => {
+    // Known gap, not a fix. mcpClaimsRejected requires aud "authenticated" and
+    // the MCP resource. Audience-only minting is out of scope. When Token A
+    // can be resource-scoped without aud "authenticated", this expectation flips.
+    const { privateKey, jwks } = await es256Jwks();
+    const handler = handlerFor(jwks);
+    const token = await signToken(privateKey, { audience: [RESOURCE] });
+    const response = await handler(mcpPost(token));
+    await expectInvalidToken(response, token);
+    expect(response.status).not.toBe(403);
+  });
+
+  it('rejects wrong issuer, wrong signing key, service_role, and missing session_id', async () => {
+    const { privateKey, jwks } = await es256Jwks();
+    const otherKey = await generateKeyPair('ES256', { extractable: true });
+    const handler = handlerFor(jwks);
+    const tokens = await Promise.all([
+      signToken(privateKey, { issuer: 'https://other.loopback.invalid/auth/v1' }),
+      signToken(otherKey.privateKey, {}),
+      signToken(privateKey, { role: 'service_role' }),
+      signToken(privateKey, { omitSessionId: true }),
+    ]);
+    for (const token of tokens) {
+      await expectInvalidToken(await handler(mcpPost(token)), token);
     }
   });
 
@@ -196,8 +231,7 @@ describe('native user MCP adapter', () => {
     const response = await handler(
       new Request(`${RESOURCE}?access_token=${encodeURIComponent(token)}`),
     );
-    expect(response.status).toBe(401);
-    expect(await response.text()).not.toContain(token);
+    await expectInvalidToken(response, token);
   });
 
   it('rejects an oversized body before auth', async () => {

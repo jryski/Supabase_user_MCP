@@ -25,8 +25,22 @@ routes, or a lab dual-grant broker.
 
 | Credential | Role on this branch |
 | --- | --- |
-| Token A | Inbound `Authorization: Bearer` JWT. `withSupabase({ auth: 'user' })` verifies signature, `kid`, expiry, configured issuer (`{supabaseUrl}/auth/v1`), and MCP resource audience against the supplied asymmetric JWKS or JWKS URL. The handler then requires `role=authenticated`, `aud` containing `authenticated`, server-controlled `client_id`, a UUID `sub` and `session_id`, and rejects `user_metadata` authority fields. |
+| Token A | Inbound `Authorization: Bearer` JWT. `withSupabase({ auth: 'user' })` verifies signature, `kid`, expiry, configured issuer (`{supabaseUrl}/auth/v1`), and MCP resource audience against the supplied asymmetric JWKS or JWKS URL. The handler then requires `role=authenticated`, `aud` containing both `authenticated` and the MCP resource, server-controlled `client_id`, a UUID `sub` and `session_id`, and rejects `user_metadata` authority fields. |
 | Token B | Unresolved. No second Data API client is created. A verified Token A returns `403` `{ "error": "downstream_credential_unresolved" }`. |
+
+## Known gap: accepted Token A is Data API-capable
+
+Accepted Token A must carry `aud` `authenticated`. `mcpClaimsRejected` requires
+`DATA_API_AUDIENCE` (`authenticated`) and the MCP resource, so every Token A this
+adapter accepts is also a valid Data API bearer. Separation is not yet achieved.
+Whoever holds Token A can call PostgREST directly and skip MCP governors. No
+passthrough code exists in this adapter, but the credential is passthrough-capable
+by construction. Token B and audience-only minting are out of scope for this
+repair and block G4 later.
+
+A correctly scoped token whose `aud` is only the MCP resource is rejected with
+`401` `{ "error": "invalid_token" }`. That rejection is pinned current behavior,
+not a fix. This draft does not claim the credential split is accepted.
 
 G5 / MC1418: a stock single-grant BYO-MCP path that forwards the inbound JWT to the Data API
 is not MCP `2026-07-28` conformant. `withSupabase` still constructs that same-bearer user
@@ -36,7 +50,8 @@ is built with the fixed non-credential placeholder `g2-unused-admin-client-not-a
 not with `SUPABASE_SECRET_KEY` or a service-role JWT. Explicit `env` is passed so process
 environment secrets are not read.
 
-Same-bearer passthrough is not the finished design.
+Same-bearer passthrough is not the finished design, and it is also not yet
+prevented at the credential: accepted Token A remains Data API-capable.
 
 ## Preserved
 
