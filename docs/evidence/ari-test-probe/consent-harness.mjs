@@ -281,6 +281,58 @@ function queryParam(value, key) {
   }
 }
 
+const OAUTH_ERROR_NAME = /^[a-z0-9_]{1,64}$/u;
+const SESSION_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;
+
+// Explicit OAuth client errors only. server_error and a bare HTTP 500 are not a policy denial.
+const OPENID_POLICY_ERRORS = new Set([
+  'access_denied',
+  'invalid_client',
+  'invalid_grant',
+  'invalid_request',
+  'invalid_scope',
+  'unauthorized_client',
+  'unsupported_grant_type',
+  'unsupported_response_type',
+]);
+
+function oauthErrorName(parsed) {
+  if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) return null;
+  const error = parsed.error ?? parsed.error_code;
+  if (typeof error !== 'string' || !OAUTH_ERROR_NAME.test(error)) return null;
+  return error;
+}
+
+function oauthErrorFrom(response, text) {
+  const fromLocation = queryParam(headerValue(response, 'location'), 'error');
+  if (typeof fromLocation === 'string' && OAUTH_ERROR_NAME.test(fromLocation)) return fromLocation;
+  return oauthErrorName(parseJson(text));
+}
+
+function isOpenIdPolicyDenial(status, errorName) {
+  return (
+    typeof status === 'number' &&
+    status < 500 &&
+    typeof errorName === 'string' &&
+    OPENID_POLICY_ERRORS.has(errorName)
+  );
+}
+
+function passwordSessionId(accessToken) {
+  if (typeof accessToken !== 'string') return null;
+  const parts = accessToken.split('.');
+  if (parts.length < 2) return null;
+  try {
+    const claims = JSON.parse(Buffer.from(parts[1], 'base64url').toString('utf8'));
+    if (claims === null || typeof claims !== 'object' || Array.isArray(claims)) return null;
+    const sessionId = claims.session_id;
+    if (typeof sessionId !== 'string' || !SESSION_ID.test(sessionId)) return null;
+    return sessionId;
+  } catch {
+    return null;
+  }
+}
+
 function idTokenIn(text) {
   const parsed = parseJson(text);
   return (
@@ -401,6 +453,7 @@ async function consentWithCode(input) {
       postStatus: posted.status,
       hasCode: typeof code === 'string' && code.length > 0,
       idTokenPresent,
+      oauthError: oauthErrorName(parseJson(postedText)) ?? oauthErrorName(parseJson(gotText)),
       code,
     });
   } catch {
@@ -558,6 +611,7 @@ async function exchangeWithSecrets(input) {
         exchanged: true,
         status: response.status,
         idTokenPresent: redacted.reason === 'id_token_present',
+        oauthError: oauthErrorName(parsed),
         secretKeyNames: redacted.secretKeyNames ?? [],
         codeChallengeMethod: 'S256',
       }),
@@ -611,34 +665,37 @@ export async function runConsentExchange(input) {
   });
 }
 
-function openIdReceipt(extra) {
+function openIdReceipt(extra, sessionId = null) {
   return baseReceipt({
     label: 'openid_negative',
     openidSent: false,
     rejectionStage: null,
     idTokenPresent: false,
     ...extra,
+    ...(typeof sessionId === 'string' ? { passwordSessionId: sessionId } : {}),
   });
 }
 
 export async function runOpenIdNegative(input) {
+  const sessionId = passwordSessionId(input.userAccessToken);
+  const receipt = (extra) => openIdReceipt(extra, sessionId);
   const guard = guardTarget(input);
-  if (guard) return openIdReceipt({ ok: false, reason: guard });
+  if (guard) return receipt({ ok: false, reason: guard });
   const redirect = assertRedirectUri(input.redirectUri);
-  if (!redirect.ok) return openIdReceipt({ ok: false, reason: redirect.reason });
+  if (!redirect.ok) return receipt({ ok: false, reason: redirect.reason });
   const pkce =
     typeof input.codeVerifier === 'string' && typeof input.codeChallenge === 'string'
       ? { codeVerifier: input.codeVerifier, codeChallenge: input.codeChallenge }
       : createPkce();
   const expectedChallenge = createHash('sha256').update(pkce.codeVerifier).digest('base64url');
   if (pkce.codeChallenge !== expectedChallenge) {
-    return openIdReceipt({ ok: false, reason: 'pkce_s256_mismatch' });
+    return receipt({ ok: false, reason: 'pkce_s256_mismatch' });
   }
   let authorizeEndpoint;
   try {
     authorizeEndpoint = new URL('/auth/v1/oauth/authorize', input.authOrigin).toString();
   } catch {
-    return openIdReceipt({ ok: false, reason: 'auth_origin_unreadable' });
+    return receipt({ ok: false, reason: 'auth_origin_unreadable' });
   }
   const built = buildOpenIdNegativeAuthorizeUrl({
     authorizeEndpoint,
@@ -649,7 +706,7 @@ export async function runOpenIdNegative(input) {
     codeChallenge: pkce.codeChallenge,
     state: input.state ?? 'openid-negative',
   });
-  if (!built.ok) return openIdReceipt({ ok: false, reason: built.reason });
+  if (!built.ok) return receipt({ ok: false, reason: built.reason });
   let authorized;
   try {
     const response = await input.fetch(built.url, {
@@ -659,7 +716,7 @@ export async function runOpenIdNegative(input) {
     });
     authorized = { response, text: await readBody(response) };
   } catch {
-    return openIdReceipt({
+    return receipt({
       ok: false,
       reason: 'authorize_transport_failed',
       openidSent: true,
@@ -667,7 +724,7 @@ export async function runOpenIdNegative(input) {
     });
   }
   if (idTokenIn(authorized.text)) {
-    return openIdReceipt({
+    return receipt({
       ok: false,
       reason: 'id_token_present',
       openidSent: true,
@@ -675,22 +732,39 @@ export async function runOpenIdNegative(input) {
       idTokenPresent: true,
     });
   }
-  const authorizeError =
-    authorized.response.status >= 400 ||
-    queryParam(headerValue(authorized.response, 'location'), 'error') !== null;
+  const authorizeStatus = authorized.response.status;
+  const authorizeErrorName = oauthErrorFrom(authorized.response, authorized.text);
   const authorizationId = authorizationIdFrom(authorized.response, authorized.text);
-  if (authorizeError || authorizationId === null) {
-    return openIdReceipt({
+  if (typeof authorizeStatus === 'number' && authorizeStatus >= 500) {
+    return receipt({
+      ok: false,
+      reason: 'authorize_server_error',
+      openidSent: true,
+      rejectionStage: 'authorize',
+      authorizeStatus,
+    });
+  }
+  if (isOpenIdPolicyDenial(authorizeStatus, authorizeErrorName)) {
+    return receipt({
       ok: true,
       reason: 'openid_rejected',
       openidSent: true,
       rejectionStage: 'authorize',
-      authorizeStatus: authorized.response.status,
+      authorizeStatus,
+    });
+  }
+  if (authorizationId === null) {
+    return receipt({
+      ok: false,
+      reason: 'authorize_inconclusive',
+      openidSent: true,
+      rejectionStage: 'authorize',
+      authorizeStatus,
     });
   }
   const consent = await consentWithCode({ ...input, authorizationId });
   if (consent.idTokenPresent === true) {
-    return openIdReceipt({
+    return receipt({
       ok: false,
       reason: 'id_token_present',
       openidSent: true,
@@ -698,13 +772,44 @@ export async function runOpenIdNegative(input) {
       idTokenPresent: true,
     });
   }
-  if (consent.ok !== true || typeof consent.code !== 'string' || consent.code.length === 0) {
-    return openIdReceipt({
-      ok: true,
-      reason: 'openid_rejected',
+  if (consent.reason === 'consent_transport_failed') {
+    return receipt({
+      ok: false,
+      reason: 'consent_transport_failed',
       openidSent: true,
-      rejectionStage: 'authorize',
-      authorizeStatus: authorized.response.status,
+      rejectionStage: 'consent',
+    });
+  }
+  const consentStatus =
+    typeof consent.postStatus === 'number' ? consent.postStatus : consent.getStatus;
+  if (typeof consentStatus === 'number' && consentStatus >= 500) {
+    return receipt({
+      ok: false,
+      reason: 'consent_server_error',
+      openidSent: true,
+      rejectionStage: 'consent',
+      consentStatus,
+    });
+  }
+  if (consent.ok !== true || typeof consent.code !== 'string' || consent.code.length === 0) {
+    if (isOpenIdPolicyDenial(consentStatus, consent.oauthError)) {
+      return receipt({
+        ok: true,
+        reason: 'openid_rejected',
+        openidSent: true,
+        rejectionStage: 'consent',
+        consentStatus,
+      });
+    }
+    return receipt({
+      ok: false,
+      reason:
+        consent.reason === 'authorization_id_required'
+          ? 'authorize_inconclusive'
+          : 'consent_inconclusive',
+      openidSent: true,
+      rejectionStage: consent.reason === 'authorization_id_required' ? 'authorize' : 'consent',
+      consentStatus: consentStatus ?? null,
     });
   }
   const exchange = await exchangeAuthorizationCode({
@@ -715,7 +820,7 @@ export async function runOpenIdNegative(input) {
     redirectUri: redirect.redirectUri,
   });
   if (exchange.idTokenPresent === true) {
-    return openIdReceipt({
+    return receipt({
       ok: false,
       reason: 'id_token_present',
       openidSent: true,
@@ -724,22 +829,55 @@ export async function runOpenIdNegative(input) {
       exchangeStatus: exchange.status,
     });
   }
+  if (exchange.reason === 'exchange_transport_failed' || exchange.exchanged !== true) {
+    return receipt({
+      ok: false,
+      reason:
+        exchange.reason === 'exchange_transport_failed'
+          ? 'exchange_transport_failed'
+          : (exchange.reason ?? 'exchange_failed'),
+      openidSent: true,
+      rejectionStage: 'exchange',
+      exchangeStatus: typeof exchange.status === 'number' ? exchange.status : null,
+      codeChallengeMethod: 'S256',
+    });
+  }
+  if (typeof exchange.status === 'number' && exchange.status >= 500) {
+    return receipt({
+      ok: false,
+      reason: 'exchange_server_error',
+      openidSent: true,
+      rejectionStage: 'exchange',
+      exchangeStatus: exchange.status,
+      codeChallengeMethod: 'S256',
+    });
+  }
   const httpOk =
     typeof exchange.status === 'number' && exchange.status >= 200 && exchange.status < 300;
   if (httpOk && exchange.ok === true) {
-    return openIdReceipt({
+    return receipt({
       ok: false,
       reason: 'openid_exchange_succeeded',
       openidSent: true,
       exchangeStatus: exchange.status,
     });
   }
-  return openIdReceipt({
-    ok: true,
-    reason: 'openid_rejected',
+  if (isOpenIdPolicyDenial(exchange.status, exchange.oauthError)) {
+    return receipt({
+      ok: true,
+      reason: 'openid_rejected',
+      openidSent: true,
+      rejectionStage: 'exchange',
+      exchangeStatus: exchange.status,
+      codeChallengeMethod: 'S256',
+    });
+  }
+  return receipt({
+    ok: false,
+    reason: 'exchange_inconclusive',
     openidSent: true,
     rejectionStage: 'exchange',
-    exchangeStatus: exchange.status,
+    exchangeStatus: typeof exchange.status === 'number' ? exchange.status : null,
     codeChallengeMethod: 'S256',
   });
 }
@@ -1065,6 +1203,9 @@ export async function runInProcessProbe(input) {
       secrets,
     );
   }
+  const residualSessionId = passwordSessionId(login.accessToken);
+  const residualSession =
+    typeof residualSessionId === 'string' ? { passwordSessionId: residualSessionId } : {};
   const consent = await consentWithCode({
     fetch: fetchImpl,
     authOrigin: input.authOrigin,
@@ -1084,6 +1225,7 @@ export async function runInProcessProbe(input) {
         probeRan: false,
         idTokenPresent: consent.idTokenPresent === true,
         tokenBInMemory: true,
+        ...residualSession,
       }),
       secrets,
     );
@@ -1118,6 +1260,7 @@ export async function runInProcessProbe(input) {
         tokenAInMemory: false,
         tokenBInMemory: true,
         codeChallengeMethod: 'S256',
+        ...residualSession,
       }),
       secrets,
     );
@@ -1157,6 +1300,7 @@ export async function runInProcessProbe(input) {
       codeChallengeMethod: 'S256',
       openidSent: false,
       probe: publicProbeSummary(probe),
+      ...(probe?.ok === true ? {} : residualSession),
     }),
     secrets,
   );

@@ -29,7 +29,10 @@ status is inconclusive unless it is `401` or `403` with Postgres `42501`.
 Storage denial is `404`, or `400`/`403` whose body names `not_found`,
 `Object not found`, or `unauthorized`. A `DatabaseError` or any other `400`
 is inconclusive. Realtime counts as denial only for an explicit unauthorized
-reply. A generic or transport error is inconclusive.
+reply. Token A transport is `realtime_transport`, not deny. GraphQL Token B
+positive control requires `pg_graphql`. This packet does not enable it. A
+body that says `pg_graphql` is not installed is `graphql_prerequisite_missing`,
+not a permission result.
 
 A body with Postgres `22023`, or `role "…" does not exist`, is
 `ingress_role_missing` on Auth, GraphQL, and Storage. That is a named
@@ -195,8 +198,11 @@ TEST.
 
 `buildAuthorizeUrl` still refuses `openid`. The labelled path
 `openid_negative` (`buildOpenIdNegativeAuthorizeUrl` and `runOpenIdNegative`)
-sends `openid` on purpose. It expects failure and no `id_token`. The receipt
-records `rejectionStage` as `authorize` or `exchange`.
+sends `openid` on purpose. It expects no `id_token`. `openid_rejected` is a
+pass only for an explicit OAuth error below HTTP 500. A generic `500` is
+`exchange_server_error` or `authorize_server_error`. Transport failure stays
+a transport reason. A missing authorization id is `authorize_inconclusive`.
+Those are not a pass.
 
 `node docs/evidence/ari-test-probe/consent-harness.mjs run` is one process:
 authorize, the synthetic user's password login, consent, code exchange, then
@@ -207,8 +213,8 @@ access token. Both stay in memory. The command does not export them and
 does not write them to a file. Stdout is only the redacted receipt.
 
 `node docs/evidence/ari-test-probe/consent-harness.mjs openid-negative`
-sends `openid` on purpose. It expects failure and no `id_token`. It does
-not call `runProbe`.
+sends `openid` on purpose. It expects no `id_token`. It does not call
+`runProbe`. A generic HTTP 500 is not `openid_rejected`.
 
 Do not run either command against hosted TEST from this branch.
 `consent-harness.mjs redact` reads a response on stdin and prints key names
@@ -280,10 +286,10 @@ curl -sS -X POST \
 ```
 
 Label `openid_negative`. This authorize URL sends `scope=openid` on purpose.
-If this response is an error, record rejection at authorize and stop. If a
-code is issued, run the consent commands above and then the token command.
-A failed token response is rejection at exchange. A body that contains
-`id_token` fails the receipt.
+`openid_rejected` means an explicit OAuth error below HTTP 500 and no
+`id_token`. HTTP 500 is `exchange_server_error` or `authorize_server_error`.
+A missing authorization id is `authorize_inconclusive`. Transport failure
+is not a pass. A body that contains `id_token` fails the receipt.
 
 ```bash
 curl -sS \
@@ -301,9 +307,9 @@ curl -sS \
 | `POST /auth/v1/factors` | Token A | `401` or `403` | `2xx` is NO-GO; other statuses are inconclusive |
 | `POST /auth/v1/logout` | Token A | `401` or `403` | `2xx` is NO-GO; other statuses are inconclusive |
 | REST `/rest/v1/ari_probe_marker` | publishable, Token A, Token B | Token A is `401` or `403` with `42501`; Token B is `200` and a row `marker` | Token A contains the marker, or the status is not that denial |
-| GraphQL `/graphql/v1` | same pair | Token A is HTTP `200` with `data` and no collection, or `errors` that name the collection; Token B is `200` and the marker node | Any other Token A GraphQL result, including a bare JSON object |
+| GraphQL `/graphql/v1` | same pair | Requires `pg_graphql`. This packet does not enable it. Token A is HTTP `200` with `data` and no collection, or `errors` that name the collection; Token B is `200` and the marker node | Missing `pg_graphql` is `graphql_prerequisite_missing`. Any other Token A GraphQL result, including a bare JSON object, stays inconclusive |
 | Storage `ari-probe-synthetic/marker.txt` | Token B seed is `2xx` or `409`, then the same pair | Token A is `404`, or `400`/`403` naming not found or unauthorized; Token B GET is `200` and the marker bytes | Token A `400` `DatabaseError`, or any other `400` |
-| Realtime private topic `ari-probe-synthetic` | Token A, Token B | Token A reply is explicit unauthorized; Token B join is `ok` | Token A join is `ok`, or the error is only transport |
+| Realtime private topic `ari-probe-synthetic` | Token A, Token B | Token A reply is explicit unauthorized; Token B join is `ok` | Token A join `ok` is NO-GO. Token A transport is `realtime_transport`, not deny |
 
 Exit `0` means this matrix held. It does not mean acceptance or Token A
 separation. Exit `2` is a target or credential guard. Exit `3` means Token A was not sent because it is still `role=authenticated`,

@@ -307,6 +307,7 @@ export async function runProbe(options) {
       method: 'POST',
       body: GRAPHQL_QUERY,
     },
+    // Positive control requires pg_graphql. This probe does not enable it.
   ];
 
   for (const surface of surfaces) {
@@ -371,6 +372,7 @@ export async function runProbe(options) {
       topic: REALTIME_TOPIC,
     });
     requests += 1;
+    // Token A transport is realtime_transport. It is not deny.
     const verdict = realtimeVerdict(kind, status);
     rows.push({
       id: `L5-realtime-${kind === 'token_a' ? 'token-a' : 'token-b'}`,

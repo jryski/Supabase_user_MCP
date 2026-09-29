@@ -11,10 +11,12 @@ import {
   dataRowVerdict,
   EXPECTED_CLIENT_ID,
   FORBIDDEN_PROJECT_REFS,
+  graphqlPrerequisiteMissing,
   INGRESS_ROLE,
   MARKER,
   MCP_EDGE_ACCEPTANCE,
   MCP_RESOURCE,
+  plan,
   realtimeVerdict,
   storageSeedVerdict,
 } from './decisions.mjs';
@@ -247,12 +249,98 @@ test('503 auth responses and realtime transport are not a pass', async () => {
     4,
   );
   const realtime = result.rows.find((row) => row.id === 'L5-realtime-token-a');
-  assert.equal(realtime.verdict, 'inconclusive');
+  assert.equal(realtime.verdict, 'realtime_transport');
   assert.notEqual(realtime.verdict, 'deny');
-  assert.equal(realtimeVerdict('token_a', 'transport').verdict, 'inconclusive');
+  assert.equal(realtimeVerdict('token_a', 'transport').verdict, 'realtime_transport');
+  assert.equal(realtimeVerdict('token_a', 'denied').verdict, 'deny');
+  assert.notEqual(realtimeVerdict('token_a', 'transport').verdict, 'deny');
   assert.equal(authRowVerdict(503, false).verdict, 'inconclusive');
   assert.equal(authRowVerdict(429, true).verdict, 'inconclusive');
   assert.equal(authRowVerdict(302, true).verdict, 'inconclusive');
+});
+
+test('graphql prerequisite and realtime transport are not deny', async () => {
+  const planned = plan();
+  assert.equal(planned.graphqlPositivePrerequisite, 'pg_graphql');
+  assert.equal(planned.realtimeTokenATransport, 'realtime_transport');
+  assert.match(planned.rows.join('\n'), /does not enable it/);
+  const missing = JSON.stringify({
+    errors: [{ message: 'extension "pg_graphql" is not installed' }],
+  });
+  assert.equal(graphqlPrerequisiteMissing(missing), true);
+  assert.equal(graphqlPrerequisiteMissing(GRAPHQL_OK), false);
+  const tokenBMissing = dataRowVerdict('graphql', 'token_b', 200, missing);
+  assert.equal(tokenBMissing.verdict, 'graphql_prerequisite_missing');
+  assert.equal(tokenBMissing.stop, true);
+  assert.notEqual(tokenBMissing.verdict, 'deny');
+  assert.notEqual(tokenBMissing.verdict, 'positive_control');
+  assert.notEqual(tokenBMissing.verdict, 'inconclusive');
+  const tokenAMissing = dataRowVerdict('graphql', 'token_a', 200, missing);
+  assert.equal(tokenAMissing.verdict, 'graphql_prerequisite_missing');
+  assert.notEqual(tokenAMissing.verdict, 'deny');
+  assert.equal(dataRowVerdict('graphql', 'token_b', 200, GRAPHQL_OK).verdict, 'positive_control');
+
+  const probe = await readyProbe();
+  const heldExcept = async (override, joinRealtime) =>
+    runProbe(
+      await readyProbe({
+        tokenA: probe.tokenA,
+        tokenB: probe.tokenB,
+        jwks: probe.jwks,
+        joinRealtime,
+        fetch: async (url, init) => {
+          const path = new URL(url).pathname;
+          const token = init.headers.authorization ?? '';
+          const tokenB = token.includes(probe.tokenB);
+          const kind = token.length === 0 ? 'publishable' : tokenB ? 'token_b' : 'token_a';
+          const replaced = override(path, kind);
+          if (replaced !== undefined) return replaced;
+          if (path === '/auth/v1/user' && init.method === 'GET' && tokenB)
+            return userResponse(SUBJECT);
+          if (path.startsWith('/auth/')) return new Response(REST_DENY, { status: 401 });
+          if (path === '/rest/v1/ari_probe_marker') {
+            if (!token) return new Response('[]', { status: 200 });
+            if (tokenB) return new Response(REST_OK, { status: 200 });
+            return new Response(REST_DENY, { status: 401 });
+          }
+          if (path === '/graphql/v1') {
+            if (!token) return new Response('{"data":{}}', { status: 200 });
+            if (tokenB) return new Response(GRAPHQL_OK, { status: 200 });
+            return new Response(GRAPHQL_DENY, { status: 200 });
+          }
+          if (init.method === 'POST') return new Response('', { status: 200 });
+          if (tokenB) return new Response(MARKER, { status: 200 });
+          return new Response('missing', { status: 404 });
+        },
+      }),
+    );
+
+  const graphql = await heldExcept(
+    (path, kind) =>
+      path === '/graphql/v1' && kind === 'token_b'
+        ? new Response(missing, { status: 200 })
+        : undefined,
+    async ({ token }) => (token === probe.tokenB ? 'ok' : 'denied'),
+  );
+  assert.equal(graphql.exitCode, 4);
+  assert.equal(graphql.reason, 'graphql_prerequisite_missing');
+  assert.notEqual(graphql.reason, 'matrix_held');
+  assert.notEqual(graphql.reason, 'deny');
+  const graphqlRow = graphql.rows.find((row) => row.id === 'L5-graphql-token_b');
+  assert.equal(graphqlRow.verdict, 'graphql_prerequisite_missing');
+  assert.equal(graphqlRow.status, 200);
+
+  const transport = await heldExcept(
+    () => undefined,
+    async ({ token }) => (token === probe.tokenB ? 'ok' : 'transport'),
+  );
+  assert.equal(transport.exitCode, 4);
+  assert.equal(transport.reason, 'realtime_transport');
+  assert.notEqual(transport.reason, 'deny');
+  assert.notEqual(transport.reason, 'matrix_held');
+  const transportRow = transport.rows.find((row) => row.id === 'L5-realtime-token-a');
+  assert.equal(transportRow.status, 'transport');
+  assert.equal(transportRow.verdict, 'realtime_transport');
 });
 
 test('stops on the first Token A mutation success', async () => {

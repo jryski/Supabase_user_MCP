@@ -259,6 +259,7 @@ test('openid_negative sends openid and records authorize or exchange rejection',
     },
   });
   assert.equal(atAuthorize.ok, true);
+  assert.equal(atAuthorize.reason, 'openid_rejected');
   assert.equal(atAuthorize.label, 'openid_negative');
   assert.equal(atAuthorize.openidSent, true);
   assert.equal(atAuthorize.rejectionStage, 'authorize');
@@ -283,6 +284,7 @@ test('openid_negative sends openid and records authorize or exchange rejection',
     },
   });
   assert.equal(atExchange.ok, true);
+  assert.equal(atExchange.reason, 'openid_rejected');
   assert.equal(atExchange.rejectionStage, 'exchange');
   assert.equal(atExchange.idTokenPresent, false);
   assert.equal(atExchange.codeChallengeMethod, 'S256');
@@ -326,6 +328,156 @@ test('openid_negative sends openid and records authorize or exchange rejection',
   assert.equal(printed.includes(idToken), false);
 });
 
+test('openid_negative does not pass a generic 500, transport failure, or missing authorization', async () => {
+  const pkce = createPkce();
+  const sessionId = '44444444-4444-4444-8444-444444444444';
+  const decoySessionId = '55555555-5555-4555-8555-555555555555';
+  const payload = Buffer.from(
+    JSON.stringify({
+      session_id: sessionId,
+      user_metadata: { session_id: decoySessionId },
+    }),
+  ).toString('base64url');
+  const session = `eyJhbGciOiJFUzI1NiJ9.${payload}.c2ln`;
+  const code = 'openid-code-must-not-leak';
+  const base = {
+    authOrigin: 'https://odbcejsuuqdzhabjmozi.supabase.co',
+    userAccessToken: session,
+    publishableKey: 'publishable-key',
+    clientId: CLIENT,
+    redirectUri: REDIRECT,
+    resource: RESOURCE,
+    codeVerifier: pkce.codeVerifier,
+    codeChallenge: pkce.codeChallenge,
+    scopes: ['openid', 'email'],
+  };
+  const route = (tokenResponse) => async (url, init) => {
+    const href = `${url}`;
+    if (href.includes('/oauth/authorize?')) {
+      return jsonResponse(302, '', { location: '/oauth/consent?authorization_id=authz-openid' });
+    }
+    if (init?.method === 'GET') return jsonResponse(200, { authorization_id: 'authz-openid' });
+    if (href.endsWith('/consent')) {
+      return jsonResponse(200, { redirect_url: `http://127.0.0.1:8787/callback?code=${code}` });
+    }
+    return tokenResponse();
+  };
+
+  const serverError = await runOpenIdNegative({
+    ...base,
+    fetch: route(() => jsonResponse(500, { message: 'internal server error' })),
+  });
+  assert.equal(serverError.ok, false);
+  assert.equal(serverError.reason, 'exchange_server_error');
+  assert.notEqual(serverError.reason, 'openid_rejected');
+  assert.equal(serverError.rejectionStage, 'exchange');
+  assert.equal(serverError.exchangeStatus, 500);
+  assert.equal(serverError.idTokenPresent, false);
+  assert.equal(serverError.passwordSessionId, sessionId);
+  assert.notEqual(serverError.passwordSessionId, decoySessionId);
+
+  const transport = await runOpenIdNegative({
+    ...base,
+    fetch: route(() => {
+      throw new Error('socket hang up');
+    }),
+  });
+  assert.equal(transport.ok, false);
+  assert.equal(transport.reason, 'exchange_transport_failed');
+  assert.notEqual(transport.reason, 'openid_rejected');
+  assert.equal(transport.passwordSessionId, sessionId);
+
+  const missingAuthorization = await runOpenIdNegative({
+    ...base,
+    fetch: async () => jsonResponse(200, { message: 'continue' }),
+  });
+  assert.equal(missingAuthorization.ok, false);
+  assert.equal(missingAuthorization.reason, 'authorize_inconclusive');
+  assert.notEqual(missingAuthorization.reason, 'openid_rejected');
+  assert.equal(missingAuthorization.rejectionStage, 'authorize');
+  assert.equal(missingAuthorization.passwordSessionId, sessionId);
+
+  const authorizeServer = await runOpenIdNegative({
+    ...base,
+    fetch: async () => jsonResponse(500, { error: 'server_error' }),
+  });
+  assert.equal(authorizeServer.ok, false);
+  assert.equal(authorizeServer.reason, 'authorize_server_error');
+  assert.notEqual(authorizeServer.reason, 'openid_rejected');
+
+  const consentServer = await runOpenIdNegative({
+    ...base,
+    fetch: async (url, init) => {
+      const href = `${url}`;
+      if (href.includes('/oauth/authorize?')) {
+        return jsonResponse(302, '', { location: '/oauth/consent?authorization_id=authz-openid' });
+      }
+      if (init?.method === 'GET') return jsonResponse(200, { authorization_id: 'authz-openid' });
+      if (href.endsWith('/consent')) return jsonResponse(500, { message: 'internal' });
+      throw new Error('unexpected request');
+    },
+  });
+  assert.equal(consentServer.ok, false);
+  assert.equal(consentServer.reason, 'consent_server_error');
+  assert.notEqual(consentServer.reason, 'openid_rejected');
+
+  const printed = JSON.stringify({
+    serverError,
+    transport,
+    missingAuthorization,
+    authorizeServer,
+    consentServer,
+  });
+  assert.equal(printed.includes(session), false);
+  assert.equal(printed.includes(code), false);
+  assert.equal(printed.includes(pkce.codeVerifier), false);
+  assert.equal(printed.includes(decoySessionId), false);
+});
+
+test('failure receipts keep the password session id and drop the access token', async () => {
+  const sessionId = '44444444-4444-4444-8444-444444444444';
+  const payload = Buffer.from(JSON.stringify({ session_id: sessionId })).toString('base64url');
+  const tokenB = `eyJhbGciOiJFUzI1NiJ9.${payload}.c2ln`;
+  const code = 'auth-code-must-not-leak-cccc';
+  const password = 'synthetic-password-must-not-leak';
+  const env = {
+    ARI_TEST_PROJECT_REF: 'odbcejsuuqdzhabjmozi',
+    ARI_TEST_SUPABASE_URL: 'https://odbcejsuuqdzhabjmozi.supabase.co',
+    ARI_TEST_PUBLISHABLE_KEY: 'publishable-key',
+    ARI_TEST_EXPECTED_CLIENT_ID: CLIENT,
+    ARI_TEST_JWKS_JSON: '{"keys":[]}',
+    ARI_TEST_SYNTHETIC_PASSWORD: password,
+    ARI_TEST_REDIRECT_URI: REDIRECT,
+  };
+  const captured = await captureProcessStreams(() =>
+    runCli(['node', 'consent-harness.mjs', 'run'], {
+      env,
+      fetch: async (url, init) => {
+        const href = `${url}`;
+        if (href.includes('grant_type=password')) {
+          return jsonResponse(200, { access_token: tokenB, token_type: 'bearer' });
+        }
+        if (href.includes('/oauth/authorize?')) {
+          return jsonResponse(302, '', { location: '/oauth/consent?authorization_id=authz-run' });
+        }
+        if (init?.method === 'GET' && href.includes('/oauth/authorizations/')) {
+          return jsonResponse(200, { authorization_id: 'authz-run' });
+        }
+        if (href.endsWith('/consent')) {
+          return jsonResponse(200, { redirect_url: `${REDIRECT}?code=${code}` });
+        }
+        if (href.endsWith('/oauth/token')) return jsonResponse(500, { message: 'internal' });
+        throw new Error('unexpected request');
+      },
+    }),
+  );
+  const receipt = jsonLine(captured.stdout, '"stage":"exchange"');
+  assert.equal(captured.result, 4);
+  assert.equal(receipt.probeRan, false);
+  assert.equal(receipt.passwordSessionId, sessionId);
+  assertStreamsClean(captured, [tokenB, code, password]);
+});
+
 test('redact drops consent redirect codes and the README pipes the live commands', async () => {
   const code = 'readme-code-must-not-leak';
   const redacted = redactResponseBody(
@@ -344,6 +496,7 @@ test('redact drops consent redirect codes and the README pipes the live commands
   assert.match(readme, /adapter has no liveness check/);
   const cleanup = await readFile(new URL('./oauth-session-cleanup.md', import.meta.url), 'utf8');
   assert.match(cleanup, /probe\.tokenA\.source_session_id/);
+  assert.match(cleanup, /passwordSessionId/);
   assert.match(cleanup, /Do not decode Token A/);
   assert.match(cleanup, /not a revocation receipt/);
   assert.match(cleanup, /Not executed from this branch/);

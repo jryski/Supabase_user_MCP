@@ -16,6 +16,12 @@ Do not delete by the fresh `session_id` claim. That value is not an
 `auth.sessions` row. Do not drop the synthetic user, the marker fixture,
 or `mcp_ingress`.
 
+A failed `run` receipt and an `openid-negative` receipt include
+`passwordSessionId` when the password-grant access token carried a top-level
+`session_id` claim. That value is `auth.sessions.id` for the residual
+password session. Use it when `probe.tokenA.source_session_id` is absent.
+Do not decode Token A or Token B. Do not paste the access token.
+
 Confirm the dashboard ref before the batch. Stop if it is not the TEST ref.
 Replace `<source_session_id>` with `probe.tokenA.source_session_id` from the
 redacted probe receipt. That summary also includes `session_id`, `agent_id`,

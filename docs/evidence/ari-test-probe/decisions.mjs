@@ -312,7 +312,22 @@ function tokenADataVerdict(surface, status, body) {
   return inconclusive();
 }
 
+const PG_GRAPHQL_MISSING =
+  /pg_graphql[\s\S]{0,80}(?:not installed|not enabled|does not exist|is not available)/i;
+
+/** GraphQL positive control needs pg_graphql. This packet does not enable it. */
+export function graphqlPrerequisiteMissing(body) {
+  return typeof body === 'string' && PG_GRAPHQL_MISSING.test(body);
+}
+
+function graphqlPrerequisiteVerdict(body) {
+  if (!graphqlPrerequisiteMissing(body)) return null;
+  return { verdict: 'graphql_prerequisite_missing', stop: true };
+}
+
 function tokenAGraphqlVerdict(status, body) {
+  const prerequisite = graphqlPrerequisiteVerdict(body);
+  if (prerequisite !== null) return prerequisite;
   if (status !== 200) {
     if ((status === 401 || status === 403) && postgres42501(body)) {
       return { verdict: 'deny', stop: false };
@@ -360,6 +375,10 @@ function tokenAStorageVerdict(status, body) {
 }
 
 function tokenBDataVerdict(surface, status, body) {
+  if (surface === 'graphql') {
+    const prerequisite = graphqlPrerequisiteVerdict(body);
+    if (prerequisite !== null) return prerequisite;
+  }
   if (status !== 200) return stopNoGo('positive_control_missed');
   if (surface === 'rest') {
     const matched = markerRows(body);
@@ -418,6 +437,7 @@ export function realtimeVerdict(kind, status) {
   if (kind === 'token_a') {
     if (status === 'ok') return stopNoGo('NO_GO_TOKEN_A_GAINED_ACCESS');
     if (status === 'denied') return { verdict: 'deny', stop: false };
+    if (status === 'transport') return { verdict: 'realtime_transport', stop: false };
     return inconclusive();
   }
   if (kind === 'token_b') {
@@ -510,6 +530,8 @@ export function plan() {
     wiredIntoMcp: false,
     acceptance: false,
     realtimeTopic: REALTIME_TOPIC,
+    graphqlPositivePrerequisite: 'pg_graphql',
+    realtimeTokenATransport: 'realtime_transport',
     rows: [
       'L7 baseline SECURITY DEFINER / PUBLIC EXECUTE before the run',
       'L0 Token A signature, expiry, client, and MCP-edge acceptance',
@@ -519,9 +541,9 @@ export function plan() {
       'L6 POST /auth/v1/factors with Token A; stop on 2xx',
       'L6 POST /auth/v1/logout with Token A; stop on 2xx',
       'L5 REST publishable, Token A deny, Token B positive',
-      'L5 GraphQL publishable, Token A deny, Token B positive',
+      'L5 GraphQL requires pg_graphql; this packet does not enable it. Token B positive control is not a permission result without that extension',
       'L5 Storage publishable, Token A deny, Token B positive',
-      'L5 Realtime Token A deny, Token B positive',
+      'L5 Realtime Token A explicit unauthorized is deny; transport is realtime_transport, not deny',
     ],
   };
 }
