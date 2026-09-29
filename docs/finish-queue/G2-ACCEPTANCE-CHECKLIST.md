@@ -14,19 +14,19 @@
 | G2 draft under test | https://github.com/jryski/Supabase_user_MCP/pull/98 (draft, still open) |
 | G2 branch | `cursor/supabase-native-user-mcp-g2` |
 | G2 base | `ariadne/remote-oauth-rebased-20260919` @ `fcbaca121d0717ee8ff98df90b2f12475b05bb78` (same commit as #75) |
-| G2 head (LOCKED) | `67cf73df5390c89697a40295b4cddecbf811881d` |
-| G2 tree (LOCKED) | `fba8bae4887b8e311f7ffbe930461751172f0cb2` |
+| G2 head (LOCKED) | `eb2a4ce8df0cbb88878894d71c5a97d7f0e4cf28` |
+| G2 tree (LOCKED) | `765063a7517d27363ddca71b7cba2ec0f31b2a9d` |
 | G2 agent | `bc-ede9c9e7-f9b9-5441-8a5f-b217b216b4cf` (this checklist does not start another G2) |
 | #79 | **HOLD** — research history only. https://github.com/jryski/Supabase_user_MCP/pull/79 head researched by G1: `80ea3ead7e7daff04d1c86302ec5a5d6c4617d9e`. Not expanded, not reset, not merged by this packet. |
 | Hard gates at this head | **H1 PASS. H2 PASS.** Citation is the #98 delta and `packages/server/src/native-user-mcp.ts` at the locked head. |
 | Formal CONTENT | With the independent verifier. This author does not claim content PASS. Matrix rows stay `verifier`. |
 | Ordinary remote | G1’s `start:remote` path is the pre-existing profile. The #98 delta does not switch it over. Hard-gate PASS below is the new adapter plus that delta, not a content score of every inherited file. |
 
-This checklist is pinned to locked #98 head `67cf73df5390c89697a40295b4cddecbf811881d` (tree `fba8bae4887b8e311f7ffbe930461751172f0cb2`) and to G1/G5 at `95ae3a46`. It does not add a topology, an issuer, an exchange, or a privilege exception.
+This checklist is pinned to locked #98 head `eb2a4ce8df0cbb88878894d71c5a97d7f0e4cf28` (tree `765063a7517d27363ddca71b7cba2ec0f31b2a9d`) and to G1/G5 at `95ae3a46`. It does not add a topology, an issuer, an exchange, or a privilege exception.
 
 ## Locked head
 
-Do not wait for another #98 head. `67cf73df5390c89697a40295b4cddecbf811881d` is the acceptance pin. Tree `fba8bae4887b8e311f7ffbe930461751172f0cb2` matches `git rev-parse 67cf73df^{tree}`.
+The acceptance pin is `eb2a4ce8df0cbb88878894d71c5a97d7f0e4cf28`. Tree `765063a7517d27363ddca71b7cba2ec0f31b2a9d` matches `git rev-parse eb2a4ce8df0cbb88878894d71c5a97d7f0e4cf28^{tree}`. Earlier head `67cf73df` is not the pin.
 
 #98 delta against base `fcbaca121d0717ee8ff98df90b2f12475b05bb78` is 10 files: `CHANGELOG.md`, `docs/evidence/G2_NATIVE_USER_MCP.md`, `docs/evidence/README.md`, `package-lock.json`, `packages/server/package.json`, `packages/server/src/index.ts`, `packages/server/src/native-user-mcp.test.ts`, `packages/server/src/native-user-mcp.ts`, `packages/server/tsconfig.json`, `tsconfig.test.json`. That delta contains no `Iss_M`, no `/oauth/authorize`, `/oauth/token`, or `/oauth/revoke` route, and no lab dual-grant broker.
 
@@ -44,11 +44,29 @@ Adapter behavior at that head (`docs/evidence/G2_NATIVE_USER_MCP.md`, `packages/
 
 These are open on the locked head. They are not a content PASS, and they do not reverse H1 or H2.
 
-| Residual | Where it is stated at `67cf73df` |
+| Residual | Where it is stated at `eb2a4ce8` |
 | --- | --- |
 | Token B missing | `NATIVE_USER_MCP_CREDENTIAL_SPLIT.tokenB` is `unresolved`. No second Data API client is created. Evidence file: do not point Data API calls at the library user client. |
 | Live revocation not implemented | `liveRevocation` is `not-implemented`. An unexpired revoked JWT reaches the fail-closed `403` instead of a revocation denial. |
 | Tools not mounted | The existing read-only `McpServer` is not mounted on `createNativeUserMcpHandler`. The handler returns `403` after Token A verifies. |
+| Issue #62 | Evidence file: hosted OAuth, consent, DCR, Pages, and DNS stay out of scope. Issue #62 remains incomplete. |
+
+## R1 known gap (no acceptance)
+
+Recorded at `eb2a4ce8`. This is not a fix and not G2 acceptance.
+
+Accepted Token A still requires `aud` `authenticated` plus the MCP resource. `mcpClaimsRejected` returns true unless `audienceValues` includes `DATA_API_AUDIENCE` (`authenticated`) and the MCP resource. Every Token A this adapter accepts is therefore also a valid Data API bearer by construction. Separation is not achieved. Whoever holds that Token A can call PostgREST directly. The adapter does not forward it (H2), but the credential is passthrough-capable.
+
+A token whose `aud` is only the MCP resource stays `401` `{ "error": "invalid_token" }`. Test `known gap: resource-only aud is 401, so accepted Token A stays Data API-capable` pins that rejection. The test comment says the expectation flips only when Token A can be resource-scoped without `aud` `authenticated`. Resource-only `aud` is current behavior, not a fix.
+
+Repair notes on the same head, also not acceptance:
+
+| Note | What landed at `eb2a4ce8` | What it is not |
+| --- | --- | --- |
+| R2 error normalize | `normalizeLibraryAuthFailure` maps a library `401` (including `{ code, message }` and `x-supabase-server-error`) onto `{ "error": "invalid_token" }`. | Not a credential split. Not acceptance. |
+| R3 claim negatives | Test `rejects wrong issuer, wrong signing key, service_role, and missing session_id`: wrong `iss`, wrong key, `role=service_role`, and missing `session_id` each return `401` `invalid_token`. | Not a claim that audience separation is done. |
+
+This checklist does not claim G2 acceptance while Token A remains Data API-capable, Token B is unresolved, G3 residuals stay open, and issue #62 is incomplete. Formal CONTENT stays with the verifier. This author does not claim content PASS.
 
 ## How this map relates to G1’s count summary
 
@@ -117,14 +135,14 @@ G5’s secondary note (stock `aud: "authenticated"`, Auth issue #2610 / RFC 8707
 H1 and H2 are checked because those two hard gates **PASS** at the locked head, on the citation in the table. Checking them is not a content PASS. H3, H4, and H5 stay unchecked for the verifier. A later `FAIL` from the verifier fails the packet. `verifier` is not a pass.
 
 - [x] **H1 — No homemade issuer in the #98 delta.** Project Auth issuer via `fromSupabaseUrl` (`{supabaseUrl}/auth/v1`). The delta adds no `Iss_M`, no `/oauth/authorize`, `/oauth/token`, or `/oauth/revoke` route, and no lab dual-grant broker.
-- [x] **H2 — No inbound-token passthrough.** Verified Token A returns `403` `downstream_credential_unresolved` and is not forwarded to `/rest/v1`.
+- [x] **H2 — No inbound-token passthrough.** Verified Token A returns `403` `downstream_credential_unresolved`. `sameBearerPassthrough` is `false`. `blockedDataApiFetch` throws if invoked. The fail-closed test expects zero `fetch` calls on that path. H2 does not accept the R1 gap: that Token A is still Data API-capable by `aud`.
 - [ ] **H3 — Token A ≠ Token B (second OAuth grant).** Upstream Data API calls that carry a user access token use Token B from a second Supabase OAuth grant / OAuth client (or a documented Auth-supported exchange that yields a **distinct** upstream access token). G5 does not allow a custom MCP issuer as that mechanism. Same-string Token A and Token B is FAIL. On this head Token B is missing (G3).
 - [ ] **H4 — Ordinary path fail-closed without Token B.** A valid MCP bearer with no resolved downstream credential does not call `/rest/v1`. G1’s ordinary-path result remains the bar: `403` with `downstream_credential_unresolved` and zero Data API calls, unless an ADR supersession named by G1-18 is actually present on the G2 head.
 - [ ] **H5 — Project Auth issuer / JWKS for MCP-facing verify.** Ordinary remote verifies MCP-facing access tokens with the project Auth issuer and project JWKS (asymmetric ES256/RS256). No process-ephemeral private JWK mints those tokens. No loopback homemade JWKS is the production verification key set.
 
-| Gate | Record at locked head `67cf73df` | Mark |
+| Gate | Record at locked head `eb2a4ce8` | Mark |
 | --- | --- | --- |
-| H1 | **PASS.** `createNativeUserMcpHandler` sets `authorizationServer` from `fromSupabaseUrl` (`{supabaseUrl}/auth/v1`). Diff `fcbaca12..67cf73df` adds no `Iss_M`, no authorize/token/revoke route, and no lab dual-grant broker. | PASS |
+| H1 | **PASS.** `createNativeUserMcpHandler` sets `authorizationServer` from `fromSupabaseUrl` (`{supabaseUrl}/auth/v1`). Diff `fcbaca12..eb2a4ce8` adds no `Iss_M`, no authorize/token/revoke route, and no lab dual-grant broker. | PASS |
 | H2 | **PASS.** `respondAfterVerifiedMcpAuth` returns `403` `downstream_credential_unresolved`. `blockedDataApiFetch` throws that error if the library client is invoked. `sameBearerPassthrough` is `false`. Test `verifies Token A then fail-closes without a Data API call` expects `globalThis.fetch` calls to be empty and the body not to contain the bearer. The library still builds an unused same-bearer client; the adapter does not call it and does not send Token A to `/rest/v1`. | PASS |
 | H3 | Token B is `unresolved`. No second Supabase OAuth grant is in the delta. G3 residual. Not a hard-gate PASS. | verifier |
 | H4 | The adapter’s verified-Token-A path is the `403` shape cited under H2. Whether that satisfies G1’s ordinary `start:remote` row is content for the verifier. The delta does not switch `start:remote` over. | verifier |
@@ -147,7 +165,7 @@ For each row, “G1 test needed” is the test cell of that matrix row at `95ae3
 | Disposition | DELETE |
 | G1 test needed | Discovery URL equals project issuer; no listener serves homemade AS metadata as production issuer; regression that `createAuthorizationServerMetadata(local)` is not wired into ordinary remote. |
 | Acceptance | On ordinary remote, MCP discovery advertises project Auth (`https://<ref>.supabase.co/auth/v1` and the Auth discovery document), not a second homemade AS. No listener on that path serves `LabDualGrantBroker` / `Iss_M` authorize, token, JWKS, or revoke as the issuer. Hard-fail link: H1. |
-| Example at `67cf73df` (not a content mark) | New adapter: `authorizationServer: resolved.issuer` with `issuer = fromSupabaseUrl(...)`. H1 PASS is the #98 delta: no `Iss_M`, no authorize/token/revoke route, no lab dual-grant broker. Inherited base files are outside that delta. |
+| Example at `eb2a4ce8` (not a content mark) | New adapter: `authorizationServer: resolved.issuer` with `issuer = fromSupabaseUrl(...)`. H1 PASS is the #98 delta: no `Iss_M`, no authorize/token/revoke route, no lab dual-grant broker. Inherited base files are outside that delta. |
 | Mark | verifier |
 | Evidence | |
 
@@ -194,7 +212,7 @@ Ordinary remote does not issue MCP refresh tokens and does not serve a homemade 
 | Disposition | DELETE |
 | G1 test needed | Metadata issuer/endpoints match project Auth; no local helper advertised on ordinary remote. |
 | Acceptance | Ordinary remote does not advertise `createAuthorizationServerMetadata` local `/oauth/*` + JWKS. Issuer and endpoints in advertised metadata match project Auth discovery (`/.well-known/oauth-authorization-server/auth/v1` and the OIDC configuration on the project). Overlaps H1; both must pass. |
-| Example at `67cf73df` (not a content mark) | The new adapter does not call `createAuthorizationServerMetadata`, and that helper is not in the #98 delta. H1 PASS does not score this inherited base file. Content mark stays with the verifier. |
+| Example at `eb2a4ce8` (not a content mark) | The new adapter does not call `createAuthorizationServerMetadata`, and that helper is not in the #98 delta. H1 PASS does not score this inherited base file. Content mark stays with the verifier. |
 | Mark | verifier |
 | Evidence | |
 
@@ -219,7 +237,7 @@ If the G2 head deletes the lab broker, `SUPABASE_USER_MCP_LAB_DUAL_GRANT` and th
 | Disposition | REUSE UPSTREAM + ADAPT path glue |
 | G1 test needed | `GET {resource}/oauth-protected-resource` advertises project AS; 401 carries `resource_metadata=`; composition order places PR middleware **outside** the auth gate. |
 | Acceptance | **REUSE:** protected-resource metadata and `WWW-Authenticate` enrichment come from `@supabase/server` `withOAuthProtectedResource` / `resourceMetadataResponse` (≥1.6.0; G1 cited docs at 1.7.0), not a reimplementation of RFC 9728. **ADAPT (only this glue):** non-Edge Node may set `resourceServer` / `authorizationServer` (`fromSupabaseUrl`) so the resource is the MCP endpoint and the authorization server is project Auth. Advertising a homemade issuer is FAIL (H1). `oauthMetadataResponse` from `@modelcontextprotocol/server` may remain only if it is no longer the ordinary-remote PRM implementation; if it is still the production PRM path, that is FAIL against REUSE. |
-| Example at `67cf73df` (not a content mark) | Nested `withOAuthProtectedResource({ resourceServer, authorizationServer: fromSupabaseUrl(supabaseUrl) }, withSupabase({ auth: 'user', audience, issuer, env }, handler))` at pin `1.7.2`. The alpha `pipeline` form is not used. The metadata test expects `authorization_servers: [ISSUER]` and a `401` `WWW-Authenticate` containing `resource_metadata`. |
+| Example at `eb2a4ce8` (not a content mark) | Nested `withOAuthProtectedResource({ resourceServer, authorizationServer: fromSupabaseUrl(supabaseUrl) }, withSupabase({ auth: 'user', audience, issuer, env }, handler))` at pin `1.7.2`. The alpha `pipeline` form is not used. The metadata test expects `authorization_servers: [ISSUER]` and a `401` `WWW-Authenticate` containing `resource_metadata`. |
 | Mark | verifier |
 | Evidence | |
 
@@ -250,7 +268,7 @@ If the G2 head deletes the lab broker, `SUPABASE_USER_MCP_LAB_DUAL_GRANT` and th
 | Disposition | REUSE UPSTREAM + ADAPT resource-binding extras |
 | G1 test needed | Valid user JWT passes; HS256 rejected when the project is asymmetric; wrong `iss` / `aud` / `client_id` → 401; latency-bound revoke still enforced if retained. |
 | Acceptance | **REUSE:** signature, issuer, expiry, and role checks use `@supabase/server` `withSupabase({ auth: 'user' })` and/or `withRequiredClaims` against project JWKS. **ADAPT (only if still required):** extra MCP resource audience / `client_id` binding beyond `aud=authenticated` (ADR-0005 / `REMOTE_IDENTITY_CLAIM_POLICY`) may stay as thin glue. Record which choice the head made. Treating stock `aud: "authenticated"` single-grant passthrough as already conformant is FAIL (G5 NO). Dropping the latency-bound revoke clause while G1-17 is still required is FAIL. Hard-fail links: H2 (the verified Token A is not what `/rest/v1` receives), H5. |
-| Example at `67cf73df` (not a content mark) | `withSupabase({ auth: 'user', audience, issuer, env })` plus `mcpClaimsRejected`: `role=authenticated`, `aud` includes `authenticated` and the MCP resource, server-controlled `client_id`, UUID `sub` and `session_id`, `user_metadata` rejected. `assertJwks` rejects symmetric keys. The evidence file says live revocation is not performed, so an unexpired revoked JWT reaches the fail-closed `403` instead of a revocation denial. |
+| Example at `eb2a4ce8` (not a content mark) | `mcpClaimsRejected` still requires `DATA_API_AUDIENCE` (`authenticated`) and the MCP resource. That is the R1 known gap, not acceptance. Resource-only `aud` stays `401` `invalid_token`. R3 negatives (wrong `iss`, wrong key, `service_role`, missing `session_id`) also stay `401` `invalid_token` and are repair notes only. Live revocation is still not implemented. |
 | Mark | verifier |
 | Evidence | |
 
@@ -261,7 +279,7 @@ If the G2 head deletes the lab broker, `SUPABASE_USER_MCP_LAB_DUAL_GRANT` and th
 | Disposition | REUSE UPSTREAM + ADAPT fixed RPC façade. One mark for the whole row. |
 | G1 test needed | `memory_*` under RLS as `auth.uid()`; cross-principal denial; zero inbound-MCP-bearer forwarding; loopback http allow only under lab flag. |
 | Acceptance | **REUSE:** RLS uses an upstream user-scoped Supabase client (`ctx.supabase` from `withSupabase({ auth: 'user' })` or the same facility). The credential on `/rest/v1` is Token B, not Token A. Passing the inbound MCP bearer into that helper is H2 FAIL. **ADAPT:** `createFixedSupabaseClient` may remain only as a narrow allowlisted RPC façade (fixed paths, byte caps, schema profile), fed by Token B, not as a second auth stack. Cross-principal calls are denied. Loopback HTTP is allowed only under an explicit lab flag. |
-| Example at `67cf73df` (not a content mark) | The adapter installs `blockedDataApiFetch` on `supabaseOptions.global.fetch` and never calls the library user client. Evidence file: do not point Data API calls at that client. Token B is `unresolved`. This is the H2 shape, not a Token B RLS client. |
+| Example at `eb2a4ce8` (not a content mark) | The adapter installs `blockedDataApiFetch` on `supabaseOptions.global.fetch` and never calls the library user client. Evidence file: do not point Data API calls at that client. Token B is `unresolved`. This is the H2 shape, not a Token B RLS client. |
 | Mark | verifier |
 | Evidence | |
 
@@ -322,7 +340,7 @@ Scored only on the G1-11 mark above. Allowed glue is the narrow allowlisted RPC 
 | Disposition | ADAPT |
 | G1 test needed | Revoke session → next call denied inside 5s; probe timeout fail-closed; no cache. |
 | Acceptance | Signature verify stays on the project JWKS path (G1-09 / H5). Adapt `createGoTrueSessionRevocationAuthority` (`GET /auth/v1/user`, 5s bound) only if finish still requires revocation-before-`exp` tighter than JWT validity (`ACCESS_TOKEN_REVOCATION_POLICY`). If retained: revoke session → next call denied inside 5s; probe timeout fail-closed; no cache. If dropped: the head records that this policy no longer requires the probe. Dropping it with no record is FAIL. The probe does not replace project JWKS. |
-| Example at `67cf73df` (not a content mark) | Evidence file, residual gaps: live access-token revocation is not performed. `NATIVE_USER_MCP_CREDENTIAL_SPLIT.liveRevocation` is `not-implemented`. The inherited remote profile still constructs `createGoTrueSessionRevocationAuthority`. |
+| Example at `eb2a4ce8` (not a content mark) | Evidence file, residual gaps: live access-token revocation is not performed. `NATIVE_USER_MCP_CREDENTIAL_SPLIT.liveRevocation` is `not-implemented`. The inherited remote profile still constructs `createGoTrueSessionRevocationAuthority`. |
 | Mark | verifier |
 | Evidence | |
 
@@ -371,7 +389,7 @@ Each row names an upstream gap in G1. The gap stays fail-closed, tested, and doc
 | Upstream gap (G1) | Official MCP guide still documents using the Supabase user access token at the Data API. Repo policy (ADR-0005/0006, MCP 2026-07-28) forbids forwarding the inbound MCP bearer. Native exchange was still unsupported per `DOWNSTREAM_CREDENTIAL_RECHECK_2026_09_22`. |
 | G1 test needed | Valid MCP bearer without a resolved downstream credential → 403; zero Data API calls; B/C binding failure → 401 before 403. |
 | Acceptance | Without Token B, ordinary remote stays fail-closed: `403` `downstream_credential_unresolved`, zero `/rest/v1`. Binding failures (G1’s B/C cases) return 401 before that 403. Copying upstream passthrough prose into the ordinary path is H2 FAIL and this row FAIL. Leaving fail-closed is allowed. Opening the Data API is allowed only with Token B as in H3, or with an ADR on this head that supersedes the fail-closed decision the way G1 states (Option 1 proven, Option 2 under a new ADR, or an explicit privilege-model change). No such ADR is created by this checklist. Hard-fail link: H4. |
-| Example at `67cf73df` (not a content mark) | `respondAfterVerifiedMcpAuth` returns `jsonResponse(403, DOWNSTREAM_CREDENTIAL_UNRESOLVED)`. The named test expects that body and an empty `globalThis.fetch` call list. `auth` failures in that test stay `401` and do not contain `downstream_credential_unresolved`. |
+| Example at `eb2a4ce8` (not a content mark) | `respondAfterVerifiedMcpAuth` returns `jsonResponse(403, DOWNSTREAM_CREDENTIAL_UNRESOLVED)`. The named test expects that body and an empty `globalThis.fetch` call list. `auth` failures in that test stay `401` and do not contain `downstream_credential_unresolved`. |
 | Mark | verifier |
 | Evidence | |
 
@@ -413,8 +431,9 @@ Each row names an upstream gap in G1. The gap stays fail-closed, tested, and doc
 
 - Not a merge of #79, #97, or #98.
 - Not an instruction to the G2 agent `bc-ede9c9e7-f9b9-5441-8a5f-b217b216b4cf`, not a second G2, and not a substitute for that run.
-- Not a content PASS. H1 and H2 are hard-gate PASS records at locked head `67cf73df5390c89697a40295b4cddecbf811881d`. Formal CONTENT of H3–H5 and G1-01–G1-21 belongs to the verifier.
+- Not G2 acceptance. H1 and H2 are hard-gate PASS records at locked head `eb2a4ce8df0cbb88878894d71c5a97d7f0e4cf28` only. Token A remains Data API-capable (R1). Token B is unresolved. G3 residuals stay open. Issue #62 is incomplete. Formal CONTENT of H3–H5 and G1-01–G1-21 belongs to the verifier. This author does not claim content PASS.
 - Not closure of the G3 residuals (Token B missing, live revocation not implemented, tools not mounted).
+- Not acceptance of R2 error normalization or R3 claim negatives. Those repairs landed on `eb2a4ce8` and do not close R1.
 - Not M4 live expansion, not a live loopback receipt, and not a claim that a receipt with literal `pass` constants is a live pass.
 - Not Pages, DNS, or external-client B–D unblocking.
 - Not a Primary Users ping, and not an approval by Primary Users, Warden, or Atlas.
@@ -429,15 +448,15 @@ The G2 head is locked. This packet records H1 and H2 as PASS at that head. Forma
 ### Pin
 
 1. G2 draft: https://github.com/jryski/Supabase_user_MCP/pull/98, branch `cursor/supabase-native-user-mcp-g2`, base `ariadne/remote-oauth-rebased-20260919` @ `fcbaca121d0717ee8ff98df90b2f12475b05bb78`. Do not open another G2 PR from this checklist.
-2. Locked head: `67cf73df5390c89697a40295b4cddecbf811881d`. Locked tree: `fba8bae4887b8e311f7ffbe930461751172f0cb2`. Score this SHA, not a later move, unless Central explicitly replaces the pin.
-3. `git fetch` that SHA and confirm `git rev-parse 67cf73df^{tree}` is `fba8bae4…`. Marks against #75, #79, #97, `main`, or this checklist’s own head are not marks of #98.
+2. Locked head: `eb2a4ce8df0cbb88878894d71c5a97d7f0e4cf28`. Locked tree: `765063a7517d27363ddca71b7cba2ec0f31b2a9d`. Score this SHA, not a later move, unless Central explicitly replaces the pin.
+3. `git fetch` that SHA and confirm `git rev-parse eb2a4ce8df0cbb88878894d71c5a97d7f0e4cf28^{tree}` is `765063a7517d27363ddca71b7cba2ec0f31b2a9d`. Marks against #75, #79, #97, `main`, or this checklist’s own head are not marks of #98.
 4. H1 and H2 are already recorded PASS from the #98 delta and `native-user-mcp.ts`. The verifier may confirm that citation. The verifier fills H3–H5 and G1-01–G1-21. This author does not.
 
 ### How to mark each remaining gate
 
 | Mark | When |
 | --- | --- |
-| `PASS` | The locked head `67cf73df` shows the check. Cite a path on that SHA and, where the row names a test, the command and result run on that SHA. |
+| `PASS` | The locked head `eb2a4ce8` shows the check. Cite a path on that SHA and, where the row names a test, the command and result run on that SHA. |
 | `FAIL` | That head shows the forbidden surface, shows Token A on `/rest/v1`, shows a homemade issuer added by the G2 delta, or drops a RETAIN gap without the ADR that row requires. |
 | `BLOCKED` | The SHA cannot be fetched, or the check needs a live project / GoTrue / DCR setting the verifier does not have. Say what is missing. |
 | `verifier` | Set by this packet on rows this author does not score. The verifier replaces it. It is not a pass. |
@@ -445,9 +464,9 @@ The G2 head is locked. This packet records H1 and H2 as PASS at that head. Forma
 Rules:
 
 - Each of G1-01 through G1-21 has one Mark cell. Headings that say “do not mark it separately” or “scored with” belong to that row. The row is `PASS` only when every clause on it passes.
-- Do not upgrade `BLOCKED` or `verifier` to `PASS` without evidence on `67cf73df`.
+- Do not upgrade `BLOCKED` or `verifier` to `PASS` without evidence on `eb2a4ce8`.
 - N/A is allowed only inside a dual-disposition row, for the clause whose precondition is absent, and only with evidence of that precondition on the locked SHA.
-- Content packet result is the verifier’s. H1 PASS and H2 PASS do not make that result PASS while any row is still `verifier`, `BLOCKED`, or `FAIL`. G3 residuals stay open regardless.
+- Content packet result is the verifier’s. H1 PASS and H2 PASS do not make that result PASS. R1 (accepted Token A is Data API-capable) blocks any G2 acceptance claim. G3 residuals and issue #62 stay open. A row left `verifier`, `BLOCKED`, or `FAIL` also blocks content PASS.
 - H2 evidence already cited is the adapter test with an empty `globalThis.fetch` list and a body that does not contain the bearer. “Uses `@supabase/server`” without that comparison is not H2 PASS. The recorded H2 PASS uses that comparison.
 - Verifier identity is recorded and is not the author of this file and not the G2 implementer.
 
@@ -458,15 +477,19 @@ Rules:
 | G2 draft PR URL | https://github.com/jryski/Supabase_user_MCP/pull/98 |
 | G2 branch | `cursor/supabase-native-user-mcp-g2` |
 | G2 base | `ariadne/remote-oauth-rebased-20260919` @ `fcbaca121d0717ee8ff98df90b2f12475b05bb78` |
-| Locked G2 head | `67cf73df5390c89697a40295b4cddecbf811881d` |
-| Locked G2 tree | `fba8bae4887b8e311f7ffbe930461751172f0cb2` |
+| Locked G2 head | `eb2a4ce8df0cbb88878894d71c5a97d7f0e4cf28` |
+| Locked G2 tree | `765063a7517d27363ddca71b7cba2ec0f31b2a9d` |
 | G1/G5 head | `95ae3a46710134d5a46a57e17fe4a38224c89467` |
-| H1 | PASS (hard gate, #98 delta, `fromSupabaseUrl`, no `Iss_M` / authorize / token / revoke / dual-grant) |
-| H2 | PASS (hard gate, Token A → `403` `downstream_credential_unresolved`, no `/rest/v1` forward) |
+| H1 | PASS at `eb2a4ce8` (hard gate only: `fromSupabaseUrl`; #98 delta has no `Iss_M`, no authorize/token/revoke, no lab dual-grant) |
+| H2 | PASS at `eb2a4ce8` (hard gate only: Token A → `403` `downstream_credential_unresolved`; `sameBearerPassthrough: false`; blocked fetch; zero Data API calls on that path) |
+| R1 known gap | No acceptance. Accepted Token A requires `aud` `authenticated` plus the MCP resource, so it is Data API-capable by construction. Resource-only `aud` stays `401` `invalid_token`. |
+| R2 / R3 | Repair notes only (library 401 → `{ error: "invalid_token" }`; wrong iss / wrong key / `service_role` / missing `session_id` → `401` `invalid_token`). Not acceptance. |
 | H3–H5 | verifier |
 | G1-01–G1-21 | verifier |
 | G3 residuals | open: Token B missing; live revocation not implemented; tools not mounted |
+| Issue #62 | incomplete |
 | Formal CONTENT | with the verifier (not claimed here) |
+| G2 acceptance | not claimed |
 | Verifier (not this author, not the G2 implementer) | |
 | Date of formal content | |
 | Content packet result | |
