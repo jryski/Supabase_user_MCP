@@ -41,7 +41,7 @@ async function es256Jwks(): Promise<{
 async function signToken(
   privateKey: Awaited<ReturnType<typeof generateKeyPair>>['privateKey'],
   claims: {
-    readonly audience?: string | string[];
+    readonly audience?: string | readonly string[];
     readonly clientId?: string;
     readonly issuer?: string;
     readonly role?: string;
@@ -59,11 +59,12 @@ async function signToken(
   if (claims.omitSessionId !== true) payload.session_id = claims.sessionId ?? SESSION;
   if (claims.resource !== undefined) payload.resource = claims.resource;
   if (claims.userMetadata !== undefined) payload.user_metadata = claims.userMetadata;
+  const audience = claims.audience ?? RESOURCE;
   let jwt = new SignJWT(payload)
     .setProtectedHeader({ alg: 'ES256', kid: 'g2-test', typ: 'JWT' })
     .setSubject(PRINCIPAL)
     .setIssuer(claims.issuer ?? ISSUER)
-    .setAudience(claims.audience ?? [DATA_API_AUDIENCE, RESOURCE])
+    .setAudience(typeof audience === 'string' ? audience : [...audience])
     .setIssuedAt();
   jwt = jwt.setExpirationTime(claims.expiresIn ?? '2m');
   return jwt.sign(privateKey);
@@ -186,7 +187,6 @@ describe('native user MCP adapter', () => {
     const { privateKey, jwks } = await es256Jwks();
     const handler = handlerFor(jwks);
     const tokens = await Promise.all([
-      signToken(privateKey, { audience: DATA_API_AUDIENCE }),
       signToken(privateKey, { clientId: 'smp-other-client' }),
       signToken(privateKey, { expiresIn: '0s' }),
       signToken(privateKey, { userMetadata: { client_id: CLIENT } }),
@@ -197,16 +197,26 @@ describe('native user MCP adapter', () => {
     }
   });
 
-  it('known gap: resource-only aud is 401, so accepted Token A stays Data API-capable', async () => {
-    // Known gap, not a fix. mcpClaimsRejected requires aud "authenticated" and
-    // the MCP resource. Audience-only minting is out of scope. When Token A
-    // can be resource-scoped without aud "authenticated", this expectation flips.
+  it('accepts resource-only aud and rejects any aud containing authenticated', async () => {
     const { privateKey, jwks } = await es256Jwks();
     const handler = handlerFor(jwks);
-    const token = await signToken(privateKey, { audience: [RESOURCE] });
-    const response = await handler(mcpPost(token));
-    await expectInvalidToken(response, token);
-    expect(response.status).not.toBe(403);
+    for (const audience of [RESOURCE, [RESOURCE]] as const) {
+      const token = await signToken(privateKey, { audience });
+      const response = await handler(mcpPost(token));
+      expect(response.status).toBe(403);
+      const body = await response.text();
+      expect(JSON.parse(body)).toEqual({ error: DOWNSTREAM_CREDENTIAL_UNRESOLVED });
+      expect(body).not.toContain(token);
+    }
+    for (const audience of [
+      DATA_API_AUDIENCE,
+      [DATA_API_AUDIENCE],
+      [RESOURCE, DATA_API_AUDIENCE],
+      [DATA_API_AUDIENCE, RESOURCE],
+    ] as const) {
+      const token = await signToken(privateKey, { audience });
+      await expectInvalidToken(await handler(mcpPost(token)), token);
+    }
   });
 
   it('rejects wrong issuer, wrong signing key, service_role, and missing session_id', async () => {

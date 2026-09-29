@@ -28,11 +28,12 @@ import {
  * builds an unused same-bearer user client and an unused admin client before
  * the handler runs. This adapter never calls either client.
  *
- * Token B, a distinct Data API credential, is unresolved. Authenticated MCP
- * requests fail closed with `downstream_credential_unresolved`.
+ * Token B, a distinct Data API credential, is unresolved. A resource-only
+ * Token A fails closed with `downstream_credential_unresolved`.
  *
- * Accepted Token A must include aud "authenticated", so it is also a valid
- * Data API bearer. Separation is not achieved. See the G2 evidence note.
+ * MCP-side check: reject `aud` that contains `authenticated`. Jose matches any
+ * array entry, so the library resource audience does not do this alone.
+ * Upstream Data API denial and Token B remain open. See the G2 evidence note.
  */
 export const SUPABASE_SERVER_PIN = '1.7.2' as const;
 export const SUPABASE_JS_PIN = '2.117.2' as const;
@@ -219,8 +220,13 @@ function mcpClaimsRejected(claims: JWTClaims, expected: ResolvedNativeUserMcpCon
   if (typeof claims.exp !== 'number' || !Number.isSafeInteger(claims.exp)) return true;
   if (claims.iss !== expected.issuer) return true;
   const audiences = audienceValues(claims.aud);
-  if (!audiences.includes(DATA_API_AUDIENCE)) return true;
-  if (!audiences.some((value) => canonicalAudience(value) === expected.resourceServer)) return true;
+  // `withSupabase({ audience: resource })` uses jose, which accepts an `aud`
+  // array when any entry matches. `[resource, "authenticated"]` therefore
+  // passes the library. Reject it here if the Data API audience is present.
+  if (audiences.includes(DATA_API_AUDIENCE)) return true;
+  if (!audiences.some((value) => canonicalAudience(value) === expected.resourceServer)) {
+    return true;
+  }
   if (explicitResourceMismatch(claims, expected.resourceServer)) return true;
   if (userMetadataAttemptsAuthorization(claims)) return true;
   if (extractServerControlledClientId(claims) !== expected.expectedClientId) return true;
