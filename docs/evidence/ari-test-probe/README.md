@@ -129,12 +129,16 @@ SQL apply order. This agent does not run it.
 5. In one SQL-editor batch, paste the setting and then the body of
    `sql/03-mcp-ingress-role.sql`. A second run will not see the setting.
    The applier is a non-superuser with `CREATEROLE`. Isolation attributes
-   are set on `CREATE ROLE` only. If `mcp_ingress` already exists, the batch
-   verifies it and fails closed. It does not repair the role. PostgreSQL 16+
-   keeps a creator ADMIN membership with inherit false and set false. That
-   row may grant membership. It does not let the creator act as
-   `mcp_ingress`. Hosted TEST is PostgreSQL 17.6. The in-repo check is
-   PGlite PostgreSQL 18.3.
+   are set on `CREATE ROLE` only. The create path is
+   `GRANT mcp_ingress TO authenticator WITH ADMIN FALSE, INHERIT FALSE, SET TRUE`.
+   That inherit false is the membership option. It does not follow the
+   authenticator role default. If `mcp_ingress` already exists, the batch
+   verifies it and fails closed. It does not repair the role. Any
+   `pg_auth_members` row whose member is `mcp_ingress` fails closed and
+   stays. PostgreSQL 16+ keeps a creator ADMIN membership with inherit false
+   and set false. That row may grant membership. It does not let the creator
+   act as `mcp_ingress`. Hosted TEST is PostgreSQL 17.6. The in-repo check
+   is PGlite PostgreSQL 18.3.
 
    ```sql
    select set_config('ari.project_ref', 'odbcejsuuqdzhabjmozi', false);

@@ -143,7 +143,12 @@ function assertSqlContract(sql) {
   assert.match(sql, /nocreaterole/);
   assert.match(sql, /noreplication/);
   assert.match(sql, /nobypassrls/);
-  assert.match(sql, /grant mcp_ingress to authenticator/);
+  assert.match(sql, /grant mcp_ingress to authenticator with admin false, inherit false, set true/);
+  assert.match(
+    sql,
+    /mcp_ingress is not granted to authenticator with admin false, inherit false, and set true/,
+  );
+  assert.match(sql, /mcp_ingress has an outbound membership/);
   assert.match(sql, /creator row lets it grant membership, not act as mcp_ingress/);
   assert.match(sql, /set_option/);
   assert.match(sql, /admin_option/);
@@ -202,6 +207,25 @@ async function assertCommitted(db) {
       and not attribute.attisdropped
   `);
   assert.equal(columns.rows[0].grants, 0);
+  const outbound = await db.query(`
+    select count(*)::int as memberships
+    from pg_auth_members as membership
+    join pg_roles as member_role on member_role.oid = membership.member
+    where member_role.rolname = 'mcp_ingress'
+  `);
+  assert.equal(outbound.rows[0].memberships, 0);
+}
+
+// INHERIT on the authenticator role is the default for a bare GRANT.
+// The explicit membership INHERIT FALSE must not follow that default.
+async function seedAuthenticatorInherit(db) {
+  await db.exec('alter role authenticator inherit');
+  const row = await db.query(`
+    select rolinherit
+    from pg_roles
+    where rolname = 'authenticator'
+  `);
+  assert.equal(row.rows[0].rolinherit, true);
 }
 
 test('old ALTER ROLE NOSUPERUSER is denied to a non-superuser CREATEROLE session', async () => {
@@ -250,6 +274,7 @@ test('sql/03 commits the whole file for an ADMIN-granted CREATEROLE applier', as
       ['anon', 'authenticated', 'authenticator', 'service_role'],
     );
 
+    await seedAuthenticatorInherit(db);
     await db.query(`select set_config('ari.project_ref', $1, false)`, [ALLOWED]);
     const created = await applySql(db, sql, { asApplier: true });
     assert.equal(created.ok, true, created.message);
@@ -262,6 +287,12 @@ test('sql/03 commits the whole file for an ADMIN-granted CREATEROLE applier', as
     const again = await applySql(db, sql, { asApplier: true });
     assert.equal(again.ok, true, again.message);
     await assertCommitted(db);
+    const stillInherit = await db.query(`
+      select rolinherit
+      from pg_roles
+      where rolname = 'authenticator'
+    `);
+    assert.equal(stillInherit.rows[0].rolinherit, true);
   } finally {
     await db.close();
   }
@@ -280,6 +311,7 @@ test('sql/03 commits the whole file for a CREATEROLE applier with no ADMIN', asy
     `);
     assert.equal(adminGrants.rows[0].memberships, 0);
 
+    await seedAuthenticatorInherit(db);
     await db.query(`select set_config('ari.project_ref', $1, false)`, [ALLOWED]);
     const created = await applySql(db, sql, { asApplier: true });
     assert.equal(created.ok, true, created.message);
@@ -288,6 +320,12 @@ test('sql/03 commits the whole file for a CREATEROLE applier with no ADMIN', asy
     const again = await applySql(db, sql, { asApplier: true });
     assert.equal(again.ok, true, again.message);
     await assertCommitted(db);
+    const stillInherit = await db.query(`
+      select rolinherit
+      from pg_roles
+      where rolname = 'authenticator'
+    `);
+    assert.equal(stillInherit.rows[0].rolinherit, true);
   } finally {
     await db.close();
   }
@@ -385,6 +423,46 @@ test('sql/03 does not repair an extra member or a table grant', async () => {
     assert.deepEqual(still.rows, [{ privilege_type: 'SELECT' }]);
   } finally {
     await grantDb.close();
+  }
+});
+
+test('sql/03 fails closed when mcp_ingress already belongs to pg_read_all_data', async () => {
+  const sql = await readFile(new URL('./sql/03-mcp-ingress-role.sql', import.meta.url), 'utf8');
+  const db = await freshDb({ admin: true });
+  try {
+    await db.query(`select set_config('ari.project_ref', $1, false)`, [ALLOWED]);
+    const created = await applySql(db, sql, { asApplier: true });
+    assert.equal(created.ok, true, created.message);
+    await db.exec('grant pg_read_all_data to mcp_ingress');
+    const before = await db.query(`
+      select granted_role.rolname
+      from pg_auth_members as membership
+      join pg_roles as granted_role on granted_role.oid = membership.roleid
+      join pg_roles as member_role on member_role.oid = membership.member
+      where member_role.rolname = 'mcp_ingress'
+      order by granted_role.rolname
+    `);
+    assert.deepEqual(
+      before.rows.map((row) => row.rolname),
+      ['pg_read_all_data'],
+    );
+    const repaired = await applySql(db, sql, { asApplier: true });
+    assert.equal(repaired.ok, false);
+    assert.match(repaired.message, /mcp_ingress has an outbound membership/);
+    const after = await db.query(`
+      select granted_role.rolname
+      from pg_auth_members as membership
+      join pg_roles as granted_role on granted_role.oid = membership.roleid
+      join pg_roles as member_role on member_role.oid = membership.member
+      where member_role.rolname = 'mcp_ingress'
+      order by granted_role.rolname
+    `);
+    assert.deepEqual(
+      after.rows.map((row) => row.rolname),
+      ['pg_read_all_data'],
+    );
+  } finally {
+    await db.close();
   }
 });
 

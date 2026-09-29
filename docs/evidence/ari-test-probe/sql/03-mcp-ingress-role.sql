@@ -27,15 +27,18 @@
 -- A non-superuser CREATEROLE session is denied ALTER ROLE clauses that
 -- name SUPERUSER (42501). This batch does not alter an existing role.
 --
--- If mcp_ingress is absent: CREATE ROLE, then GRANT mcp_ingress TO
--- authenticator. If it already exists: the asserts verify it and fail
--- closed. This batch does not repair attributes, memberships, or grants.
--- It does not revoke authenticated, anon, or service_role, and it does
--- not revoke table privileges. A fresh role has none of those.
+-- If mcp_ingress is absent: CREATE ROLE, then
+-- GRANT mcp_ingress TO authenticator WITH ADMIN FALSE, INHERIT FALSE, SET TRUE.
+-- If it already exists: the asserts verify it and fail closed. This batch
+-- does not repair attributes, memberships, or grants. It does not revoke
+-- authenticated, anon, or service_role, and it does not revoke table
+-- privileges. A fresh role has none of those.
 --
 -- Membership may contain exactly two rows, and nothing else:
---   1. authenticator, with set_option true and admin_option false, so
---      PostgREST can set the role.
+--   1. authenticator, with admin_option false, inherit_option false, and
+--      set_option true, so PostgREST can set the role and does not inherit
+--      it. INHERIT FALSE is written on the grant. It does not follow the
+--      authenticator role's default inherit attribute.
 --   2. current_user, the creating role, with admin_option true,
 --      inherit_option false, and set_option false.
 -- The creator row lets it grant membership, not act as mcp_ingress.
@@ -44,8 +47,9 @@
 -- returns success and the row stays, so this batch does not revoke it.
 -- Hosted TEST is PostgreSQL 17.6. The in-repo PGlite check is 18.3.
 --
--- mcp_ingress is not a member of authenticated, anon, or service_role,
--- and it receives no table or column grants.
+-- mcp_ingress has zero outbound memberships. Any pg_auth_members row whose
+-- member is mcp_ingress fails closed. It is not a member of authenticated,
+-- anon, or service_role, and it receives no table or column grants.
 
 begin;
 
@@ -105,7 +109,7 @@ begin
     noreplication
     nobypassrls;
 
-  grant mcp_ingress to authenticator;
+  grant mcp_ingress to authenticator with admin false, inherit false, set true;
 end;
 $create$;
 
@@ -157,11 +161,12 @@ begin
     join pg_roles as member_role on member_role.oid = membership.member
     where granted_role.rolname = 'mcp_ingress'
       and member_role.rolname = 'authenticator'
-      and membership.set_option
       and not membership.admin_option
+      and not membership.inherit_option
+      and membership.set_option
   ) then
     raise exception
-      'mcp_ingress is not granted to authenticator with set and without admin';
+      'mcp_ingress is not granted to authenticator with admin false, inherit false, and set true';
   end if;
 
   if not exists (
@@ -189,8 +194,9 @@ begin
       and not (
         (
           member_role.rolname = 'authenticator'
-          and membership.set_option
           and not membership.admin_option
+          and not membership.inherit_option
+          and membership.set_option
         )
         or (
           member_role.rolname = current_user
@@ -202,6 +208,16 @@ begin
   ) then
     raise exception
       'mcp_ingress has a membership other than authenticator or the creating role';
+  end if;
+
+  -- N19: zero outbound memberships. Verify only. Do not revoke.
+  if exists (
+    select 1
+    from pg_auth_members as membership
+    join pg_roles as member_role on member_role.oid = membership.member
+    where member_role.rolname = 'mcp_ingress'
+  ) then
+    raise exception 'mcp_ingress has an outbound membership';
   end if;
 
   if pg_has_role('mcp_ingress', 'authenticated', 'member')
