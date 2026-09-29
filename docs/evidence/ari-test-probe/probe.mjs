@@ -7,6 +7,7 @@ import { pathToFileURL } from 'node:url';
 import {
   ALLOWED_PROJECT_REF,
   assertTarget,
+  authErrorCode,
   authRowVerdict,
   classifyRealtimeReply,
   classifyTokenA,
@@ -15,6 +16,7 @@ import {
   decodeJwtClaims,
   EXPECTED_ORIGIN,
   INGRESS_ROLE,
+  isJoinPhxReply,
   MARKER,
   MCP_RESOURCE,
   matrixBlocked,
@@ -23,6 +25,7 @@ import {
   publicJwks,
   publishableKeyRejected,
   REALTIME_TOPIC,
+  realtimeDiagnostic,
   realtimeVerdict,
   SERVICE_ROLE_ENV_NAMES,
   serviceRoleEnvPresent,
@@ -56,8 +59,10 @@ const AUTH_ROWS = [
   },
 ];
 
+// Stock pg_graphql inflection is off. Do not rename this field, flip inflection,
+// or enable the extension.
 const GRAPHQL_QUERY = {
-  query: 'query { ariProbeMarkerCollection(first: 1) { edges { node { marker } } } }',
+  query: 'query { ari_probe_markerCollection(first: 1) { edges { node { marker } } } }',
 };
 
 function receiptBase() {
@@ -288,6 +293,7 @@ export async function runProbe(options) {
       id: row.id,
       credential: 'token_a',
       status: result.status,
+      error_code: authErrorCode(result.body),
       verdict: verdict.verdict,
     });
     if (verdict.stop) return finish(4, verdict.verdict);
@@ -365,13 +371,18 @@ export async function runProbe(options) {
   const joinRealtime = options.joinRealtime ?? defaultJoinRealtime;
   for (const kind of ['token_a', 'token_b']) {
     const token = kind === 'token_a' ? options.tokenA : options.tokenB;
-    const status = await joinRealtime({
+    const joined = await joinRealtime({
       supabaseUrl: origin,
       publishableKey: options.publishableKey,
       token,
       topic: REALTIME_TOPIC,
     });
     requests += 1;
+    const status = typeof joined === 'string' ? joined : joined?.status;
+    const diagnostic =
+      joined !== null && typeof joined === 'object' && !Array.isArray(joined)
+        ? joined.diagnostic
+        : undefined;
     // Token A transport is realtime_transport. It is not deny.
     const verdict = realtimeVerdict(kind, status);
     rows.push({
@@ -379,6 +390,7 @@ export async function runProbe(options) {
       credential: kind,
       label: kind === 'token_b' ? 'POSITIVE_CONTROL_NOT_MCP' : undefined,
       status,
+      ...(diagnostic !== undefined ? { diagnostic } : {}),
       verdict: verdict.verdict,
     });
     if (verdict.stop) return finish(4, verdict.verdict);
@@ -439,6 +451,52 @@ async function runDataSurface(surface, call, rows, options) {
   return undefined;
 }
 
+export function readJoinReply(socket, timeout) {
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = (value) => {
+      if (settled) return;
+      settled = true;
+      socket.removeEventListener('message', onMessage);
+      socket.removeEventListener('close', onClose);
+      socket.removeEventListener('error', onError);
+      timeout.removeEventListener('abort', onTimeout);
+      resolve(value);
+    };
+    const onMessage = (event) => {
+      let message;
+      try {
+        message = JSON.parse(String(event.data));
+      } catch {
+        return;
+      }
+      if (!isJoinPhxReply(message)) return;
+      finish(message);
+    };
+    const onClose = (event) => {
+      const code = event !== null && typeof event === 'object' ? event.code : null;
+      finish({ closed: true, code: typeof code === 'number' ? code : null });
+    };
+    const onError = () => finish({ socketClose: true });
+    const onTimeout = () => finish({ timeout: true });
+    socket.addEventListener('message', onMessage);
+    socket.addEventListener('close', onClose);
+    socket.addEventListener('error', onError);
+    timeout.addEventListener('abort', onTimeout);
+  });
+}
+
+function realtimeTransport(outcome) {
+  if (outcome !== null && typeof outcome === 'object' && outcome.timeout === true) {
+    return { status: 'transport', diagnostic: realtimeDiagnostic({ timeout: true }) };
+  }
+  const code =
+    outcome !== null && typeof outcome === 'object' && typeof outcome.code === 'number'
+      ? outcome.code
+      : null;
+  return { status: 'transport', diagnostic: realtimeDiagnostic({ closed: true, code }) };
+}
+
 async function defaultJoinRealtime({ supabaseUrl, publishableKey, token, topic }) {
   const url = new URL(supabaseUrl);
   url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:';
@@ -454,23 +512,7 @@ async function defaultJoinRealtime({ supabaseUrl, publishableKey, token, topic }
         once: true,
       });
     });
-    const reply = new Promise((resolve, reject) => {
-      socket.addEventListener(
-        'message',
-        (event) => {
-          try {
-            const message = JSON.parse(String(event.data));
-            if (message.event === 'phx_reply') resolve(message);
-          } catch {
-            resolve(null);
-          }
-        },
-        { once: true },
-      );
-      timeout.addEventListener('abort', () => reject(new Error('realtime_timeout')), {
-        once: true,
-      });
-    });
+    const pending = readJoinReply(socket, timeout);
     socket.send(
       JSON.stringify({
         topic: `realtime:${topic}`,
@@ -483,10 +525,19 @@ async function defaultJoinRealtime({ supabaseUrl, publishableKey, token, topic }
         join_ref: '1',
       }),
     );
-    const replyStatus = await reply;
-    return classifyRealtimeReply(replyStatus);
-  } catch {
-    return 'transport';
+    const outcome = await pending;
+    if (isJoinPhxReply(outcome)) {
+      return {
+        status: classifyRealtimeReply(outcome),
+        diagnostic: realtimeDiagnostic(outcome),
+      };
+    }
+    return realtimeTransport(outcome);
+  } catch (error) {
+    const timedOut = error instanceof Error && error.message === 'realtime_timeout';
+    return timedOut
+      ? { status: 'transport', diagnostic: realtimeDiagnostic({ timeout: true }) }
+      : { status: 'transport', diagnostic: realtimeDiagnostic({ socketClose: true }) };
   } finally {
     socket.close();
   }

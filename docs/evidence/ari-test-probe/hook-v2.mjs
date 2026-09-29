@@ -1,6 +1,7 @@
 /**
  * Pure decision oracle for the uninstalled hook v2 packet.
  * No network, no database, and no credential values.
+ * Expected policy returns a structured error object. Unexpected faults raise.
  * Liveness is each hook call (token issuance or refresh) only.
  * It is not an MCP-call check. The adapter has no liveness check.
  * A failed check is not a revocation receipt.
@@ -45,6 +46,16 @@ function raise(reason) {
   };
 }
 
+function policyError(httpCode, message, reason) {
+  return {
+    action: 'error',
+    reason,
+    error: { http_code: httpCode, message },
+    revocationClaimed: false,
+    liveCheck: 'hook_issuance_or_refresh',
+  };
+}
+
 /**
  * @param {object} input
  * @param {object} input.event GoTrue hook event. `claims.client_id` is the only client id.
@@ -69,13 +80,15 @@ export function decideHookV2(input) {
       liveCheck: 'not_applicable_absent_client_id',
     };
   }
-  if (scopeHasOpenId(eventScope(event, claims))) return raise('openid_scope_refused');
+  if (scopeHasOpenId(eventScope(event, claims))) {
+    return policyError(403, 'openid_scope_refused', 'openid_scope_refused');
+  }
   const mapped = input.clients.find((row) => row.clientId === clientId);
-  if (mapped === undefined) return raise('unmapped_client_id');
+  if (mapped === undefined) return policyError(403, 'unmapped_client_id', 'unmapped_client_id');
   const sourceSessionId = typeof claims.session_id === 'string' ? claims.session_id : '';
   const now = input.now ?? Date.now();
   if (!liveSession(input.sessions, sourceSessionId, event.user_id, now)) {
-    return raise('source_session_not_live');
+    return policyError(401, 'source_session_not_live', 'source_session_not_live');
   }
   const fresh = input.randomUuid();
   if (!isNonNilUuid(fresh) || input.sessions.some((row) => row.id === fresh)) {

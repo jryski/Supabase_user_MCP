@@ -21,18 +21,27 @@ never produce `matrix_held`.
 Token B positive controls require the expected status and the expected body.
 A success-looking status with the wrong body is not a positive control.
 Token B `GET /auth/v1/user` must be `200` with the same `id` as Token A before
-any Token A Auth denial counts. Token A Auth denial is `401` or `403`. REST
-denial is `401` or `403` with Postgres `42501`. GraphQL denial is HTTP `200`
-with `data` present and `ariProbeMarkerCollection` absent, or HTTP `200`
-whose `errors` name that collection or an unknown field. Any other GraphQL
-status is inconclusive unless it is `401` or `403` with Postgres `42501`.
-Storage denial is `404`, or `400`/`403` whose body names `not_found`,
-`Object not found`, or `unauthorized`. A `DatabaseError` or any other `400`
-is inconclusive. Realtime counts as denial only for an explicit unauthorized
-reply. Token A transport is `realtime_transport`, not deny. GraphQL Token B
-positive control requires `pg_graphql`. This packet does not enable it. A
-body that says `pg_graphql` is not installed is `graphql_prerequisite_missing`,
-not a permission result.
+any Token A Auth denial counts. Token A Auth denial is `401` or `403` with
+safe `error_code` `session_not_found`. Status alone is inconclusive. REST
+denial is `401` or `403` with Postgres `42501`. GraphQL uses the literal
+collection `ari_probe_markerCollection` because stock `pg_graphql` leaves
+inflection off. Denial is HTTP `200` with `data` present and that collection
+absent, or HTTP `200` whose `errors` name that collection. The camelCase
+field is a different name and stays inconclusive. Any other GraphQL status
+is inconclusive unless it is `401` or `403` with Postgres `42501`. Storage
+denial is `404`, or `400`/`403` whose body names `not_found`, `Object not
+found`, or `unauthorized`. A `DatabaseError` or any other `400` is
+inconclusive. Realtime denial is a `phx_reply` whose `ref` is `1` and whose
+payload is an explicit auth denial (`401`, `403`, `unauthorized`,
+`forbidden`, or `access_denied`). Other frames are ignored. Token A transport,
+socket close, and timeout stay `realtime_transport`. Diagnostics keep
+event, topic, ref, payload status, reason, and code. They do not keep tokens.
+GraphQL Token B positive control requires `pg_graphql` and can return marker
+`ari-probe-marker-odbcejsuuqdzhabjmozi`. Publishable stays an unknown field
+or no marker. This packet does not enable `pg_graphql` and does not change
+inflection, introspection, exposed schemas, or grants. A body that says
+`pg_graphql` is not installed is `graphql_prerequisite_missing`, not a
+permission result.
 
 A body with Postgres `22023`, or `role "…" does not exist`, is
 `ingress_role_missing` on Auth, GraphQL, and Storage. That is a named
@@ -143,6 +152,12 @@ SQL apply order. This agent does not run it.
    act as `mcp_ingress`. Hosted TEST is PostgreSQL 17.6. The in-repo check
    is PGlite PostgreSQL 18.3.
 
+   Primary Users reviewing isolation: `mcp_ingress` has no USAGE on the
+   `graphql` and `graphql_public` schemas. A `graphql_public` wrapper may
+   still show EXECUTE because PUBLIC holds it. The isolation record is zero
+   outbound memberships and zero table and column grants. The marker ACL
+   stays as `sql/01` left it. This packet does not change `sql/03`.
+
    ```sql
    select set_config('ari.project_ref', 'odbcejsuuqdzhabjmozi', false);
    ```
@@ -156,8 +171,14 @@ SQL apply order. This agent does not run it.
 `sql/04-hook-v2-for-ariadne.sql` is the install text. It is not installed
 from this branch. The same batch must set `ari.project_ref`,
 `ari.oauth_client_id` (the exact registered client id), `ari.mcp_resource`,
-and `ari.agent_id`. Absent `client_id` returns claims unchanged. `openid`
-raises for every OAuth client. An unmapped `client_id` raises. The mapped
+and `ari.agent_id`. Absent `client_id` returns claims unchanged. Expected
+`openid` on any OAuth client returns a structured error,
+`error.http_code` 403 and `error.message` `openid_scope_refused`. A present
+unmapped `client_id` returns that same structured 403 with message
+`unmapped_client_id`. A dead or not-live source session returns a structured
+401 with message `source_session_not_live`. Unexpected faults still raise.
+Primary Users leave the hook disabled until Warden reviews this exact head.
+This agent does not install it and does not contact hosted TEST. The mapped
 client sets `aud` to the configured MCP resource, `role` to `mcp_ingress`,
 `session_id` to `gen_random_uuid()` after it is checked non-nil and absent
 from `auth.sessions`, `source_session_id` to the original session id, and
@@ -198,8 +219,12 @@ TEST.
 
 `buildAuthorizeUrl` still refuses `openid`. The labelled path
 `openid_negative` (`buildOpenIdNegativeAuthorizeUrl` and `runOpenIdNegative`)
-sends `openid` on purpose. It expects no `id_token`. `openid_rejected` is a
-pass only for an explicit OAuth error below HTTP 500. A generic `500` is
+sends `openid` on purpose. It expects no `id_token` and no `access_token`.
+`openid_rejected` is only the exchange hook denial: HTTP `403`, the exact
+marker `openid_scope_refused`, and no token. Authorize-stage `invalid_scope`
+is a different reason, `openid_refused_client_scope`, and does not satisfy
+that hook-denial row. `invalid_grant`, `invalid_request`, `invalid_client`,
+and the other generic OAuth errors stay inconclusive. A generic `500` is
 `exchange_server_error` or `authorize_server_error`. Transport failure stays
 a transport reason. A missing authorization id is `authorize_inconclusive`.
 Those are not a pass.
@@ -233,11 +258,13 @@ Discovery coverage, not fetched by this packet:
 Controls for a later controller run, after hook review:
 
 - Mapped client mint, scope without `openid`, code plus S256 PKCE.
-- Token A on Auth routes is HTTP `403` with `error` `session_not_found`.
-  That is the fresh session id missing from `auth.sessions`, not a
-  revocation proof.
-- Label `openid_negative` sends `openid` on purpose. Failure is recorded at
-  authorize or at exchange. The receipt has no `id_token`.
+- Token A on Auth routes is HTTP `401` or `403` with safe `error_code`
+  `session_not_found`. That is the fresh session id missing from
+  `auth.sessions`, not a revocation proof. Status alone does not hold the row.
+- Label `openid_negative` sends `openid` on purpose. The hook-denial row is
+  exchange HTTP `403` with marker `openid_scope_refused` and no token.
+  Authorize-stage `invalid_scope` is `openid_refused_client_scope`. The
+  receipt has no `id_token`.
 - An unmapped `client_id` fails before a token is minted.
 - Password login, with no `client_id`, is unchanged.
 - Data API: Token A denied, Token B positive, labeled
@@ -286,10 +313,13 @@ curl -sS -X POST \
 ```
 
 Label `openid_negative`. This authorize URL sends `scope=openid` on purpose.
-`openid_rejected` means an explicit OAuth error below HTTP 500 and no
-`id_token`. HTTP 500 is `exchange_server_error` or `authorize_server_error`.
-A missing authorization id is `authorize_inconclusive`. Transport failure
-is not a pass. A body that contains `id_token` fails the receipt.
+`openid_rejected` means exchange HTTP `403` with the exact marker
+`openid_scope_refused` and no `id_token` or `access_token`. Authorize-stage
+`invalid_scope` is `openid_refused_client_scope`. Generic `invalid_grant`,
+`invalid_request`, and `invalid_client` stay inconclusive. HTTP 500 is
+`exchange_server_error` or `authorize_server_error`. A missing authorization
+id is `authorize_inconclusive`. Transport failure is not a pass. A body that
+contains `id_token` or `access_token` fails the receipt.
 
 ```bash
 curl -sS \
@@ -302,14 +332,14 @@ curl -sS \
 | Row | Credential | Hold | Stop |
 | --- | --- | --- | --- |
 | `GET /auth/v1/user` | Token B | `200` and `id` matches Token A `sub` | any other result stops the matrix |
-| `GET /auth/v1/user` | Token A | `401` or `403` | `2xx` is NO-GO; `429`, `5xx`, and redirects are inconclusive |
-| `PUT /auth/v1/user` | Token A | `401` or `403` | `2xx` is NO-GO; other statuses are inconclusive |
-| `POST /auth/v1/factors` | Token A | `401` or `403` | `2xx` is NO-GO; other statuses are inconclusive |
-| `POST /auth/v1/logout` | Token A | `401` or `403` | `2xx` is NO-GO; other statuses are inconclusive |
+| `GET /auth/v1/user` | Token A | `401` or `403` and `error_code` `session_not_found` | `2xx` is NO-GO; status without that code, `429`, `5xx`, and redirects are inconclusive |
+| `PUT /auth/v1/user` | Token A | `401` or `403` and `error_code` `session_not_found` | `2xx` is NO-GO; other results are inconclusive |
+| `POST /auth/v1/factors` | Token A | `401` or `403` and `error_code` `session_not_found` | `2xx` is NO-GO; other results are inconclusive |
+| `POST /auth/v1/logout` | Token A | `401` or `403` and `error_code` `session_not_found` | `2xx` is NO-GO; other results are inconclusive |
 | REST `/rest/v1/ari_probe_marker` | publishable, Token A, Token B | Token A is `401` or `403` with `42501`; Token B is `200` and a row `marker` | Token A contains the marker, or the status is not that denial |
-| GraphQL `/graphql/v1` | same pair | Requires `pg_graphql`. This packet does not enable it. Token A is HTTP `200` with `data` and no collection, or `errors` that name the collection; Token B is `200` and the marker node | Missing `pg_graphql` is `graphql_prerequisite_missing`. Any other Token A GraphQL result, including a bare JSON object, stays inconclusive |
+| GraphQL `/graphql/v1` | same pair | Query field is `ari_probe_markerCollection`. Stock inflection stays off. This packet does not enable `pg_graphql`. Token A is HTTP `200` with `data` and no collection, or `errors` that name that collection; Token B is `200` and marker `ari-probe-marker-odbcejsuuqdzhabjmozi`; publishable is an unknown field or no marker | Missing `pg_graphql` is `graphql_prerequisite_missing`. A camelCase field name stays inconclusive |
 | Storage `ari-probe-synthetic/marker.txt` | Token B seed is `2xx` or `409`, then the same pair | Token A is `404`, or `400`/`403` naming not found or unauthorized; Token B GET is `200` and the marker bytes | Token A `400` `DatabaseError`, or any other `400` |
-| Realtime private topic `ari-probe-synthetic` | Token A, Token B | Token A reply is explicit unauthorized; Token B join is `ok` | Token A join `ok` is NO-GO. Token A transport is `realtime_transport`, not deny |
+| Realtime private topic `ari-probe-synthetic` | Token A, Token B | Token A `phx_reply` ref `1` is an explicit auth denial; Token B join is `ok` | Token A join `ok` is NO-GO. Other frames, socket close, and timeout are `realtime_transport`, not deny |
 
 Exit `0` means this matrix held. It does not mean acceptance or Token A
 separation. Exit `2` is a target or credential guard. Exit `3` means Token A was not sent because it is still `role=authenticated`,

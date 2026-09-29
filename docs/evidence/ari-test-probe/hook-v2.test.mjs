@@ -45,7 +45,7 @@ test('absent client_id leaves password claims unchanged', () => {
   assert.equal(result.revocationClaimed, false);
 });
 
-test('openid raises for every oauth client', () => {
+test('openid returns a structured 403 for every oauth client', () => {
   const mapped = decideHookV2(
     mappedInput({
       event: {
@@ -63,13 +63,17 @@ test('openid raises for every oauth client', () => {
       },
     }),
   );
+  assert.equal(mapped.action, 'error');
+  assert.equal(other.action, 'error');
+  assert.deepEqual(mapped.error, { http_code: 403, message: 'openid_scope_refused' });
+  assert.deepEqual(other.error, { http_code: 403, message: 'openid_scope_refused' });
   assert.equal(mapped.reason, 'openid_scope_refused');
   assert.equal(other.reason, 'openid_scope_refused');
   assert.equal(mapped.revocationClaimed, false);
   assert.equal(other.revocationClaimed, false);
 });
 
-test('a present unmapped client_id raises', () => {
+test('a present unmapped client_id returns the same structured 403', () => {
   const result = decideHookV2(
     mappedInput({
       event: {
@@ -78,8 +82,10 @@ test('a present unmapped client_id raises', () => {
       },
     }),
   );
-  assert.equal(result.action, 'raise');
+  assert.equal(result.action, 'error');
+  assert.deepEqual(result.error, { http_code: 403, message: 'unmapped_client_id' });
   assert.equal(result.reason, 'unmapped_client_id');
+  assert.equal(result.revocationClaimed, false);
 });
 
 test('the mapped client rewrites aud, role, and session ids', () => {
@@ -105,27 +111,38 @@ test('a dead source session is not called revocation', () => {
     }),
   );
   const missing = decideHookV2(mappedInput({ sessions: [] }));
+  assert.equal(expired.action, 'error');
+  assert.equal(missing.action, 'error');
+  assert.deepEqual(expired.error, { http_code: 401, message: 'source_session_not_live' });
+  assert.deepEqual(missing.error, { http_code: 401, message: 'source_session_not_live' });
   assert.equal(expired.reason, 'source_session_not_live');
   assert.equal(missing.reason, 'source_session_not_live');
   assert.equal(expired.revocationClaimed, false);
   assert.equal(missing.revocationClaimed, false);
 });
 
-test('a nil or colliding fresh session id is rejected', () => {
+test('a nil or colliding fresh session id still raises', () => {
   const nil = decideHookV2(
     mappedInput({ randomUuid: () => '00000000-0000-0000-0000-000000000000' }),
   );
   const collision = decideHookV2(mappedInput({ randomUuid: () => SOURCE }));
+  assert.equal(nil.action, 'raise');
+  assert.equal(collision.action, 'raise');
   assert.equal(nil.reason, 'fresh_session_id_rejected');
   assert.equal(collision.reason, 'fresh_session_id_rejected');
+  assert.equal(nil.error, undefined);
 });
 
 test('hook v2 SQL matches the decision text and takes client ids as parameters', async () => {
   const sql = await readFile(new URL('./sql/04-hook-v2-for-ariadne.sql', import.meta.url), 'utf8');
-  assert.match(sql, /openid scope is refused for every oauth client/);
-  assert.match(sql, /unmapped oauth client_id/);
-  assert.match(sql, /source session is not live/);
-  assert.match(sql, /fresh session_id is nil or already in auth.sessions/);
+  assert.match(sql, /openid_scope_refused/);
+  assert.match(sql, /'http_code', 403/);
+  assert.match(sql, /unmapped_client_id/);
+  assert.match(sql, /'http_code', 401/);
+  assert.match(sql, /source_session_not_live/);
+  assert.match(sql, /raise exception 'hook event is unreadable'/);
+  assert.match(sql, /raise exception 'fresh session_id is nil or already in auth.sessions'/);
+  assert.match(sql, /unexpected faults still raise/);
   assert.match(sql, /source_session_id/);
   assert.match(sql, /pg_catalog\.gen_random_uuid\(\)/);
   assert.match(sql, /current_setting\('ari\.oauth_client_id', true\)/);

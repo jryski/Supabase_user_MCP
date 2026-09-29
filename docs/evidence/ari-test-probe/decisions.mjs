@@ -8,6 +8,8 @@ export const FORBIDDEN_PROJECT_REFS = Object.freeze(['lygftpbjgqgvuunkwnxf']);
 export const INGRESS_ROLE = 'mcp_ingress';
 export const MCP_RESOURCE = 'https://odbcejsuuqdzhabjmozi.supabase.co/mcp';
 export const MARKER = 'ari-probe-marker-odbcejsuuqdzhabjmozi';
+/** Stock pg_graphql leaves inflection off. The field is the table name plus Collection. */
+export const GRAPHQL_COLLECTION = 'ari_probe_markerCollection';
 /**
  * Local decision-test stand-in. Not a registered OAuth client.
  * A live probe must pass the exact registered client id and must not fall
@@ -219,13 +221,29 @@ function ingressRoleVerdict(surface) {
   return { verdict: 'ingress_role_missing', stop: true };
 }
 
+const SAFE_ERROR_CODE = /^[a-z0-9_]{1,64}$/u;
+
+/** Safe Auth error_code only. Status without this code is not a Token A denial. */
+export function authErrorCode(body) {
+  const parsed = parseJson(body);
+  if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) return null;
+  for (const candidate of [parsed.error_code, parsed.error]) {
+    if (typeof candidate === 'string' && SAFE_ERROR_CODE.test(candidate)) return candidate;
+  }
+  return null;
+}
+
 export function authRowVerdict(status, mutation, body = '') {
   if (ingressRoleMissing(body)) return ingressRoleVerdict('auth');
   if (httpOutcome(status) !== 'http') return inconclusive();
   if (status >= 200 && status < 300) {
     return stopNoGo(mutation ? 'NO_GO_TOKEN_A_MUTATION' : 'NO_GO_TOKEN_A_AUTH_READ');
   }
-  if (status === 401 || status === 403) return { verdict: 'deny', stop: false };
+  const errorCode = authErrorCode(body);
+  if ((status === 401 || status === 403) && errorCode === 'session_not_found') {
+    return { verdict: 'deny', stop: false, errorCode };
+  }
+  if (status === 401 || status === 403) return { verdict: 'inconclusive', stop: false, errorCode };
   return inconclusive();
 }
 
@@ -269,7 +287,7 @@ function graphqlCollection(body) {
   const data = parsed.data;
   const collection =
     data !== null && typeof data === 'object' && !Array.isArray(data)
-      ? data.ariProbeMarkerCollection
+      ? data[GRAPHQL_COLLECTION]
       : undefined;
   const nodes = [];
   const edges = collection?.edges;
@@ -349,14 +367,14 @@ function tokenAGraphqlVerdict(status, body) {
   }
   const data = parsed.data;
   if (data !== null && typeof data === 'object' && !Array.isArray(data)) {
-    if (data.ariProbeMarkerCollection == null) return { verdict: 'deny', stop: false };
+    if (data[GRAPHQL_COLLECTION] == null) return { verdict: 'deny', stop: false };
   }
   return inconclusive();
 }
 
 function graphqlErrorsNameCollection(errors) {
   const text = JSON.stringify(errors).toLowerCase();
-  return text.includes('ariprobemarkercollection') || text.includes('unknown field');
+  return text.includes(GRAPHQL_COLLECTION.toLowerCase());
 }
 
 function tokenAStorageVerdict(status, body) {
@@ -411,20 +429,107 @@ export function storageSeedVerdict(status, body = '') {
   return inconclusive();
 }
 
+const SAFE_DIAGNOSTIC = /^[a-z0-9_.:-]{1,64}$/iu;
+
+function safeDiagnosticToken(value) {
+  if (typeof value === 'number' && Number.isInteger(value)) return String(value);
+  if (typeof value !== 'string') return null;
+  if (!SAFE_DIAGNOSTIC.test(value)) return null;
+  return value;
+}
+
+function realtimeAuthCode(value) {
+  if (value === 401 || value === 403) return value;
+  if (value === '401' || value === '403') return Number(value);
+  return null;
+}
+
+export function isJoinPhxReply(message) {
+  if (message === null || typeof message !== 'object' || Array.isArray(message)) return false;
+  return message.event === 'phx_reply' && String(message.ref) === '1';
+}
+
+export function realtimeDiagnostic(source) {
+  if (source === null || typeof source !== 'object' || Array.isArray(source)) {
+    return {
+      event: null,
+      topic: null,
+      ref: null,
+      payloadStatus: null,
+      reason: null,
+      code: null,
+      socketClose: false,
+      timeoutClass: null,
+    };
+  }
+  if (source.timeout === true) {
+    return {
+      event: null,
+      topic: null,
+      ref: null,
+      payloadStatus: null,
+      reason: null,
+      code: null,
+      socketClose: false,
+      timeoutClass: 'realtime_timeout',
+    };
+  }
+  if (source.closed === true || source.socketClose === true) {
+    const closeCode = typeof source.code === 'number' ? source.code : null;
+    return {
+      event: null,
+      topic: null,
+      ref: null,
+      payloadStatus: null,
+      reason: null,
+      code: closeCode,
+      socketClose: true,
+      timeoutClass: null,
+    };
+  }
+  const payload = source.payload;
+  const response =
+    payload !== null && typeof payload === 'object' && !Array.isArray(payload)
+      ? payload.response
+      : undefined;
+  const reason =
+    response !== null && typeof response === 'object' && !Array.isArray(response)
+      ? response.reason
+      : undefined;
+  const code =
+    response !== null && typeof response === 'object' && !Array.isArray(response)
+      ? (response.status ?? response.code)
+      : undefined;
+  return {
+    event: safeDiagnosticToken(source.event),
+    topic: safeDiagnosticToken(source.topic),
+    ref: safeDiagnosticToken(source.ref),
+    payloadStatus:
+      payload !== null && typeof payload === 'object' && !Array.isArray(payload)
+        ? safeDiagnosticToken(payload.status)
+        : null,
+    reason: safeDiagnosticToken(typeof reason === 'string' ? reason.toLowerCase() : reason),
+    code: realtimeAuthCode(code) ?? safeDiagnosticToken(code),
+    socketClose: false,
+    timeoutClass: null,
+  };
+}
+
 export function classifyRealtimeReply(message) {
-  if (message === null || typeof message !== 'object') return 'transport';
-  if (message.event !== 'phx_reply') return 'transport';
+  if (!isJoinPhxReply(message)) return 'transport';
   const payload = message.payload;
   if (payload === null || typeof payload !== 'object') return 'transport';
   if (payload.status === 'ok') return 'ok';
   if (payload.status !== 'error') return 'transport';
   const response = payload.response;
   const reason = typeof response?.reason === 'string' ? response.reason.toLowerCase() : '';
-  const code = response?.status ?? response?.code;
+  const code = realtimeAuthCode(response?.status ?? response?.code);
   if (
-    reason.includes('unauthor') ||
-    reason.includes('forbidden') ||
+    reason === 'unauthorized' ||
+    reason === 'forbidden' ||
     reason === 'access_denied' ||
+    reason.includes('unauthorized') ||
+    reason.includes('forbidden') ||
     code === 401 ||
     code === 403
   ) {
@@ -536,14 +641,14 @@ export function plan() {
       'L7 baseline SECURITY DEFINER / PUBLIC EXECUTE before the run',
       'L0 Token A signature, expiry, client, and MCP-edge acceptance',
       'L6 Token B GET /auth/v1/user expects 200',
-      'L6 GET /auth/v1/user with Token A expects 401 or 403',
-      'L6 PUT /auth/v1/user with Token A; stop on 2xx',
-      'L6 POST /auth/v1/factors with Token A; stop on 2xx',
-      'L6 POST /auth/v1/logout with Token A; stop on 2xx',
+      'L6 GET /auth/v1/user with Token A expects 401 or 403 and error_code session_not_found',
+      'L6 PUT /auth/v1/user with Token A; stop on 2xx; denial needs error_code session_not_found',
+      'L6 POST /auth/v1/factors with Token A; stop on 2xx; denial needs error_code session_not_found',
+      'L6 POST /auth/v1/logout with Token A; stop on 2xx; denial needs error_code session_not_found',
       'L5 REST publishable, Token A deny, Token B positive',
-      'L5 GraphQL requires pg_graphql; this packet does not enable it. Token B positive control is not a permission result without that extension',
+      'L5 GraphQL uses ari_probe_markerCollection because stock pg_graphql inflection is off. This packet does not enable it and does not change inflection, introspection, or grants',
       'L5 Storage publishable, Token A deny, Token B positive',
-      'L5 Realtime Token A explicit unauthorized is deny; transport is realtime_transport, not deny',
+      'L5 Realtime Token A deny is a phx_reply ref 1 auth denial; other frames and transport stay realtime_transport',
     ],
   };
 }

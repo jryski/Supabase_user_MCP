@@ -255,11 +255,12 @@ test('openid_negative sends openid and records authorize or exchange rejection',
     ...base,
     fetch: async (url, init) => {
       authorizeCalls.push({ url: `${url}`, init });
-      return jsonResponse(400, { error: 'invalid_request', error_description: 'openid refused' });
+      return jsonResponse(400, { error: 'invalid_scope' });
     },
   });
   assert.equal(atAuthorize.ok, true);
-  assert.equal(atAuthorize.reason, 'openid_rejected');
+  assert.equal(atAuthorize.reason, 'openid_refused_client_scope');
+  assert.notEqual(atAuthorize.reason, 'openid_rejected');
   assert.equal(atAuthorize.label, 'openid_negative');
   assert.equal(atAuthorize.openidSent, true);
   assert.equal(atAuthorize.rejectionStage, 'authorize');
@@ -280,11 +281,15 @@ test('openid_negative sends openid and records authorize or exchange rejection',
       if (href.endsWith('/consent')) {
         return jsonResponse(200, { redirect_url: `http://127.0.0.1:8787/callback?code=${code}` });
       }
-      return jsonResponse(400, { error: 'invalid_grant' });
+      return jsonResponse(403, {
+        error: 'invalid_request',
+        error_description: 'openid_scope_refused',
+      });
     },
   });
   assert.equal(atExchange.ok, true);
   assert.equal(atExchange.reason, 'openid_rejected');
+  assert.notEqual(atExchange.reason, 'openid_refused_client_scope');
   assert.equal(atExchange.rejectionStage, 'exchange');
   assert.equal(atExchange.idTokenPresent, false);
   assert.equal(atExchange.codeChallengeMethod, 'S256');
@@ -326,6 +331,78 @@ test('openid_negative sends openid and records authorize or exchange rejection',
   assert.equal(printed.includes(code), false);
   assert.equal(printed.includes(pkce.codeVerifier), false);
   assert.equal(printed.includes(idToken), false);
+});
+
+test('generic oauth errors never count as openid_rejected', async () => {
+  const pkce = createPkce();
+  const session = 'synthetic-session-must-not-leak';
+  const code = 'openid-code-must-not-leak';
+  const access = 'access-token-must-not-leak';
+  const base = {
+    authOrigin: 'https://odbcejsuuqdzhabjmozi.supabase.co',
+    userAccessToken: session,
+    publishableKey: 'publishable-key',
+    clientId: CLIENT,
+    redirectUri: REDIRECT,
+    resource: RESOURCE,
+    codeVerifier: pkce.codeVerifier,
+    codeChallenge: pkce.codeChallenge,
+    scopes: ['openid', 'email'],
+  };
+  const route = (tokenBody, status) => async (url, init) => {
+    const href = `${url}`;
+    if (href.includes('/oauth/authorize?')) {
+      return jsonResponse(302, '', { location: '/oauth/consent?authorization_id=authz-openid' });
+    }
+    if (init?.method === 'GET') return jsonResponse(200, { authorization_id: 'authz-openid' });
+    if (href.endsWith('/consent')) {
+      return jsonResponse(200, { redirect_url: `http://127.0.0.1:8787/callback?code=${code}` });
+    }
+    return jsonResponse(status, tokenBody);
+  };
+  const cases = [
+    { status: 400, body: { error: 'invalid_grant' } },
+    { status: 400, body: { error: 'invalid_request' } },
+    { status: 401, body: { error: 'invalid_client' } },
+    { status: 400, body: { error: 'invalid_scope' } },
+    { status: 400, body: { error_description: 'openid_scope_refused' } },
+    {
+      status: 403,
+      body: { error: 'invalid_grant', error_description: 'hook said something else' },
+    },
+  ];
+  for (const item of cases) {
+    const result = await runOpenIdNegative({
+      ...base,
+      fetch: route(item.body, item.status),
+    });
+    assert.equal(result.ok, false);
+    assert.equal(result.reason, 'exchange_inconclusive');
+    assert.notEqual(result.reason, 'openid_rejected');
+    assert.notEqual(result.reason, 'openid_refused_client_scope');
+  }
+  const withAccessToken = await runOpenIdNegative({
+    ...base,
+    fetch: route(
+      { error: 'invalid_request', error_description: 'openid_scope_refused', access_token: access },
+      403,
+    ),
+  });
+  assert.equal(withAccessToken.ok, false);
+  assert.equal(withAccessToken.reason, 'access_token_present');
+  assert.notEqual(withAccessToken.reason, 'openid_rejected');
+  const authorizeGeneric = await runOpenIdNegative({
+    ...base,
+    fetch: async () => jsonResponse(400, { error: 'invalid_request' }),
+  });
+  assert.equal(authorizeGeneric.ok, false);
+  assert.equal(authorizeGeneric.reason, 'authorize_inconclusive');
+  assert.notEqual(authorizeGeneric.reason, 'openid_rejected');
+  const printed = JSON.stringify({ withAccessToken, authorizeGeneric });
+  assert.equal(printed.includes(session), false);
+  assert.equal(printed.includes(code), false);
+  assert.equal(printed.includes(access), false);
+  assert.equal(printed.includes(pkce.codeVerifier), false);
 });
 
 test('openid_negative does not pass a generic 500, transport failure, or missing authorization', async () => {

@@ -5,30 +5,36 @@ import { exportJWK, generateKeyPair, SignJWT } from 'jose';
 import {
   ALLOWED_PROJECT_REF,
   assertTarget,
+  authErrorCode,
   authRowVerdict,
+  classifyRealtimeReply,
   classifyTokenA,
   classifyTokenB,
   dataRowVerdict,
   EXPECTED_CLIENT_ID,
   FORBIDDEN_PROJECT_REFS,
+  GRAPHQL_COLLECTION,
   graphqlPrerequisiteMissing,
   INGRESS_ROLE,
+  isJoinPhxReply,
   MARKER,
   MCP_EDGE_ACCEPTANCE,
   MCP_RESOURCE,
   plan,
+  realtimeDiagnostic,
   realtimeVerdict,
   storageSeedVerdict,
 } from './decisions.mjs';
-import { runProbe } from './probe.mjs';
+import { readJoinReply, runProbe } from './probe.mjs';
 
 const SUBJECT = '11111111-1111-4111-8111-111111111111';
 const SESSION = '22222222-2222-4222-8222-222222222222';
 const ISSUER = `https://${ALLOWED_PROJECT_REF}.supabase.co/auth/v1`;
 const REST_DENY = JSON.stringify({ code: '42501', message: 'permission denied' });
+const AUTH_DENY = JSON.stringify({ error_code: 'session_not_found', msg: 'session not found' });
 const GRAPHQL_DENY = JSON.stringify({ data: {} });
 const GRAPHQL_OK = JSON.stringify({
-  data: { ariProbeMarkerCollection: { edges: [{ node: { marker: MARKER } }] } },
+  data: { [GRAPHQL_COLLECTION]: { edges: [{ node: { marker: MARKER } }] } },
 });
 const REST_OK = JSON.stringify([{ marker: MARKER }]);
 
@@ -220,7 +226,10 @@ test('503 auth responses and realtime transport are not a pass', async () => {
         }
         if (path === '/graphql/v1') {
           if (!token)
-            return new Response('{"data":{"ariProbeMarkerCollection":null}}', { status: 200 });
+            return new Response(
+              `{"errors":[{"message":"Unknown field \\"${GRAPHQL_COLLECTION}\\" on type \\"Query\\"."}]}`,
+              { status: 200 },
+            );
           if (tokenB) return new Response(GRAPHQL_OK, { status: 200 });
           return new Response(GRAPHQL_DENY, { status: 200 });
         }
@@ -257,6 +266,9 @@ test('503 auth responses and realtime transport are not a pass', async () => {
   assert.equal(authRowVerdict(503, false).verdict, 'inconclusive');
   assert.equal(authRowVerdict(429, true).verdict, 'inconclusive');
   assert.equal(authRowVerdict(302, true).verdict, 'inconclusive');
+  assert.equal(authRowVerdict(403, false, AUTH_DENY).verdict, 'deny');
+  assert.equal(authRowVerdict(403, false, '{}').verdict, 'inconclusive');
+  assert.notEqual(authRowVerdict(401, true, REST_DENY).verdict, 'deny');
 });
 
 test('graphql prerequisite and realtime transport are not deny', async () => {
@@ -297,7 +309,7 @@ test('graphql prerequisite and realtime transport are not deny', async () => {
           if (replaced !== undefined) return replaced;
           if (path === '/auth/v1/user' && init.method === 'GET' && tokenB)
             return userResponse(SUBJECT);
-          if (path.startsWith('/auth/')) return new Response(REST_DENY, { status: 401 });
+          if (path.startsWith('/auth/')) return new Response(AUTH_DENY, { status: 403 });
           if (path === '/rest/v1/ari_probe_marker') {
             if (!token) return new Response('[]', { status: 200 });
             if (tokenB) return new Response(REST_OK, { status: 200 });
@@ -378,7 +390,7 @@ test('holds only explicit denials plus status-and-body positive controls', async
         const tokenB = token.includes(probe.tokenB);
         if (path === '/auth/v1/user' && init.method === 'GET' && tokenB)
           return userResponse(SUBJECT);
-        if (path.startsWith('/auth/')) return new Response(REST_DENY, { status: 401 });
+        if (path.startsWith('/auth/')) return new Response(AUTH_DENY, { status: 403 });
         if (path === '/rest/v1/ari_probe_marker') {
           if (!token) return new Response('[]', { status: 200 });
           if (tokenB) return new Response(REST_OK, { status: 200 });
@@ -398,6 +410,9 @@ test('holds only explicit denials plus status-and-body positive controls', async
   );
   assert.equal(result.exitCode, 0);
   assert.equal(result.reason, 'matrix_held');
+  const authRow = result.rows.find((row) => row.id === 'L6-auth-get-user');
+  assert.equal(authRow.error_code, 'session_not_found');
+  assert.equal(authRow.verdict, 'deny');
   assert.equal(result.wiredIntoMcp, false);
   assert.equal(result.roleFlipShipped, true);
   assert.equal(result.hookInstalledByThisPacket, false);
@@ -445,7 +460,18 @@ test('Warden falsifiers never produce matrix_held', async () => {
       'graphql',
       'token_a',
       200,
-      JSON.stringify({ errors: [{ message: 'unknown field ariProbeMarkerCollection' }] }),
+      JSON.stringify({ errors: [{ message: 'Unknown field "ariProbeMarkerCollection"' }] }),
+    ).verdict,
+    'inconclusive',
+  );
+  assert.equal(
+    dataRowVerdict(
+      'graphql',
+      'token_a',
+      200,
+      JSON.stringify({
+        errors: [{ message: `Unknown field "${GRAPHQL_COLLECTION}" on type "Query".` }],
+      }),
     ).verdict,
     'deny',
   );
@@ -467,7 +493,7 @@ test('Warden falsifiers never produce matrix_held', async () => {
           if (replaced !== undefined) return replaced;
           if (path === '/auth/v1/user' && init.method === 'GET' && tokenB)
             return userResponse(SUBJECT);
-          if (path.startsWith('/auth/')) return new Response(REST_DENY, { status: 401 });
+          if (path.startsWith('/auth/')) return new Response(AUTH_DENY, { status: 403 });
           if (path === '/rest/v1/ari_probe_marker') {
             if (kind === 'publishable') return new Response('[]', { status: 200 });
             if (kind === 'token_b') return new Response(REST_OK, { status: 200 });
@@ -475,9 +501,12 @@ test('Warden falsifiers never produce matrix_held', async () => {
           }
           if (path === '/graphql/v1') {
             if (kind === 'publishable')
-              return new Response('{"data":{"ariProbeMarkerCollection":{"edges":[]}}}', {
-                status: 200,
-              });
+              return new Response(
+                JSON.stringify({
+                  errors: [{ message: `Unknown field "${GRAPHQL_COLLECTION}" on type "Query".` }],
+                }),
+                { status: 200 },
+              );
             if (kind === 'token_b') return new Response(GRAPHQL_OK, { status: 200 });
             return new Response(GRAPHQL_DENY, { status: 200 });
           }
@@ -574,7 +603,7 @@ test('built MCP edge accepts mcp_ingress Token A and does not use the network', 
           const tokenB = token.includes(probe.tokenB);
           if (path === '/auth/v1/user' && init.method === 'GET' && tokenB)
             return userResponse(SUBJECT);
-          if (path.startsWith('/auth/')) return new Response(REST_DENY, { status: 401 });
+          if (path.startsWith('/auth/')) return new Response(AUTH_DENY, { status: 403 });
           if (path === '/rest/v1/ari_probe_marker') {
             if (!token) return new Response('[]', { status: 200 });
             if (tokenB) return new Response(REST_OK, { status: 200 });
@@ -653,6 +682,189 @@ test('mcp_ingress role SQL stays isolated and forbids production targets', async
   assert.equal(sql.includes('ari-probe-synthetic-client'), false);
   assert.match(sql, /do not apply/i);
   assert.match(sql, /sql\/02-hook-for-ariadne\.sql/);
+});
+
+test('graphql uses the literal collection and ignores the camelCase field', async () => {
+  const source = await readFile(new URL('./probe.mjs', import.meta.url), 'utf8');
+  assert.match(source, /query \{ ari_probe_markerCollection\(first: 1\)/);
+  assert.equal(source.includes('ariProbeMarkerCollection'), false);
+  assert.equal(GRAPHQL_COLLECTION, 'ari_probe_markerCollection');
+  const camel = JSON.stringify({
+    data: { ariProbeMarkerCollection: { edges: [{ node: { marker: MARKER } }] } },
+  });
+  const unknownPublishable = JSON.stringify({
+    errors: [{ message: `Unknown field "${GRAPHQL_COLLECTION}" on type "Query".` }],
+  });
+  assert.equal(dataRowVerdict('graphql', 'token_b', 200, GRAPHQL_OK).verdict, 'positive_control');
+  assert.equal(dataRowVerdict('graphql', 'token_b', 200, camel).verdict, 'positive_control_missed');
+  assert.equal(
+    dataRowVerdict('graphql', 'publishable', 200, unknownPublishable).verdict,
+    'no_marker',
+  );
+  assert.equal(unknownPublishable.includes(MARKER), false);
+  const probe = await readyProbe();
+  let graphqlQuery = '';
+  const result = await runProbe(
+    await readyProbe({
+      tokenA: probe.tokenA,
+      tokenB: probe.tokenB,
+      jwks: probe.jwks,
+      fetch: async (url, init) => {
+        const path = new URL(url).pathname;
+        if (path === '/graphql/v1') graphqlQuery = init.body;
+        const token = init.headers.authorization ?? '';
+        const tokenB = token.includes(probe.tokenB);
+        if (path === '/auth/v1/user' && init.method === 'GET' && tokenB)
+          return userResponse(SUBJECT);
+        if (path.startsWith('/auth/')) return new Response(AUTH_DENY, { status: 403 });
+        if (path === '/rest/v1/ari_probe_marker') {
+          if (!token) return new Response('[]', { status: 200 });
+          if (tokenB) return new Response(REST_OK, { status: 200 });
+          return new Response(REST_DENY, { status: 401 });
+        }
+        if (path === '/graphql/v1') {
+          if (!token) return new Response(unknownPublishable, { status: 200 });
+          if (tokenB) return new Response(GRAPHQL_OK, { status: 200 });
+          return new Response(GRAPHQL_DENY, { status: 200 });
+        }
+        if (init.method === 'POST') return new Response('', { status: 200 });
+        if (tokenB) return new Response(MARKER, { status: 200 });
+        return new Response('missing', { status: 404 });
+      },
+      joinRealtime: async ({ token }) => (token === probe.tokenB ? 'ok' : 'denied'),
+    }),
+  );
+  assert.equal(result.reason, 'matrix_held');
+  assert.match(graphqlQuery, /ari_probe_markerCollection/);
+  assert.equal(graphqlQuery.includes('ariProbeMarkerCollection'), false);
+  const tokenBRow = result.rows.find((row) => row.id === 'L5-graphql-token_b');
+  assert.equal(tokenBRow.verdict, 'positive_control');
+  const publishable = result.rows.find((row) => row.id === 'L5-graphql-publishable');
+  assert.equal(publishable.verdict, 'no_marker');
+});
+
+test('auth rows record session_not_found and ignore status alone', () => {
+  const body = JSON.stringify({
+    error_code: 'session_not_found',
+    msg: 'session not found',
+    access_token: 'must-not-record-this-token',
+  });
+  const held = authRowVerdict(403, false, body);
+  assert.equal(held.verdict, 'deny');
+  assert.equal(held.errorCode, 'session_not_found');
+  assert.equal(authErrorCode(body), 'session_not_found');
+  assert.equal(JSON.stringify(held).includes('must-not-record-this-token'), false);
+  assert.equal(
+    authRowVerdict(401, true, JSON.stringify({ error: 'session_not_found' })).verdict,
+    'deny',
+  );
+  assert.equal(
+    authRowVerdict(403, false, '{"error_code":"invalid_grant"}').verdict,
+    'inconclusive',
+  );
+  assert.equal(authRowVerdict(400, false, body).verdict, 'inconclusive');
+  assert.equal(authRowVerdict(403, false).verdict, 'inconclusive');
+});
+
+test('realtime keeps the join reply and treats other frames as transport', async () => {
+  const token = 'realtime-access-token-must-not-leak';
+  const frames = [
+    { event: 'phx_reply', ref: '9', topic: 'phoenix', payload: { status: 'ok' } },
+    {
+      event: 'postgres_changes',
+      ref: '1',
+      payload: { access_token: token, status: 'error' },
+    },
+    'not-json',
+    {
+      event: 'phx_reply',
+      ref: '1',
+      topic: 'realtime:ari-probe-synthetic',
+      payload: {
+        status: 'error',
+        response: { reason: 'unauthorized', status: 403, access_token: token },
+      },
+    },
+  ];
+  assert.equal(isJoinPhxReply(frames[0]), false);
+  assert.equal(isJoinPhxReply(frames[1]), false);
+  assert.equal(isJoinPhxReply(frames[3]), true);
+  assert.equal(classifyRealtimeReply(frames[0]), 'transport');
+  assert.equal(classifyRealtimeReply(frames[3]), 'denied');
+  assert.equal(
+    classifyRealtimeReply({
+      event: 'phx_reply',
+      ref: '1',
+      payload: { status: 'error', response: { reason: 'timeout' } },
+    }),
+    'transport',
+  );
+  assert.equal(realtimeVerdict('token_a', 'denied').verdict, 'deny');
+  assert.equal(realtimeVerdict('token_a', 'transport').verdict, 'realtime_transport');
+  const diagnostic = realtimeDiagnostic(frames[3]);
+  assert.deepEqual(diagnostic, {
+    event: 'phx_reply',
+    topic: 'realtime:ari-probe-synthetic',
+    ref: '1',
+    payloadStatus: 'error',
+    reason: 'unauthorized',
+    code: 403,
+    socketClose: false,
+    timeoutClass: null,
+  });
+  assert.equal(JSON.stringify(diagnostic).includes(token), false);
+  const listeners = new Map();
+  const socket = {
+    addEventListener(type, fn) {
+      const list = listeners.get(type) ?? [];
+      list.push(fn);
+      listeners.set(type, list);
+    },
+    removeEventListener(type, fn) {
+      listeners.set(
+        type,
+        (listeners.get(type) ?? []).filter((item) => item !== fn),
+      );
+    },
+    emit(type, event) {
+      for (const fn of listeners.get(type) ?? []) fn(event);
+    },
+  };
+  const controller = new AbortController();
+  const pending = readJoinReply(socket, controller.signal);
+  socket.emit('message', { data: JSON.stringify(frames[0]) });
+  socket.emit('message', { data: frames[2] });
+  socket.emit('message', { data: JSON.stringify(frames[1]) });
+  socket.emit('message', { data: JSON.stringify(frames[3]) });
+  const matched = await pending;
+  assert.equal(matched.ref, '1');
+  assert.equal(matched.event, 'phx_reply');
+  assert.equal(JSON.stringify(realtimeDiagnostic(matched)).includes(token), false);
+  const timeoutListeners = new Map();
+  const timeoutSocket = {
+    addEventListener(type, fn) {
+      const list = timeoutListeners.get(type) ?? [];
+      list.push(fn);
+      timeoutListeners.set(type, list);
+    },
+    removeEventListener(type, fn) {
+      timeoutListeners.set(
+        type,
+        (timeoutListeners.get(type) ?? []).filter((item) => item !== fn),
+      );
+    },
+    emit(type, event) {
+      for (const fn of timeoutListeners.get(type) ?? []) fn(event);
+    },
+  };
+  const abort = new AbortController();
+  const timed = readJoinReply(timeoutSocket, abort.signal);
+  timeoutSocket.emit('message', { data: JSON.stringify(frames[0]) });
+  abort.abort();
+  const timeoutResult = await timed;
+  assert.equal(timeoutResult.timeout, true);
+  assert.equal(realtimeDiagnostic(timeoutResult).timeoutClass, 'realtime_timeout');
+  assert.equal(realtimeDiagnostic({ closed: true, code: 1006 }).socketClose, true);
 });
 
 test('refuses a service-role shell and a service-role publishable key', async () => {

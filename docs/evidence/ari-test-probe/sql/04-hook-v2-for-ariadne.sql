@@ -20,8 +20,13 @@
 --
 -- Decisions, matching docs/evidence/ari-test-probe/hook-v2.mjs:
 --   absent client_id, including password sessions, returns claims unchanged
---   openid in scope raises for every OAuth client, mapped or not
---   a present client_id that is not in ari_probe.mcp_client raises
+--   openid in scope returns a structured error for every OAuth client:
+--     {"error":{"http_code":403,"message":"openid_scope_refused"}}
+--   a present client_id that is not in ari_probe.mcp_client returns the same
+--     structured 403 with message unmapped_client_id
+--   a dead or not-live source session returns a structured 401 with message
+--     source_session_not_live
+--   unexpected faults still raise
 --   the one mapped client sets aud to the configured MCP resource,
 --   role mcp_ingress, session_id to a fresh uuid, source_session_id to the
 --   original session id, and agent_id from the hook-only mapping
@@ -165,7 +170,12 @@ begin
     from regexp_split_to_table(coalesce(scope_text, ''), '\s+') as item
     where lower(item) = 'openid'
   ) then
-    raise exception 'openid scope is refused for every oauth client';
+    return jsonb_build_object(
+      'error', jsonb_build_object(
+        'http_code', 403,
+        'message', 'openid_scope_refused'
+      )
+    );
   end if;
 
   select mapping.mcp_resource, mapping.agent_id
@@ -175,14 +185,24 @@ begin
     and mapping.probe_label = 'ari-test-synthetic';
 
   if mapped_resource is null or mapped_agent is null then
-    raise exception 'unmapped oauth client_id';
+    return jsonb_build_object(
+      'error', jsonb_build_object(
+        'http_code', 403,
+        'message', 'unmapped_client_id'
+      )
+    );
   end if;
 
   original_session := coalesce(claims ->> 'session_id', '');
   if coalesce(event ->> 'user_id', '') !~* '^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$'
     or original_session !~* '^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$'
   then
-    raise exception 'source session is not live';
+    return jsonb_build_object(
+      'error', jsonb_build_object(
+        'http_code', 401,
+        'message', 'source_session_not_live'
+      )
+    );
   end if;
   uid := (event ->> 'user_id')::uuid;
   original_uuid := original_session::uuid;
@@ -197,7 +217,12 @@ begin
         and (session.not_after is null or session.not_after > pg_catalog.now())
     )
   then
-    raise exception 'source session is not live';
+    return jsonb_build_object(
+      'error', jsonb_build_object(
+        'http_code', 401,
+        'message', 'source_session_not_live'
+      )
+    );
   end if;
 
   fresh := pg_catalog.gen_random_uuid();
@@ -269,7 +294,9 @@ $guard$;
 
 commit;
 
--- Dashboard step, only after Warden reviews this file. Do not enable it now:
+-- Dashboard step stays off. Primary Users leave Authentication → Hooks
+-- disabled until Warden reviews this exact head. Do not enable it from this
+-- packet. This agent does not install the hook and does not contact hosted TEST.
 --   Authentication → Hooks → Custom Access Token
 --   Postgres function: ari_probe.custom_access_token_hook
 -- Do not point that hook at any other project.

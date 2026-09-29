@@ -54,9 +54,13 @@ Postgres role, install the Auth hook, or prove upstream Data API denial.
 `docs/evidence/ari-test-probe/sql/03-mcp-ingress-role.sql` is controller SQL
 for project `odbcejsuuqdzhabjmozi` only. This branch does not apply it.
 `sql/04-hook-v2-for-ariadne.sql` is the uninstalled hook v2 packet: absent
-`client_id` stays unchanged, `openid` raises for every OAuth client, an
-unmapped `client_id` raises, and the mapped client rewrites `aud`, `role`,
-and `session_id`. The original-session liveness check runs on each hook call
+`client_id` stays unchanged, expected `openid` returns structured error
+`403` `openid_scope_refused`, a present unmapped `client_id` returns that
+same structured `403` with message `unmapped_client_id`, a not-live source
+session returns structured `401` `source_session_not_live`, unexpected faults
+still raise, and the mapped client rewrites `aud`, `role`, and `session_id`.
+Primary Users leave the hook disabled until Warden reviews the exact head.
+The original-session liveness check runs on each hook call
 (token issuance or refresh) only. It does not run on each MCP call. The
 adapter has no liveness check. That check is not a revocation receipt.
 `sql/02` must not be applied.

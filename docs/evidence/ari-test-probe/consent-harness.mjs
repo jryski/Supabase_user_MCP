@@ -284,8 +284,8 @@ function queryParam(value, key) {
 const OAUTH_ERROR_NAME = /^[a-z0-9_]{1,64}$/u;
 const SESSION_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;
 
-// Explicit OAuth client errors only. server_error and a bare HTTP 500 are not a policy denial.
-const OPENID_POLICY_ERRORS = new Set([
+// Generic OAuth client errors are inconclusive. They are not an openid denial.
+export const OPENID_POLICY_ERRORS = new Set([
   'access_denied',
   'invalid_client',
   'invalid_grant',
@@ -295,6 +295,7 @@ const OPENID_POLICY_ERRORS = new Set([
   'unsupported_grant_type',
   'unsupported_response_type',
 ]);
+const HOOK_OPENID_MARKER = 'openid_scope_refused';
 
 function oauthErrorName(parsed) {
   if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) return null;
@@ -309,12 +310,53 @@ function oauthErrorFrom(response, text) {
   return oauthErrorName(parseJson(text));
 }
 
-function isOpenIdPolicyDenial(status, errorName) {
+function jsonHasExactMarker(value, depth = 0) {
+  if (value === HOOK_OPENID_MARKER) return true;
+  if (depth > 4 || value === null || typeof value !== 'object') return false;
+  const items = Array.isArray(value) ? value : Object.values(value);
+  return items.some((item) => jsonHasExactMarker(item, depth + 1));
+}
+
+function responseHasHookMarker(response, text) {
+  if (jsonHasExactMarker(parseJson(text))) return true;
+  const location = headerValue(response, 'location');
+  if (typeof location !== 'string') return false;
+  for (const key of ['error', 'error_description', 'error_code', 'message']) {
+    if (queryParam(location, key) === HOOK_OPENID_MARKER) return true;
+  }
+  return false;
+}
+
+function responseHasAccessToken(response, text) {
+  const parsed = parseJson(text);
+  if (
+    parsed !== null &&
+    typeof parsed === 'object' &&
+    !Array.isArray(parsed) &&
+    Object.hasOwn(parsed, 'access_token')
+  ) {
+    return true;
+  }
+  return queryParam(headerValue(response, 'location'), 'access_token') !== null;
+}
+
+function authorizeClientScopeRefusal(status, errorName, response, text) {
   return (
     typeof status === 'number' &&
     status < 500 &&
-    typeof errorName === 'string' &&
-    OPENID_POLICY_ERRORS.has(errorName)
+    errorName === 'invalid_scope' &&
+    !idTokenIn(text) &&
+    !responseHasAccessToken(response, text) &&
+    !responseHasHookMarker(response, text)
+  );
+}
+
+function exchangeHookDenial(exchange) {
+  return (
+    exchange.status === 403 &&
+    exchange.hookMarker === true &&
+    exchange.idTokenPresent !== true &&
+    exchange.accessTokenPresent !== true
   );
 }
 
@@ -612,6 +654,8 @@ async function exchangeWithSecrets(input) {
         status: response.status,
         idTokenPresent: redacted.reason === 'id_token_present',
         oauthError: oauthErrorName(parsed),
+        hookMarker: responseHasHookMarker(response, text),
+        accessTokenPresent: accessToken !== null,
         secretKeyNames: redacted.secretKeyNames ?? [],
         codeChallengeMethod: 'S256',
       }),
@@ -744,10 +788,17 @@ export async function runOpenIdNegative(input) {
       authorizeStatus,
     });
   }
-  if (isOpenIdPolicyDenial(authorizeStatus, authorizeErrorName)) {
+  if (
+    authorizeClientScopeRefusal(
+      authorizeStatus,
+      authorizeErrorName,
+      authorized.response,
+      authorized.text,
+    )
+  ) {
     return receipt({
       ok: true,
-      reason: 'openid_rejected',
+      reason: 'openid_refused_client_scope',
       openidSent: true,
       rejectionStage: 'authorize',
       authorizeStatus,
@@ -792,15 +843,6 @@ export async function runOpenIdNegative(input) {
     });
   }
   if (consent.ok !== true || typeof consent.code !== 'string' || consent.code.length === 0) {
-    if (isOpenIdPolicyDenial(consentStatus, consent.oauthError)) {
-      return receipt({
-        ok: true,
-        reason: 'openid_rejected',
-        openidSent: true,
-        rejectionStage: 'consent',
-        consentStatus,
-      });
-    }
     return receipt({
       ok: false,
       reason:
@@ -862,13 +904,37 @@ export async function runOpenIdNegative(input) {
       exchangeStatus: exchange.status,
     });
   }
-  if (isOpenIdPolicyDenial(exchange.status, exchange.oauthError)) {
+  if (
+    exchange.status === 403 &&
+    exchange.hookMarker === true &&
+    exchange.accessTokenPresent === true
+  ) {
+    return receipt({
+      ok: false,
+      reason: 'access_token_present',
+      openidSent: true,
+      rejectionStage: 'exchange',
+      exchangeStatus: exchange.status,
+      codeChallengeMethod: 'S256',
+    });
+  }
+  if (exchangeHookDenial(exchange)) {
     return receipt({
       ok: true,
       reason: 'openid_rejected',
       openidSent: true,
       rejectionStage: 'exchange',
       exchangeStatus: exchange.status,
+      codeChallengeMethod: 'S256',
+    });
+  }
+  if (typeof exchange.oauthError === 'string' && OPENID_POLICY_ERRORS.has(exchange.oauthError)) {
+    return receipt({
+      ok: false,
+      reason: 'exchange_inconclusive',
+      openidSent: true,
+      rejectionStage: 'exchange',
+      exchangeStatus: typeof exchange.status === 'number' ? exchange.status : null,
       codeChallengeMethod: 'S256',
     });
   }

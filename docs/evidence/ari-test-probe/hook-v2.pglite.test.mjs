@@ -16,9 +16,6 @@ const AGENT = 'hook-only-agent-parameter';
 const NOW = Date.parse('2026-09-29T00:00:00Z');
 
 const SQL_TEXT = {
-  openid_scope_refused: 'openid scope is refused for every oauth client',
-  unmapped_client_id: 'unmapped oauth client_id',
-  source_session_not_live: 'source session is not live',
   fresh_session_id_rejected: 'fresh session_id is nil or already in auth.sessions',
   hook_event_unreadable: 'hook event is unreadable',
 };
@@ -105,6 +102,14 @@ describe('sql/04 verbatim in PGlite', { concurrency: false }, () => {
       );
       const value = result.rows[0]?.result;
       const parsed = typeof value === 'string' ? JSON.parse(value) : value;
+      if (
+        parsed !== null &&
+        typeof parsed === 'object' &&
+        parsed.error !== undefined &&
+        parsed.error !== null
+      ) {
+        return { ok: true, error: parsed.error };
+      }
       return { ok: true, claims: parsed.claims };
     } catch (error) {
       await db.exec('rollback').catch(() => {});
@@ -114,6 +119,12 @@ describe('sql/04 verbatim in PGlite', { concurrency: false }, () => {
 
   function assertAgrees(sqlResult, jsResult) {
     assert.equal(jsResult.revocationClaimed, false);
+    if (jsResult.action === 'error') {
+      assert.equal(sqlResult.ok, true);
+      assert.deepEqual(sqlResult.error, jsResult.error);
+      assert.equal(sqlResult.claims, undefined);
+      return;
+    }
     if (jsResult.action === 'raise') {
       assert.equal(sqlResult.ok, false);
       assert.match(sqlResult.message, new RegExp(SQL_TEXT[jsResult.reason]));
@@ -174,7 +185,7 @@ describe('sql/04 verbatim in PGlite', { concurrency: false }, () => {
     assert.equal(sqlResult.claims.role, 'authenticated');
   });
 
-  test('unmapped, dead, other-user, and nil sessions raise on both paths', async () => {
+  test('unmapped and not-live sessions return structured errors on both paths', async () => {
     const cases = [
       {
         event: mappedEvent({ client_id: 'registered-but-unmapped' }),
@@ -201,11 +212,22 @@ describe('sql/04 verbatim in PGlite', { concurrency: false }, () => {
       const sqlResult = await callHook(item.event);
       const jsResult = decideHookV2(oracleInput(item.event, item.extra));
       assertAgrees(sqlResult, jsResult);
-      assert.equal(jsResult.action, 'raise');
+      assert.equal(jsResult.action, 'error');
+      assert.equal(sqlResult.error.http_code, jsResult.error.http_code);
+      assert.equal(typeof sqlResult.error.message, 'string');
     }
   });
 
-  test('openid string and array raise on both paths', async () => {
+  test('an unreadable hook event still raises', async () => {
+    const event = { user_id: USER, claims: null };
+    const sqlResult = await callHook(event);
+    const jsResult = decideHookV2(oracleInput(event));
+    assertAgrees(sqlResult, jsResult);
+    assert.equal(jsResult.action, 'raise');
+    assert.equal(jsResult.reason, 'hook_event_unreadable');
+  });
+
+  test('openid string and array return the structured 403 on both paths', async () => {
     const stringEvent = mappedEvent({ scope: 'email openid' });
     const arrayEvent = {
       user_id: USER,
@@ -216,6 +238,8 @@ describe('sql/04 verbatim in PGlite', { concurrency: false }, () => {
       const sqlResult = await callHook(event);
       const jsResult = decideHookV2(oracleInput(event));
       assertAgrees(sqlResult, jsResult);
+      assert.equal(jsResult.action, 'error');
+      assert.deepEqual(sqlResult.error, { http_code: 403, message: 'openid_scope_refused' });
       assert.equal(jsResult.reason, 'openid_scope_refused');
     }
   });
