@@ -8,6 +8,8 @@ export const FORBIDDEN_PROJECT_REFS = Object.freeze(['lygftpbjgqgvuunkwnxf']);
 export const INGRESS_ROLE = 'mcp_ingress';
 export const MCP_RESOURCE = 'https://odbcejsuuqdzhabjmozi.supabase.co/mcp';
 export const MARKER = 'ari-probe-marker-odbcejsuuqdzhabjmozi';
+export const EXPECTED_CLIENT_ID = 'ari-probe-synthetic-client';
+export const MCP_EDGE_ACCEPTANCE = 'downstream_credential_unresolved';
 export const SYNTHETIC_EMAIL = 'ari-probe-synthetic@odbcejsuuqdzhabjmozi.invalid';
 export const EXPECTED_ISSUER = `https://${ALLOWED_PROJECT_REF}.supabase.co/auth/v1`;
 export const EXPECTED_ORIGIN = `https://${ALLOWED_PROJECT_REF}.supabase.co`;
@@ -157,49 +159,279 @@ export function publishableKeyRejected(key) {
   return undefined;
 }
 
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
 export function containsMarker(body) {
   return typeof body === 'string' && body.includes(MARKER);
 }
 
-export function authRowVerdict(status, mutation) {
-  const success = status >= 200 && status < 300;
-  if (!success) return { verdict: 'deny', stop: false };
-  if (mutation) return { verdict: 'NO_GO_TOKEN_A_MUTATION', stop: true };
-  return { verdict: 'NO_GO_TOKEN_A_AUTH_READ', stop: true };
+export function httpOutcome(status) {
+  if (typeof status !== 'number' || !Number.isInteger(status)) return 'transport';
+  if (status === 0) return 'transport';
+  if (status === 429 || (status >= 300 && status < 400) || status >= 500) return 'inconclusive';
+  return 'http';
 }
 
-export function dataRowVerdict(kind, body) {
-  const seen = containsMarker(body);
+function inconclusive() {
+  return { verdict: 'inconclusive', stop: false };
+}
+
+function stopNoGo(verdict) {
+  return { verdict, stop: true };
+}
+
+export function parseJson(body) {
+  if (typeof body !== 'string') return undefined;
+  try {
+    return JSON.parse(body);
+  } catch {
+    return undefined;
+  }
+}
+
+export function postgres42501(body) {
+  const parsed = parseJson(body);
+  if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) return false;
+  return parsed.code === '42501' || parsed.code === 42501;
+}
+
+export function authRowVerdict(status, mutation) {
+  if (httpOutcome(status) !== 'http') return inconclusive();
+  if (status >= 200 && status < 300) {
+    return stopNoGo(mutation ? 'NO_GO_TOKEN_A_MUTATION' : 'NO_GO_TOKEN_A_AUTH_READ');
+  }
+  if (status === 401 || status === 403) return { verdict: 'deny', stop: false };
+  return inconclusive();
+}
+
+export function tokenBAuthUserVerdict(status, body, expectedSub) {
+  if (httpOutcome(status) !== 'http') return inconclusive();
+  if (status !== 200) return stopNoGo('positive_control_missed');
+  const parsed = parseJson(body);
+  if (
+    parsed === undefined ||
+    parsed === null ||
+    typeof parsed !== 'object' ||
+    Array.isArray(parsed)
+  ) {
+    return inconclusive();
+  }
+  if (parsed.id !== expectedSub) return stopNoGo('positive_control_missed');
+  return { verdict: 'positive_control', stop: false };
+}
+
+function markerRows(body) {
+  const parsed = parseJson(body);
+  if (!Array.isArray(parsed)) return undefined;
+  return parsed.some(
+    (row) =>
+      row !== null && typeof row === 'object' && !Array.isArray(row) && row.marker === MARKER,
+  );
+}
+
+function graphqlCollection(body) {
+  const parsed = parseJson(body);
+  if (
+    parsed === undefined ||
+    parsed === null ||
+    typeof parsed !== 'object' ||
+    Array.isArray(parsed)
+  ) {
+    return { parse: false };
+  }
+  const errors = Array.isArray(parsed.errors) ? parsed.errors : [];
+  const data = parsed.data;
+  const collection =
+    data !== null && typeof data === 'object' && !Array.isArray(data)
+      ? data.ariProbeMarkerCollection
+      : undefined;
+  const nodes = [];
+  const edges = collection?.edges;
+  if (Array.isArray(edges)) {
+    for (const edge of edges) {
+      if (edge?.node?.marker !== undefined) nodes.push(edge.node.marker);
+    }
+  }
+  return {
+    parse: true,
+    errors,
+    collectionPresent: collection !== undefined && collection !== null,
+    nodes,
+  };
+}
+
+export function dataRowVerdict(surface, kind, status, body) {
+  if (httpOutcome(status) !== 'http') return inconclusive();
   if (kind === 'publishable') {
-    return seen
-      ? { verdict: 'baseline_not_isolated', stop: true }
+    return containsMarker(body)
+      ? stopNoGo('baseline_not_isolated')
       : { verdict: 'no_marker', stop: false };
   }
-  if (kind === 'token_a') {
-    return seen
-      ? { verdict: 'NO_GO_TOKEN_A_GAINED_ACCESS', stop: true }
-      : { verdict: 'deny', stop: false };
+  if (kind === 'token_a') return tokenADataVerdict(surface, status, body);
+  if (kind === 'token_b') return tokenBDataVerdict(surface, status, body);
+  return stopNoGo('unknown_kind');
+}
+
+function tokenADataVerdict(surface, status, body) {
+  if (containsMarker(body)) return stopNoGo('NO_GO_TOKEN_A_GAINED_ACCESS');
+  if (surface === 'rest') {
+    if ((status === 401 || status === 403) && postgres42501(body)) {
+      return { verdict: 'deny', stop: false };
+    }
+    return inconclusive();
   }
-  if (kind === 'token_b') {
-    return seen
+  if (surface === 'graphql') {
+    const graph = graphqlCollection(body);
+    if (!graph.parse) return inconclusive();
+    if (graph.errors.length > 0 || !graph.collectionPresent) {
+      return { verdict: 'deny', stop: false };
+    }
+    return inconclusive();
+  }
+  if (surface === 'storage') {
+    if (status === 400 || status === 403 || status === 404) {
+      return { verdict: 'deny', stop: false };
+    }
+    return inconclusive();
+  }
+  return inconclusive();
+}
+
+function tokenBDataVerdict(surface, status, body) {
+  if (status !== 200) return stopNoGo('positive_control_missed');
+  if (surface === 'rest') {
+    const matched = markerRows(body);
+    if (matched === undefined) return inconclusive();
+    return matched
       ? { verdict: 'positive_control', stop: false }
-      : { verdict: 'positive_control_missed', stop: true };
+      : stopNoGo('positive_control_missed');
   }
-  return { verdict: 'unknown_kind', stop: true };
+  if (surface === 'graphql') {
+    const graph = graphqlCollection(body);
+    if (!graph.parse || graph.errors.length > 0) return inconclusive();
+    return graph.nodes.includes(MARKER)
+      ? { verdict: 'positive_control', stop: false }
+      : stopNoGo('positive_control_missed');
+  }
+  if (surface === 'storage') {
+    return typeof body === 'string' && body.trim() === MARKER
+      ? { verdict: 'positive_control', stop: false }
+      : stopNoGo('positive_control_missed');
+  }
+  return stopNoGo('unknown_kind');
+}
+
+export function storageSeedVerdict(status) {
+  if (httpOutcome(status) !== 'http') return inconclusive();
+  if ((status >= 200 && status < 300) || status === 400 || status === 409) {
+    return { verdict: 'seeded', stop: false };
+  }
+  return inconclusive();
+}
+
+export function classifyRealtimeReply(message) {
+  if (message === null || typeof message !== 'object') return 'transport';
+  if (message.event !== 'phx_reply') return 'transport';
+  const payload = message.payload;
+  if (payload === null || typeof payload !== 'object') return 'transport';
+  if (payload.status === 'ok') return 'ok';
+  if (payload.status !== 'error') return 'transport';
+  const response = payload.response;
+  const reason = typeof response?.reason === 'string' ? response.reason.toLowerCase() : '';
+  const code = response?.status ?? response?.code;
+  if (
+    reason.includes('unauthor') ||
+    reason.includes('forbidden') ||
+    reason === 'access_denied' ||
+    code === 401 ||
+    code === 403
+  ) {
+    return 'denied';
+  }
+  return 'transport';
 }
 
 export function realtimeVerdict(kind, status) {
   if (kind === 'token_a') {
-    return status === 'ok'
-      ? { verdict: 'NO_GO_TOKEN_A_GAINED_ACCESS', stop: true }
-      : { verdict: 'deny', stop: false };
+    if (status === 'ok') return stopNoGo('NO_GO_TOKEN_A_GAINED_ACCESS');
+    if (status === 'denied') return { verdict: 'deny', stop: false };
+    return inconclusive();
   }
   if (kind === 'token_b') {
-    return status === 'ok'
-      ? { verdict: 'positive_control', stop: false }
-      : { verdict: 'positive_control_missed', stop: true };
+    if (status === 'ok') return { verdict: 'positive_control', stop: false };
+    if (status === 'transport') return inconclusive();
+    return stopNoGo('positive_control_missed');
   }
-  return { verdict: 'unknown_kind', stop: true };
+  return stopNoGo('unknown_kind');
+}
+
+export function mcpEdgeAcceptance(status, body) {
+  const parsed = parseJson(body);
+  if (
+    status === 403 &&
+    parsed !== null &&
+    typeof parsed === 'object' &&
+    !Array.isArray(parsed) &&
+    Object.keys(parsed).length === 1 &&
+    parsed.error === MCP_EDGE_ACCEPTANCE
+  ) {
+    return { ok: true, verdict: 'mcp_edge_accepted_fail_closed' };
+  }
+  return { ok: false, reason: 'token_a_mcp_edge_not_accepted' };
+}
+
+export function publicJwks(value) {
+  const parsed = typeof value === 'string' ? parseJson(value) : value;
+  if (
+    parsed === undefined ||
+    parsed === null ||
+    typeof parsed !== 'object' ||
+    Array.isArray(parsed)
+  ) {
+    return { ok: false, reason: 'jwks_unreadable' };
+  }
+  if (!Array.isArray(parsed.keys) || parsed.keys.length === 0) {
+    return { ok: false, reason: 'jwks_unreadable' };
+  }
+  if (parsed.keys.some((key) => key !== null && typeof key === 'object' && key.d !== undefined)) {
+    return { ok: false, reason: 'jwks_contains_private_key' };
+  }
+  return { ok: true, jwks: parsed };
+}
+
+export async function verifyTokenA(token, jwks, expectedClientId, now = Date.now()) {
+  const loaded = publicJwks(jwks);
+  if (!loaded.ok) return loaded;
+  const { createLocalJWKSet, jwtVerify } = await import('jose');
+  try {
+    const { payload } = await jwtVerify(token, createLocalJWKSet(loaded.jwks), {
+      issuer: EXPECTED_ISSUER,
+      audience: MCP_RESOURCE,
+      clockTolerance: 0,
+      currentDate: new Date(now),
+    });
+    if (payload.client_id !== expectedClientId) return { ok: false, reason: 'token_a_client' };
+    if (typeof payload.exp !== 'number') return { ok: false, reason: 'token_a_expired' };
+    if (typeof payload.session_id !== 'string' || !UUID_PATTERN.test(payload.session_id)) {
+      return { ok: false, reason: 'token_a_session' };
+    }
+    return { ok: true };
+  } catch (error) {
+    const code = error !== null && typeof error === 'object' ? error.code : undefined;
+    if (code === 'ERR_JWT_EXPIRED') return { ok: false, reason: 'token_a_expired' };
+    return { ok: false, reason: 'token_a_signature' };
+  }
+}
+
+export function matrixBlocked(rows) {
+  const allowed = new Set([
+    'deny',
+    'no_marker',
+    'positive_control',
+    'seeded',
+    'mcp_edge_accepted_fail_closed',
+  ]);
+  return rows.find((row) => !allowed.has(row.verdict));
 }
 
 export function plan() {
@@ -217,7 +449,9 @@ export function plan() {
     realtimeTopic: REALTIME_TOPIC,
     rows: [
       'L7 baseline SECURITY DEFINER / PUBLIC EXECUTE before the run',
-      'L6 GET /auth/v1/user with Token A',
+      'L0 Token A signature, expiry, client, and MCP-edge acceptance',
+      'L6 Token B GET /auth/v1/user expects 200',
+      'L6 GET /auth/v1/user with Token A expects 401 or 403',
       'L6 PUT /auth/v1/user with Token A; stop on 2xx',
       'L6 POST /auth/v1/factors with Token A; stop on 2xx',
       'L6 POST /auth/v1/logout with Token A; stop on 2xx',

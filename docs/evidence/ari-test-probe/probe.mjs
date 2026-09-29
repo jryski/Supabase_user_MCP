@@ -8,20 +8,28 @@ import {
   ALLOWED_PROJECT_REF,
   assertTarget,
   authRowVerdict,
+  classifyRealtimeReply,
   classifyTokenA,
   classifyTokenB,
   dataRowVerdict,
   decodeJwtClaims,
+  EXPECTED_CLIENT_ID,
   EXPECTED_ORIGIN,
   INGRESS_ROLE,
   MARKER,
   MCP_RESOURCE,
+  matrixBlocked,
+  mcpEdgeAcceptance,
   plan,
+  publicJwks,
   publishableKeyRejected,
   REALTIME_TOPIC,
   realtimeVerdict,
   SERVICE_ROLE_ENV_NAMES,
   serviceRoleEnvPresent,
+  storageSeedVerdict,
+  tokenBAuthUserVerdict,
+  verifyTokenA,
 } from './decisions.mjs';
 
 const AUTH_ROWS = [
@@ -152,6 +160,52 @@ export async function runProbe(options) {
     };
   }
 
+  const expectedClientId = options.expectedClientId ?? EXPECTED_CLIENT_ID;
+  const verified = await verifyTokenA(options.tokenA, options.jwks, expectedClientId);
+  if (!verified.ok) {
+    return {
+      ...receiptBase(),
+      ok: false,
+      exitCode: 3,
+      reason: verified.reason,
+      tokenA: summarizeClaims(claimsA),
+      requests: 0,
+    };
+  }
+
+  const edge = options.mcpEdge ?? defaultMcpEdge;
+  let edgeResponse;
+  try {
+    edgeResponse = await edge({
+      token: options.tokenA,
+      jwks: options.jwks,
+      expectedClientId,
+      publishableKey: options.publishableKey,
+      supabaseUrl: options.supabaseUrl,
+    });
+  } catch {
+    edgeResponse = { status: 0, body: '' };
+  }
+  const acceptance = mcpEdgeAcceptance(edgeResponse?.status, edgeResponse?.body ?? '');
+  if (!acceptance.ok) {
+    return {
+      ...receiptBase(),
+      ok: false,
+      exitCode: 4,
+      reason: acceptance.reason,
+      rows: [
+        {
+          id: 'L0-token-a-mcp-edge',
+          credential: 'token_a',
+          status: edgeResponse?.status ?? 0,
+          verdict: 'inconclusive',
+        },
+      ],
+      requests: 0,
+      tokenA: summarizeClaims(claimsA),
+    };
+  }
+
   const fetchImpl = options.fetch ?? globalThis.fetch;
   const rows = [];
   let requests = 0;
@@ -169,14 +223,18 @@ export async function runProbe(options) {
       headers['content-type'] = 'application/json';
       payload = JSON.stringify(body);
     }
-    const response = await fetchImpl(`${origin}${path}`, {
-      method,
-      headers,
-      body: payload,
-      redirect: 'manual',
-      signal: AbortSignal.timeout(options.timeoutMs ?? 8000),
-    });
-    return { status: response.status, body: await readBody(response) };
+    try {
+      const response = await fetchImpl(`${origin}${path}`, {
+        method,
+        headers,
+        body: payload,
+        redirect: 'manual',
+        signal: AbortSignal.timeout(options.timeoutMs ?? 8000),
+      });
+      return { status: response.status, body: await readBody(response) };
+    } catch {
+      return { status: 0, body: '' };
+    }
   }
 
   function finish(exitCode, reason) {
@@ -191,6 +249,24 @@ export async function runProbe(options) {
       tokenB: summarizeClaims(claimsB),
     };
   }
+
+  rows.push({
+    id: 'L0-token-a-mcp-edge',
+    credential: 'token_a',
+    status: edgeResponse.status,
+    verdict: acceptance.verdict,
+  });
+
+  const tokenBUser = await call('/auth/v1/user', 'GET', options.tokenB);
+  const tokenBUserVerdict = tokenBAuthUserVerdict(tokenBUser.status, tokenBUser.body, tokenA.sub);
+  rows.push({
+    id: 'L6-auth-token-b-get-user-NOT-MCP',
+    credential: 'token_b',
+    label: 'POSITIVE_CONTROL_NOT_MCP',
+    status: tokenBUser.status,
+    verdict: tokenBUserVerdict.verdict,
+  });
+  if (tokenBUserVerdict.stop) return finish(4, tokenBUserVerdict.verdict);
 
   for (const row of AUTH_ROWS) {
     const result = await call(row.path, row.method, options.tokenA, row.body);
@@ -207,10 +283,17 @@ export async function runProbe(options) {
   const surfaces = [
     {
       id: 'L5-rest',
+      surface: 'rest',
       path: '/rest/v1/ari_probe_marker?select=marker',
       method: 'GET',
     },
-    { id: 'L5-graphql', path: '/graphql/v1', method: 'POST', body: GRAPHQL_QUERY },
+    {
+      id: 'L5-graphql',
+      surface: 'graphql',
+      path: '/graphql/v1',
+      method: 'POST',
+      body: GRAPHQL_QUERY,
+    },
   ];
 
   for (const surface of surfaces) {
@@ -219,34 +302,42 @@ export async function runProbe(options) {
   }
 
   requests += 1;
-  const seededResponse = await fetchImpl(
-    `${origin}/storage/v1/object/ari-probe-synthetic/marker.txt`,
-    {
-      method: 'POST',
-      headers: {
-        apikey: options.publishableKey,
-        authorization: `Bearer ${options.tokenB}`,
-        'content-type': 'text/plain',
-        'x-upsert': 'true',
+  let seededStatus = 0;
+  try {
+    const seededResponse = await fetchImpl(
+      `${origin}/storage/v1/object/ari-probe-synthetic/marker.txt`,
+      {
+        method: 'POST',
+        headers: {
+          apikey: options.publishableKey,
+          authorization: `Bearer ${options.tokenB}`,
+          'content-type': 'text/plain',
+          'x-upsert': 'true',
+        },
+        body: MARKER,
+        redirect: 'manual',
+        signal: AbortSignal.timeout(options.timeoutMs ?? 8000),
       },
-      body: MARKER,
-      redirect: 'manual',
-      signal: AbortSignal.timeout(options.timeoutMs ?? 8000),
-    },
-  );
-  const seededStatus = seededResponse.status;
-  await readBody(seededResponse);
+    );
+    seededStatus = seededResponse.status;
+    await readBody(seededResponse);
+  } catch {
+    seededStatus = 0;
+  }
+  const seeded = storageSeedVerdict(seededStatus);
   rows.push({
     id: 'L5-storage-token-b-seed-NOT-MCP',
     credential: 'token_b',
     label: 'POSITIVE_CONTROL_NOT_MCP',
     status: seededStatus,
-    verdict: seededStatus >= 200 && seededStatus < 300 ? 'seeded' : 'seed_status_recorded',
+    verdict: seeded.verdict,
   });
+  if (seeded.stop) return finish(4, seeded.verdict);
 
   const storageStopped = await runDataSurface(
     {
       id: 'L5-storage',
+      surface: 'storage',
       path: '/storage/v1/object/ari-probe-synthetic/marker.txt',
       method: 'GET',
     },
@@ -277,7 +368,37 @@ export async function runProbe(options) {
     if (verdict.stop) return finish(4, verdict.verdict);
   }
 
+  const blockedRow = matrixBlocked(rows);
+  if (blockedRow !== undefined) {
+    return finish(4, blockedRow.verdict === 'inconclusive' ? 'inconclusive' : blockedRow.verdict);
+  }
   return finish(0, 'matrix_held');
+}
+
+async function defaultMcpEdge({ token, jwks, expectedClientId, publishableKey, supabaseUrl }) {
+  const moduleUrl = new URL('../../../packages/server/dist/native-user-mcp.js', import.meta.url);
+  const { createNativeUserMcpHandler } = await import(moduleUrl.href);
+  const loaded = publicJwks(jwks);
+  if (!loaded.ok) return { status: 0, body: '' };
+  const handler = createNativeUserMcpHandler({
+    resourceServer: MCP_RESOURCE,
+    supabaseUrl,
+    expectedClientId,
+    publishableKey,
+    jwks: loaded.jwks,
+  });
+  const response = await handler(
+    new Request(MCP_RESOURCE, {
+      method: 'POST',
+      headers: {
+        accept: 'application/json',
+        authorization: `Bearer ${token}`,
+        'content-type': 'application/json',
+      },
+      body: '{"jsonrpc":"2.0","id":1,"method":"initialize"}',
+    }),
+  );
+  return { status: response.status, body: await response.text() };
 }
 
 async function runDataSurface(surface, call, rows, options) {
@@ -288,7 +409,7 @@ async function runDataSurface(surface, call, rows, options) {
   ];
   for (const [kind, token] of attempts) {
     const result = await call(surface.path, surface.method, token, surface.body);
-    const verdict = dataRowVerdict(kind, result.body);
+    const verdict = dataRowVerdict(surface.surface, kind, result.status, result.body);
     rows.push({
       id: `${surface.id}-${kind}`,
       credential: kind,
@@ -322,11 +443,9 @@ async function defaultJoinRealtime({ supabaseUrl, publishableKey, token, topic }
         (event) => {
           try {
             const message = JSON.parse(String(event.data));
-            if (message.event === 'phx_reply') {
-              resolve(message.payload?.status === 'ok' ? 'ok' : 'error');
-            }
+            if (message.event === 'phx_reply') resolve(message);
           } catch {
-            resolve('error');
+            resolve(null);
           }
         },
         { once: true },
@@ -347,9 +466,10 @@ async function defaultJoinRealtime({ supabaseUrl, publishableKey, token, topic }
         join_ref: '1',
       }),
     );
-    return await reply;
+    const replyStatus = await reply;
+    return classifyRealtimeReply(replyStatus);
   } catch {
-    return 'error';
+    return 'transport';
   } finally {
     socket.close();
   }
@@ -360,6 +480,8 @@ function readEnv(env) {
     projectRef: env.ARI_TEST_PROJECT_REF,
     supabaseUrl: env.ARI_TEST_SUPABASE_URL ?? EXPECTED_ORIGIN,
     publishableKey: env.ARI_TEST_PUBLISHABLE_KEY,
+    expectedClientId: env.ARI_TEST_EXPECTED_CLIENT_ID,
+    jwks: env.ARI_TEST_JWKS_JSON,
     tokenA: env.ARI_TEST_TOKEN_A,
     tokenB: env.ARI_TEST_TOKEN_B,
     env,

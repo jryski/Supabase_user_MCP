@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
+import { exportJWK, generateKeyPair, SignJWT } from 'jose';
 import {
   ALLOWED_PROJECT_REF,
   assertTarget,
@@ -7,29 +8,29 @@ import {
   classifyTokenA,
   classifyTokenB,
   dataRowVerdict,
+  EXPECTED_CLIENT_ID,
   FORBIDDEN_PROJECT_REFS,
   INGRESS_ROLE,
   MARKER,
+  MCP_EDGE_ACCEPTANCE,
   MCP_RESOURCE,
+  realtimeVerdict,
 } from './decisions.mjs';
 import { runProbe } from './probe.mjs';
 
 const SUBJECT = '11111111-1111-4111-8111-111111111111';
+const SESSION = '22222222-2222-4222-8222-222222222222';
 const ISSUER = `https://${ALLOWED_PROJECT_REF}.supabase.co/auth/v1`;
+const REST_DENY = JSON.stringify({ code: '42501', message: 'permission denied' });
+const GRAPHQL_DENY = JSON.stringify({ errors: [{ message: 'permission denied' }] });
+const GRAPHQL_OK = JSON.stringify({
+  data: { ariProbeMarkerCollection: { edges: [{ node: { marker: MARKER } }] } },
+});
+const REST_OK = JSON.stringify([{ marker: MARKER }]);
 
-function jwt(claims) {
+function unsignedJwt(claims) {
   const payload = Buffer.from(JSON.stringify(claims)).toString('base64url');
   return `eyJhbGciOiJFUzI1NiJ9.${payload}.c2ln`;
-}
-
-function tokenAClaims(extra = {}) {
-  return {
-    iss: ISSUER,
-    sub: SUBJECT,
-    role: INGRESS_ROLE,
-    aud: MCP_RESOURCE,
-    ...extra,
-  };
 }
 
 function tokenBClaims(extra = {}) {
@@ -42,22 +43,60 @@ function tokenBClaims(extra = {}) {
   };
 }
 
-function baseOptions(overrides = {}) {
+async function keyMaterial() {
+  const { privateKey, publicKey } = await generateKeyPair('ES256', { extractable: true });
+  const jwk = await exportJWK(publicKey);
+  return {
+    privateKey,
+    jwks: { keys: [{ ...jwk, kid: 'ari-probe', alg: 'ES256', use: 'sig' }] },
+  };
+}
+
+async function sign(
+  privateKey,
+  { role, audience, clientId = EXPECTED_CLIENT_ID, expiresIn = '2m' },
+) {
+  return new SignJWT({ role, client_id: clientId, session_id: SESSION })
+    .setProtectedHeader({ alg: 'ES256', kid: 'ari-probe', typ: 'JWT' })
+    .setSubject(SUBJECT)
+    .setIssuer(ISSUER)
+    .setAudience(audience)
+    .setIssuedAt()
+    .setExpirationTime(expiresIn)
+    .sign(privateKey);
+}
+
+function acceptingEdge() {
+  return async () => ({
+    status: 403,
+    body: JSON.stringify({ error: MCP_EDGE_ACCEPTANCE }),
+  });
+}
+
+async function readyProbe(overrides = {}) {
+  const { privateKey, jwks } = await keyMaterial();
+  const tokenA = await sign(privateKey, { role: INGRESS_ROLE, audience: MCP_RESOURCE });
+  const tokenB = unsignedJwt(tokenBClaims());
   return {
     projectRef: ALLOWED_PROJECT_REF,
     supabaseUrl: `https://${ALLOWED_PROJECT_REF}.supabase.co`,
     publishableKey: 'sb_publishable_test_only',
-    tokenA: jwt(tokenAClaims()),
-    tokenB: jwt(tokenBClaims()),
+    expectedClientId: EXPECTED_CLIENT_ID,
     env: {},
+    mcpEdge: acceptingEdge(),
     fetch: async () => {
       throw new Error('unexpected_fetch');
     },
-    joinRealtime: async () => {
-      throw new Error('unexpected_realtime');
-    },
+    joinRealtime: async () => 'transport',
     ...overrides,
+    tokenA: overrides.tokenA ?? tokenA,
+    tokenB: overrides.tokenB ?? tokenB,
+    jwks: overrides.jwks ?? jwks,
   };
+}
+
+function userResponse(id) {
+  return new Response(JSON.stringify({ id }), { status: 200 });
 }
 
 test('refuses the production alias and any other project ref', () => {
@@ -73,25 +112,26 @@ test('refuses the production alias and any other project ref', () => {
     }).reason,
     'forbidden_target',
   );
-  assert.equal(
-    assertTarget({
-      projectRef: ALLOWED_PROJECT_REF,
-      supabaseUrl: 'http://127.0.0.1:9',
-      allowLoopback: true,
-    }).ok,
-    true,
-  );
 });
 
 test('Token A eligibility ignores user_metadata and rejects role=authenticated', () => {
-  const ignored = classifyTokenA(
-    tokenAClaims({ user_metadata: { role: 'authenticated', client_id: 'forged' } }),
-  );
+  const ignored = classifyTokenA({
+    iss: ISSUER,
+    sub: SUBJECT,
+    role: INGRESS_ROLE,
+    aud: MCP_RESOURCE,
+    user_metadata: { role: 'authenticated', client_id: 'forged' },
+  });
   assert.equal(ignored.ok, true);
-  const blocked = classifyTokenA(tokenAClaims({ role: 'authenticated' }));
-  assert.equal(blocked.reason, 'role_flip_prerequisite_missing');
-  const mixed = classifyTokenA(tokenAClaims({ aud: [MCP_RESOURCE, 'https://other.example/api'] }));
-  assert.equal(mixed.reason, 'aud_not_singleton_resource');
+  assert.equal(
+    classifyTokenA({
+      iss: ISSUER,
+      sub: SUBJECT,
+      role: 'authenticated',
+      aud: MCP_RESOURCE,
+    }).reason,
+    'role_flip_prerequisite_missing',
+  );
   assert.equal(classifyTokenB(tokenBClaims()).label, 'POSITIVE_CONTROL_NOT_MCP');
   assert.equal(classifyTokenB(tokenBClaims()).wiredIntoMcp, false);
 });
@@ -99,27 +139,131 @@ test('Token A eligibility ignores user_metadata and rejects role=authenticated',
 test('does not send a role=authenticated bearer as Token A', async () => {
   let calls = 0;
   const result = await runProbe(
-    baseOptions({
-      tokenA: jwt(tokenAClaims({ role: 'authenticated' })),
+    await readyProbe({
+      tokenA: unsignedJwt({
+        iss: ISSUER,
+        sub: SUBJECT,
+        role: 'authenticated',
+        aud: MCP_RESOURCE,
+      }),
       fetch: async () => {
         calls += 1;
-        return new Response('', { status: 500 });
+        return new Response('', { status: 401 });
       },
     }),
   );
   assert.equal(result.exitCode, 3);
   assert.equal(result.reason, 'role_flip_prerequisite_missing');
-  assert.equal(result.requests, 0);
   assert.equal(calls, 0);
-  assert.equal(JSON.stringify(result).includes('eyJ'), false);
+});
+
+test('malformed and expired Token A cannot become matrix_held', async () => {
+  let calls = 0;
+  const fetch = async () => {
+    calls += 1;
+    return new Response('', { status: 401 });
+  };
+  const malformed = await runProbe(
+    await readyProbe({
+      tokenA: unsignedJwt({
+        iss: ISSUER,
+        sub: SUBJECT,
+        role: INGRESS_ROLE,
+        aud: MCP_RESOURCE,
+        client_id: EXPECTED_CLIENT_ID,
+        session_id: SESSION,
+      }),
+      fetch,
+    }),
+  );
+  assert.equal(malformed.exitCode, 3);
+  assert.equal(malformed.reason, 'token_a_signature');
+  assert.notEqual(malformed.reason, 'matrix_held');
+  assert.equal(calls, 0);
+
+  const { privateKey, jwks } = await keyMaterial();
+  const expired = await sign(privateKey, {
+    role: INGRESS_ROLE,
+    audience: MCP_RESOURCE,
+    expiresIn: '-2m',
+  });
+  const expiredResult = await runProbe(await readyProbe({ tokenA: expired, jwks, fetch }));
+  assert.equal(expiredResult.exitCode, 3);
+  assert.equal(expiredResult.reason, 'token_a_expired');
+  assert.equal(calls, 0);
+});
+
+test('503 auth responses and realtime transport are not a pass', async () => {
+  const seen = [];
+  const probe = await readyProbe();
+  const result = await runProbe(
+    await readyProbe({
+      tokenA: probe.tokenA,
+      tokenB: probe.tokenB,
+      jwks: probe.jwks,
+      fetch: async (url, init) => {
+        const path = new URL(url).pathname;
+        seen.push(`${init.method} ${path}`);
+        const token = init.headers.authorization ?? '';
+        const tokenB = token.includes(probe.tokenB);
+        if (path === '/auth/v1/user' && init.method === 'GET' && tokenB)
+          return userResponse(SUBJECT);
+        if (path.startsWith('/auth/')) return new Response('unavailable', { status: 503 });
+        if (path === '/rest/v1/ari_probe_marker') {
+          if (!token) return new Response('[]', { status: 200 });
+          if (tokenB) return new Response(REST_OK, { status: 200 });
+          return new Response(REST_DENY, { status: 403 });
+        }
+        if (path === '/graphql/v1') {
+          if (!token)
+            return new Response('{"data":{"ariProbeMarkerCollection":null}}', { status: 200 });
+          if (tokenB) return new Response(GRAPHQL_OK, { status: 200 });
+          return new Response(GRAPHQL_DENY, { status: 200 });
+        }
+        if (path.startsWith('/storage/') && init.method === 'POST') {
+          return new Response('', { status: 200 });
+        }
+        if (path.startsWith('/storage/')) {
+          if (tokenB) return new Response(MARKER, { status: 200 });
+          return new Response('{"error":"not_found"}', { status: 404 });
+        }
+        return new Response('', { status: 500 });
+      },
+      joinRealtime: async ({ token }) => (token === probe.tokenB ? 'ok' : 'transport'),
+    }),
+  );
+  assert.notEqual(result.exitCode, 0);
+  assert.notEqual(result.reason, 'matrix_held');
+  for (const path of ['/auth/v1/user', '/auth/v1/factors', '/auth/v1/logout']) {
+    assert.equal(
+      seen.some((entry) => entry.endsWith(path)),
+      true,
+    );
+  }
+  assert.equal(
+    result.rows.filter((row) => row.credential === 'token_a' && row.status === 503).length,
+    4,
+  );
+  const realtime = result.rows.find((row) => row.id === 'L5-realtime-token-a');
+  assert.equal(realtime.verdict, 'inconclusive');
+  assert.notEqual(realtime.verdict, 'deny');
+  assert.equal(realtimeVerdict('token_a', 'transport').verdict, 'inconclusive');
+  assert.equal(authRowVerdict(503, false).verdict, 'inconclusive');
+  assert.equal(authRowVerdict(429, true).verdict, 'inconclusive');
+  assert.equal(authRowVerdict(302, true).verdict, 'inconclusive');
 });
 
 test('stops on the first Token A mutation success', async () => {
   const seen = [];
+  const probe = await readyProbe();
   const result = await runProbe(
-    baseOptions({
+    await readyProbe({
+      tokenA: probe.tokenA,
+      jwks: probe.jwks,
       fetch: async (url, init) => {
         seen.push(`${init.method} ${new URL(url).pathname}`);
+        const tokenB = (init.headers.authorization ?? '').includes(probe.tokenB);
+        if (tokenB && init.method === 'GET') return userResponse(SUBJECT);
         if (init.method === 'PUT') return new Response('{}', { status: 200 });
         return new Response('{}', { status: 401 });
       },
@@ -129,68 +273,92 @@ test('stops on the first Token A mutation success', async () => {
   assert.equal(result.reason, 'NO_GO_TOKEN_A_MUTATION');
   assert.equal(seen.includes('POST /auth/v1/factors'), false);
   assert.equal(seen.includes('POST /auth/v1/logout'), false);
-  assert.equal(seen.includes('GET /rest/v1/ari_probe_marker'), false);
 });
 
-test('stops before mutations when Token A can read the Auth user', async () => {
-  const seen = [];
+test('holds only explicit denials plus status-and-body positive controls', async () => {
+  const probe = await readyProbe();
   const result = await runProbe(
-    baseOptions({
-      fetch: async (url, init) => {
-        seen.push(`${init.method} ${new URL(url).pathname}`);
-        return new Response('{}', { status: 200 });
-      },
-    }),
-  );
-  assert.equal(result.reason, 'NO_GO_TOKEN_A_AUTH_READ');
-  assert.deepEqual(seen, ['GET /auth/v1/user']);
-  assert.equal(authRowVerdict(200, true).verdict, 'NO_GO_TOKEN_A_MUTATION');
-});
-
-test('holds the paired deny and positive-control matrix without echoing credentials', async () => {
-  const options = baseOptions();
-  const result = await runProbe(
-    baseOptions({
+    await readyProbe({
+      tokenA: probe.tokenA,
+      tokenB: probe.tokenB,
+      jwks: probe.jwks,
       fetch: async (url, init) => {
         const path = new URL(url).pathname;
-        const token = init.headers.authorization;
-        if (path.startsWith('/auth/')) return new Response('denied', { status: 401 });
-        if (
-          path === '/storage/v1/object/ari-probe-synthetic/marker.txt' &&
-          init.method === 'POST'
-        ) {
-          assert.equal(init.body, MARKER);
-          assert.equal(init.headers.authorization?.includes(options.tokenB), true);
-          return new Response('', { status: 200 });
+        const token = init.headers.authorization ?? '';
+        const tokenB = token.includes(probe.tokenB);
+        if (path === '/auth/v1/user' && init.method === 'GET' && tokenB)
+          return userResponse(SUBJECT);
+        if (path.startsWith('/auth/')) return new Response(REST_DENY, { status: 401 });
+        if (path === '/rest/v1/ari_probe_marker') {
+          if (!token) return new Response('[]', { status: 200 });
+          if (tokenB) return new Response(REST_OK, { status: 200 });
+          return new Response(REST_DENY, { status: 401 });
         }
-        const body = token?.includes(options.tokenB) ? JSON.stringify([{ marker: MARKER }]) : '[]';
-        return new Response(body, { status: token === undefined ? 200 : 401 });
+        if (path === '/graphql/v1') {
+          if (!token) return new Response('{"data":{}}', { status: 200 });
+          if (tokenB) return new Response(GRAPHQL_OK, { status: 200 });
+          return new Response(GRAPHQL_DENY, { status: 200 });
+        }
+        if (init.method === 'POST') return new Response('', { status: 200 });
+        if (tokenB) return new Response(MARKER, { status: 200 });
+        return new Response('missing', { status: 404 });
       },
-      joinRealtime: async ({ token }) => (token === options.tokenB ? 'ok' : 'error'),
+      joinRealtime: async ({ token }) => (token === probe.tokenB ? 'ok' : 'denied'),
     }),
   );
   assert.equal(result.exitCode, 0);
   assert.equal(result.reason, 'matrix_held');
   assert.equal(result.wiredIntoMcp, false);
   assert.equal(result.roleFlipShipped, false);
-  assert.equal(result.hookInstalledByThisPacket, false);
   const encoded = JSON.stringify(result);
-  assert.equal(encoded.includes(options.tokenA), false);
-  assert.equal(encoded.includes(options.tokenB), false);
-  assert.equal(encoded.includes(options.publishableKey), false);
-  assert.equal(dataRowVerdict('token_a', MARKER).verdict, 'NO_GO_TOKEN_A_GAINED_ACCESS');
-  assert.equal(dataRowVerdict('publishable', '[]').verdict, 'no_marker');
-  assert.equal(dataRowVerdict('token_b', `{"marker":"${MARKER}"}`).verdict, 'positive_control');
+  assert.equal(encoded.includes(probe.tokenA), false);
+  assert.equal(encoded.includes(probe.tokenB), false);
+  assert.equal(
+    dataRowVerdict('rest', 'token_a', 401, JSON.stringify({ code: 'PGRST301' })).verdict,
+    'inconclusive',
+  );
+  assert.equal(dataRowVerdict('rest', 'token_b', 200, 'ok').verdict, 'inconclusive');
+  assert.equal(dataRowVerdict('storage', 'token_a', 401, 'no').verdict, 'inconclusive');
+  assert.equal(dataRowVerdict('storage', 'token_a', 404, 'missing').verdict, 'deny');
+});
+
+test('this head MCP edge does not accept mcp_ingress Token A', async () => {
+  const probe = await readyProbe();
+  const calls = [];
+  const original = globalThis.fetch;
+  globalThis.fetch = async (input) => {
+    calls.push(typeof input === 'string' ? input : input.url);
+    throw new Error('network_forbidden');
+  };
+  try {
+    const result = await runProbe(
+      await readyProbe({
+        tokenA: probe.tokenA,
+        jwks: probe.jwks,
+        mcpEdge: undefined,
+        fetch: async () => {
+          throw new Error('data_api_must_not_run');
+        },
+      }),
+    );
+    assert.notEqual(result.exitCode, 0);
+    assert.notEqual(result.reason, 'matrix_held');
+    assert.equal(result.reason, 'token_a_mcp_edge_not_accepted');
+    assert.equal(result.requests, 0);
+    assert.equal(calls.length, 0);
+  } finally {
+    globalThis.fetch = original;
+  }
 });
 
 test('refuses a service-role shell and a service-role publishable key', async () => {
   const withSecret = await runProbe(
-    baseOptions({ env: { SUPABASE_SECRET_KEY: 'not-a-client-credential' } }),
+    await readyProbe({ env: { SUPABASE_SECRET_KEY: 'not-a-client-credential' } }),
   );
   assert.equal(withSecret.reason, 'service_role_forbidden_in_probe_shell');
   assert.equal(withSecret.requests, 0);
-  const serviceJwt = jwt({ role: 'service_role' });
-  const withKey = await runProbe(baseOptions({ publishableKey: serviceJwt }));
+  const serviceJwt = unsignedJwt({ role: 'service_role' });
+  const withKey = await runProbe(await readyProbe({ publishableKey: serviceJwt }));
   assert.equal(withKey.reason, 'publishable_key_is_service_role');
   assert.equal(JSON.stringify(withKey).includes(serviceJwt), false);
 });

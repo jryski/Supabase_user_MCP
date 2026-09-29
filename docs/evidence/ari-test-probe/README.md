@@ -11,6 +11,29 @@ merge, Pages, DNS, or publish step.
 | Hook | Documented in `sql/02-hook-for-ariadne.sql`. Not installed by this packet. |
 | Token B | Synthetic user password session. Positive control only. Not wired into MCP. |
 
+## Verdict rules
+
+Explicit permission denial is the only deny. `429`, `5xx`, redirects, transport
+failures, and parse failures are `inconclusive` and use a nonzero exit. They
+never produce `matrix_held`.
+
+Token B positive controls require the expected status and the expected body.
+A success-looking status with the wrong body is not a positive control.
+Token B `GET /auth/v1/user` must be `200` with the same `id` as Token A before
+any Token A Auth denial counts. Token A Auth denial is `401` or `403`. REST
+denial is `401` or `403` with Postgres `42501`. GraphQL denial is an `errors`
+array or an absent collection. Storage denial is `400`, `403`, or `404`.
+Realtime counts as denial only for an explicit unauthorized reply. A generic
+or transport error is inconclusive.
+
+Before those rows, Token A must verify: signature, expiry, expected client
+`ari-probe-synthetic-client`, and the MCP-edge acceptance path (`403`
+`downstream_credential_unresolved`). A malformed or expired Token A stops
+there. This head's edge still requires `role=authenticated`, so an
+`mcp_ingress` Token A fails that control with
+`token_a_mcp_edge_not_accepted` and does not call the Data API. That failure
+is not acceptance and not separation. The role flip is still not shipped.
+
 ## L2 — ingress role flip, not shipped
 
 Do not install the hook until a reviewed adapter commit requires `mcp_ingress`
@@ -54,7 +77,9 @@ into git, chat, or the receipt.
 unset SUPABASE_SERVICE_ROLE_KEY SUPABASE_SECRET_KEY SERVICE_ROLE_KEY SUPABASE_SERVICE_KEY
 export ARI_TEST_PROJECT_REF=odbcejsuuqdzhabjmozi
 export ARI_TEST_SUPABASE_URL=https://odbcejsuuqdzhabjmozi.supabase.co
-export ARI_TEST_PUBLISHABLE_KEY   # publishable or anon key only
+export ARI_TEST_PUBLISHABLE_KEY
+export ARI_TEST_EXPECTED_CLIENT_ID=ari-probe-synthetic-client
+export ARI_TEST_JWKS_JSON   # public JWKS JSON only; no private key material
 ```
 
 1. Confirm the dashboard ref is `odbcejsuuqdzhabjmozi`. Stop otherwise.
@@ -90,14 +115,15 @@ node docs/evidence/ari-test-probe/probe.mjs run
 
 | Row | Credential | Hold | Stop |
 | --- | --- | --- | --- |
-| `GET /auth/v1/user` | Token A | non-2xx | 2xx is NO-GO; no later mutation is sent |
-| `PUT /auth/v1/user` | Token A | non-2xx | 2xx is NO-GO |
-| `POST /auth/v1/factors` | Token A | non-2xx | 2xx is NO-GO |
-| `POST /auth/v1/logout` | Token A | non-2xx | 2xx is NO-GO |
-| REST `/rest/v1/ari_probe_marker` | publishable, Token A, Token B | publishable and Token A do not contain the marker; Token B does | Token A contains the marker, or the publishable key does |
-| GraphQL `/graphql/v1` | same pair | same marker rule | same |
-| Storage `ari-probe-synthetic/marker.txt` | Token B seeds the object; then the same pair | same marker rule | same |
-| Realtime private topic `ari-probe-synthetic` | Token A, Token B | Token A join is not `ok`; Token B join is `ok` | Token A join is `ok` |
+| `GET /auth/v1/user` | Token B | `200` and `id` matches Token A `sub` | any other result stops the matrix |
+| `GET /auth/v1/user` | Token A | `401` or `403` | `2xx` is NO-GO; `429`, `5xx`, and redirects are inconclusive |
+| `PUT /auth/v1/user` | Token A | `401` or `403` | `2xx` is NO-GO; other statuses are inconclusive |
+| `POST /auth/v1/factors` | Token A | `401` or `403` | `2xx` is NO-GO; other statuses are inconclusive |
+| `POST /auth/v1/logout` | Token A | `401` or `403` | `2xx` is NO-GO; other statuses are inconclusive |
+| REST `/rest/v1/ari_probe_marker` | publishable, Token A, Token B | Token A is `401` or `403` with `42501`; Token B is `200` and a row `marker` | Token A contains the marker, or the status is not that denial |
+| GraphQL `/graphql/v1` | same pair | Token A has `errors` or no collection; Token B is `200` and the marker node | Token A contains the marker |
+| Storage `ari-probe-synthetic/marker.txt` | Token B seeds, then the same pair | Token A is `400`, `403`, or `404`; Token B GET is `200` and the marker bytes | Token A contains the marker |
+| Realtime private topic `ari-probe-synthetic` | Token A, Token B | Token A reply is explicit unauthorized; Token B join is `ok` | Token A join is `ok`, or the error is only transport |
 
 Exit `0` means this matrix held. It does not mean acceptance or Token A
 separation. Exit `2` is a target or credential guard. Exit `3` means Token A
