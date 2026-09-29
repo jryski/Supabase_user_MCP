@@ -7,7 +7,8 @@
 | Central | Ariadne — hard gates below are for Central when a G2 draft PR lands |
 | Repo | `jryski/Supabase_user_MCP` (Apache-2.0) |
 | G1 + G5 source PR | https://github.com/jryski/Supabase_user_MCP/pull/97 (draft) |
-| G1 + G5 exact head | `95ae3a46710134d5a46a57e17fe4a38224c89467` |
+| G1 + G5 exact head | `7602f83221d3022bca3d7342f3f1dec481289349` |
+| G1 + G5 tree | `24522949c924590ec4528fed377fb912cb9cb6a9` |
 | G1 matrix | `docs/finish-queue/G1-UPSTREAM-REUSE-DELETE-MATRIX.md` at that head |
 | G5 decision | **NO** — `docs/finish-queue/G5-MCP-SUPABASE-TOPOLOGY-DECISION.md` at that head |
 | G5 Token B rule | Token B is a **second Supabase OAuth grant / OAuth client**. G5 does **not** require a custom MCP issuer. |
@@ -22,7 +23,7 @@
 | Formal CONTENT | With the independent verifier. This author does not claim content PASS. Matrix rows stay `verifier`. |
 | Ordinary remote | G1’s `start:remote` path is the pre-existing profile. The #98 delta does not switch it over. Hard-gate PASS below is the new adapter plus that delta, not a content score of every inherited file. |
 
-This checklist is pinned to locked #98 head `eb2a4ce8df0cbb88878894d71c5a97d7f0e4cf28` (tree `765063a7517d27363ddca71b7cba2ec0f31b2a9d`) and to G1/G5 at `95ae3a46`. It does not add a topology, an issuer, an exchange, or a privilege exception.
+This checklist is pinned to locked #98 head `eb2a4ce8df0cbb88878894d71c5a97d7f0e4cf28` (tree `765063a7517d27363ddca71b7cba2ec0f31b2a9d`) and to G1/G5 head `7602f83221d3022bca3d7342f3f1dec481289349` (tree `24522949c924590ec4528fed377fb912cb9cb6a9`). It does not add a topology, an issuer, an exchange, or a privilege exception.
 
 ## Locked head
 
@@ -70,7 +71,7 @@ This checklist does not claim G2 acceptance while Token A remains Data API-capab
 
 ## How this map relates to G1’s count summary
 
-G1’s matrix **table** lists **21** subsystem rows (Issuer through Fixture transport). G1’s count summary says “20” and “REUSE 4 / ADAPT 6 / RETAIN 7 / DELETE 6”. Those bucket totals mention some dual-disposition rows in more than one bucket. Coverage here is the **table**, one checklist row per subsystem, with both clauses kept when a cell names two dispositions.
+At `7602f83221d3022bca3d7342f3f1dec481289349` the matrix is machine-counted as **21** subsystem rows, one primary disposition each: **REUSE 5** (rows 4, 6, 8, 9, 11) / **ADAPT 3** (rows 7, 10, 17) / **RETAIN 7** (rows 12, 13, 14, 18, 19, 20, 21) / **DELETE 6** (rows 1, 2, 3, 5, 15, 16). Secondary and lab notes are not extra primary rows. This checklist still has one row per subsystem and keeps those secondary notes on the same row.
 
 | Checklist | G1 subsystem | Disposition cell |
 | --- | --- | --- |
@@ -79,7 +80,7 @@ G1’s matrix **table** lists **21** subsystem rows (Issuer through Fixture tran
 | G1-03 | JWKS on lab issuer | DELETE (prod) / ADAPT (lab fake only) |
 | G1-04 | Protected-resource metadata (RFC 9728) | REUSE UPSTREAM + ADAPT path glue |
 | G1-05 | Authorize / token / revoke (homemade routes) | DELETE |
-| G1-06 | DCR | REUSE UPSTREAM (policy-gated) |
+| G1-06 | DCR | REUSE UPSTREAM (first proof: DCR off, pre-registered synthetics) |
 | G1-07 | Consent | ADAPT |
 | G1-08 | Refresh | REUSE UPSTREAM (Data API / user session) + DELETE (MCP-AS refresh) |
 | G1-09 | Token verification | REUSE UPSTREAM + ADAPT resource-binding extras |
@@ -107,7 +108,7 @@ Grouped index (same 21 rows; dual rows appear in each clause they carry):
 
 ## G5 constraints that bind the marks
 
-Quoted decision at `95ae3a46` (do not re-litigate it here):
+Quoted decision at `7602f83221d3022bca3d7342f3f1dec481289349` (do not re-litigate it here):
 
 > **NO.** Token B must be a **second Supabase OAuth grant / OAuth client** used for upstream Data API (and related Supabase API) calls. Still **no custom MCP issuer** required by this G5 finding alone. Stock single-grant `withOAuthProtectedResource` + `withSupabase({ auth: 'user' })` is **not** conformant without that second grant.
 
@@ -154,7 +155,7 @@ H1 and H2 are the hard gates recorded PASS at this locked head. H3, H4, H5, and 
 
 ## Matrix rows
 
-For each row, “G1 test needed” is the test cell of that matrix row at `95ae3a46`. The acceptance line is that cell, plus the G5 binding where the row touches Token A / Token B. Silent deletion of a RETAIN gap is FAIL. Lab-only leftovers are allowed only on the ADAPT / RETAIN-lab clause, and they must be unreachable on ordinary remote. Every matrix Mark is `verifier`: formal CONTENT, not a PASS from this author.
+For each row, “G1 test needed” is the test cell of that matrix row at `7602f83221d3022bca3d7342f3f1dec481289349`. The acceptance line is that cell, plus the G5 binding where the row touches Token A / Token B. Silent deletion of a RETAIN gap is FAIL. Lab-only leftovers are allowed only on the ADAPT / RETAIN-lab clause, and they must be unreachable on ordinary remote. Every matrix Mark is `verifier`: formal CONTENT, not a PASS from this author.
 
 ### DELETE
 
@@ -245,9 +246,9 @@ If the G2 head deletes the lab broker, `SUPABASE_USER_MCP_LAB_DUAL_GRANT` and th
 
 | Field | Value |
 | --- | --- |
-| Disposition | REUSE UPSTREAM (policy-gated) |
-| G1 test needed | With DCR off: unknown client rejected. With DCR on: registration + consent + token round-trip; redirect URI exact-match enforced by GoTrue. |
-| Acceptance | DCR is the project Auth facility (`allow_dynamic_registration` / Auth registration endpoint), not a new registrar inside the MCP process. The verifier records which policy the G2 head ships. **Off:** unknown client rejected, evidenced on that head. **On:** registration, consent, and token round-trip, with GoTrue exact redirect match. The mode not shipped must be stated as policy; leaving both modes untested is BLOCKED, not PASS. ADR-0006’s historical “no DCR” line applied to the homemade broker, not to project Auth, per G1. |
+| Disposition | REUSE UPSTREAM. First-proof secondary note: pre-registered synthetic clients only; DCR stays off. Not an authorization to enable DCR, Household, or website consent hosting. |
+| G1 test needed | With DCR off (first proof): unknown client rejected; pre-registered synthetic clients succeed. Do not require a DCR-on registration round-trip for first proof. |
+| Acceptance | DCR, if used at all, is the project Auth facility, not a registrar inside the MCP process. First proof at this G1 head keeps DCR off: unknown client rejected, pre-registered synthetic clients succeed. A DCR-on round-trip is not required for that proof. This row does not authorize enabling DCR or hosting consent on a site. |
 | Mark | verifier |
 | Evidence | |
 
@@ -301,7 +302,7 @@ Scored with G1-04 above. Allowed glue is `resourceServer` / `authorizationServer
 | --- | --- |
 | Disposition | ADAPT |
 | G1 test needed | Consent approve/deny redirects with code; deny → `access_denied`; replayed decision rejected; no tool call authorized by login cookie alone. |
-| Acceptance | Consent uses Auth-backed APIs (`getAuthorizationDetails`, `approveAuthorization`, `denyAuthorization`) on the Household/app site, not broker-rendered HTML on the MCP process (`lab_login_session` plus an in-process approve-or-deny decision is not the ordinary path). Approve redirects with a code; deny returns `access_denied`; a replayed decision is rejected. A browser login cookie alone does not authorize a tool call. |
+| Acceptance | Consent uses Auth-backed APIs (`getAuthorizationDetails`, `approveAuthorization`, `denyAuthorization`) on an isolated test consent surface, not broker-rendered HTML on the MCP process (`lab_login_session` plus an in-process approve-or-deny decision is not the ordinary path). G1 at `7602f83221d3022bca3d7342f3f1dec481289349` says this is not a Household-OS deployment and not website or Pages consent hosting. Approve redirects with a code; deny returns `access_denied`; a replayed decision is rejected. A browser login cookie alone does not authorize a tool call. |
 | Mark | verifier |
 | Evidence | |
 
@@ -315,7 +316,7 @@ Scored with G1-09 above. Allowed glue is the extra audience / `client_id` check 
 | --- | --- |
 | Disposition | ADAPT |
 | G1 test needed | Exact redirect match; wildcard, userinfo, query, and fragment rejected; wrong host/port denied; lab callback not exposed on ordinary `start:remote`. |
-| Acceptance | Production redirect URIs are the MCP client’s registered URIs and the app consent return path. `/lab/oauth/callback` on the broker is not exposed on ordinary `start:remote`. Exact match only. Lab harness redirects may exist for disposable GoTrue tests and must stay off ordinary remote. |
+| Acceptance | Production redirect URIs are the MCP client’s registered URIs and the isolated test-consent return path. `/lab/oauth/callback` on the broker is not exposed on ordinary `start:remote`. Exact match only. Lab harness redirects may exist for disposable GoTrue tests and must stay off ordinary remote. |
 | Mark | verifier |
 | Evidence | |
 
@@ -354,8 +355,8 @@ Each row names an upstream gap in G1. The gap stays fail-closed, tested, and doc
 | --- | --- |
 | Disposition | RETAIN |
 | Upstream gap (G1) | No dual-grant correlation API. Single-credential docs conflict with MCP 2026-07-28 and ADR-0005/0006. |
-| G1 test needed | Mapping rejects `user_metadata` authority; a second upstream grant for the same principal+client → `grant_family_conflict`; cross-principal dispatch denied. |
-| Acceptance | Token A and Token B stay correlated without trusting `user_metadata` as authority. A second upstream grant for the same principal and client fails closed with `grant_family_conflict`. Cross-principal dispatch is denied. Collapsing to one Supabase access token for both the MCP gate and the Data API flips this row to DELETE **only after** an ADR supersession on the G2 head. Doing that collapse without the ADR is FAIL. Two tokens and no correlation is FAIL. |
+| G1 test needed | Mapping rejects `user_metadata` authority; a second upstream grant for the same principal and client fails with `grant_family_conflict`; cross-principal dispatch is denied; agent-specific RLS must not collapse two agents onto one upstream `client_id`. |
+| Acceptance | Token A and Token B stay correlated without trusting `user_metadata` as authority. A second upstream grant for the same principal and client fails closed with `grant_family_conflict`. Cross-principal dispatch is denied. Two agents must not collapse onto one upstream `client_id`. Collapsing to one Supabase access token for both the MCP gate and the Data API flips this row to DELETE **only after** an ADR supersession on the G2 head. Doing that collapse without the ADR is FAIL. Two tokens and no correlation is FAIL. |
 | Mark | verifier |
 | Evidence | |
 
@@ -479,7 +480,8 @@ Rules:
 | G2 base | `ariadne/remote-oauth-rebased-20260919` @ `fcbaca121d0717ee8ff98df90b2f12475b05bb78` |
 | Locked G2 head | `eb2a4ce8df0cbb88878894d71c5a97d7f0e4cf28` |
 | Locked G2 tree | `765063a7517d27363ddca71b7cba2ec0f31b2a9d` |
-| G1/G5 head | `95ae3a46710134d5a46a57e17fe4a38224c89467` |
+| G1/G5 head | `7602f83221d3022bca3d7342f3f1dec481289349` |
+| G1/G5 tree | `24522949c924590ec4528fed377fb912cb9cb6a9` |
 | H1 | PASS at `eb2a4ce8` (hard gate only: `fromSupabaseUrl`; #98 delta has no `Iss_M`, no authorize/token/revoke, no lab dual-grant) |
 | H2 | PASS at `eb2a4ce8` (hard gate only: Token A → `403` `downstream_credential_unresolved`; `sameBearerPassthrough: false`; blocked fetch; zero Data API calls on that path) |
 | R1 known gap | No acceptance. Accepted Token A requires `aud` `authenticated` plus the MCP resource, so it is Data API-capable by construction. Resource-only `aud` stays `401` `invalid_token`. |
