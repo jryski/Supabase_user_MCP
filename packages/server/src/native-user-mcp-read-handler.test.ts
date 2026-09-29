@@ -150,8 +150,19 @@ describe('native user MCP read composition', () => {
     expect(unknown.status).toBe(403);
     expect(calls).toEqual([]);
 
+    const hostile = await handler(
+      new Request(`${REDIRECT}?code=once&state=${handshake.handshake_id}`, {
+        headers: { host: 'evil.example' },
+      }),
+    );
+    expect(hostile.status).toBe(400);
+    expect(await hostile.json()).toEqual({ error: 'invalid_request' });
+    expect(calls).toEqual([]);
+
     const bound = await handler(
-      new Request(`${REDIRECT}?code=once&state=${handshake.handshake_id}`),
+      new Request(`${REDIRECT}?code=once&state=${handshake.handshake_id}`, {
+        headers: { host: '127.0.0.1:8788' },
+      }),
     );
     expect(bound.status).toBe(200);
     expect(await bound.json()).toMatchObject({ bound: true });

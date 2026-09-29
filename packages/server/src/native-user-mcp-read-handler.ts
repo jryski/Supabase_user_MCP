@@ -65,7 +65,16 @@ function principalBinding(principal: VerifiedNativeUserPrincipal): DownstreamHan
   };
 }
 
-function callbackUrl(request: Request, redirectUri: string): URL | undefined {
+function isLoopbackHostname(hostname: string): boolean {
+  return hostname === 'localhost' || hostname === '::1' || hostname.startsWith('127.');
+}
+
+/**
+ * Callback GET only. Same Host rule as the remote HTTP profile: a present
+ * Host must be the redirect host. http is accepted only for loopback.
+ * A mismatch is hostile and must not fall through to code exchange.
+ */
+function callbackUrl(request: Request, redirectUri: string): URL | 'hostile' | undefined {
   let actual: URL;
   let expected: URL;
   try {
@@ -75,6 +84,12 @@ function callbackUrl(request: Request, redirectUri: string): URL | undefined {
     return undefined;
   }
   if (actual.origin !== expected.origin || actual.pathname !== expected.pathname) return undefined;
+  const loopback = expected.protocol === 'http:' && isLoopbackHostname(expected.hostname);
+  if (!loopback) return 'hostile';
+  const host = request.headers.get('host');
+  if (host !== null && host.length > 0 && host !== expected.host && host !== expected.hostname) {
+    return 'hostile';
+  }
   return actual;
 }
 
@@ -198,6 +213,7 @@ export function createNativeUserMcpReadHandler(
   return async (request: Request): Promise<Response> => {
     if (request.method === 'GET') {
       const url = callbackUrl(request, config.downstreamRedirectUri);
+      if (url === 'hostile') return jsonResponse(400, { error: 'invalid_request' });
       if (url !== undefined) {
         const code = url.searchParams.get('code') ?? '';
         const state = url.searchParams.get('state') ?? '';

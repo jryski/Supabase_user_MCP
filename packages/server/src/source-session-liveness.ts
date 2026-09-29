@@ -21,12 +21,18 @@ export interface SourceSessionLivenessInput {
   readonly aClientId: string;
 }
 
+function isLoopbackHostname(hostname: string): boolean {
+  return hostname === 'localhost' || hostname === '::1' || hostname.startsWith('127.');
+}
+
+/** https anywhere. http only when the host is loopback. */
 function originOf(supabaseUrl: string): string | undefined {
   try {
     const parsed = new URL(supabaseUrl);
-    if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') return undefined;
     if (parsed.username !== '' || parsed.password !== '') return undefined;
-    return parsed.origin;
+    if (parsed.protocol === 'https:') return parsed.origin;
+    if (parsed.protocol === 'http:' && isLoopbackHostname(parsed.hostname)) return parsed.origin;
+    return undefined;
   } catch {
     return undefined;
   }

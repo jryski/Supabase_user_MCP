@@ -83,4 +83,35 @@ describe('source session liveness caller', () => {
     expect(skipped).toBe(false);
     expect(fetches).toBe(1);
   });
+
+  it('allows http only for a loopback origin', async () => {
+    let fetches = 0;
+    const fetchImpl: typeof fetch = async (input) => {
+      fetches += 1;
+      expect(String(input)).toBe(
+        `http://127.0.0.1:54321/rest/v1/rpc/${SOURCE_SESSION_LIVENESS_RPC}`,
+      );
+      return new Response('true', { status: 200 });
+    };
+    const cleartext = await probeSourceSessionLive(
+      {
+        supabaseUrl: 'http://project.loopback.invalid',
+        publishableKey: 'sb_publishable_test',
+        fetch: fetchImpl,
+      },
+      { accessToken: TOKEN_B, sourceSessionId: SOURCE, aClientId: A_CLIENT },
+    );
+    expect(cleartext).toBe(false);
+    expect(fetches).toBe(0);
+    const loopback = await probeSourceSessionLive(
+      {
+        supabaseUrl: 'http://127.0.0.1:54321',
+        publishableKey: 'sb_publishable_test',
+        fetch: fetchImpl,
+      },
+      { accessToken: TOKEN_B, sourceSessionId: SOURCE, aClientId: A_CLIENT },
+    );
+    expect(loopback).toBe(true);
+    expect(fetches).toBe(1);
+  });
 });

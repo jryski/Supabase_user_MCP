@@ -13,6 +13,7 @@ const CLIENT_EXT = 'external-a-client-parameter';
 const CLIENT_B = 'downstream-b-client-parameter';
 const OTHER_AGENT_A = 'other-agent-a-client';
 const RESOURCE = 'https://odbcejsuuqdzhabjmozi.supabase.co/mcp';
+const EXTERNAL_RESOURCE = 'http://127.0.0.1:8788/mcp';
 const AGENT = 'hook-only-agent-parameter';
 const OTHER_AGENT = 'other-agent-parameter';
 const MARKER = 'ari-probe-marker-odbcejsuuqdzhabjmozi';
@@ -28,6 +29,14 @@ function claims(clientId, agentId, role = 'authenticated') {
 }
 
 describe('lane B SQL packet', { concurrency: false }, () => {
+  test('sql/07 pins external A to the loopback resource', async () => {
+    const sql = await readFile(sql07, 'utf8');
+    assert.match(sql, /values \(v_external, 'http:\/\/127\.0\.0\.1:8788\/mcp', v_agent_id/);
+    assert.match(sql, /mapping\.mcp_resource = 'http:\/\/127\.0\.0\.1:8788\/mcp'/);
+    assert.match(sql, /external A resource must differ from baseline A/);
+    assert.equal(sql.includes("values (v_external, v_mcp_resource"), false);
+  });
+
   test('sql/03 and sql/04 stay free of the B mapping', async () => {
     const roleSql = await readFile(sql03, 'utf8');
     const hookSql = await readFile(sql04, 'utf8');
@@ -315,14 +324,23 @@ describe('sql/07 keeps baseline A and maps B', { concurrency: false }, () => {
     };
   }
 
-  test('baseline A row remains and external A still mints a decoy session', async () => {
+  test('baseline A and external A carry different resources', async () => {
     const rows = await db.query(
-      `select client_id, probe_label from ari_probe.mcp_client order by probe_label`,
+      `select client_id, probe_label, mcp_resource from ari_probe.mcp_client order by probe_label`,
     );
     assert.deepEqual(rows.rows, [
-      { client_id: CLIENT_EXT, probe_label: 'ari-test-external-a' },
-      { client_id: CLIENT_A, probe_label: 'ari-test-synthetic' },
+      {
+        client_id: CLIENT_EXT,
+        probe_label: 'ari-test-external-a',
+        mcp_resource: EXTERNAL_RESOURCE,
+      },
+      {
+        client_id: CLIENT_A,
+        probe_label: 'ari-test-synthetic',
+        mcp_resource: RESOURCE,
+      },
     ]);
+    assert.notEqual(rows.rows[0].mcp_resource, rows.rows[1].mcp_resource);
     const result = await hook(oauthEvent(CLIENT_A));
     assert.equal(result.claims.role, 'mcp_ingress');
     assert.equal(result.claims.aud, RESOURCE);
@@ -331,7 +349,9 @@ describe('sql/07 keeps baseline A and maps B', { concurrency: false }, () => {
     assert.notEqual(result.claims.session_id, SOURCE);
     const external = await hook(oauthEvent(CLIENT_EXT));
     assert.equal(external.claims.role, 'mcp_ingress');
+    assert.equal(external.claims.aud, EXTERNAL_RESOURCE);
     assert.equal(external.claims.agent_id, AGENT);
+    assert.equal(external.claims.source_session_id, SOURCE);
     assert.notEqual(external.claims.session_id, SOURCE);
   });
 

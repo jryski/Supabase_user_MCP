@@ -45,8 +45,8 @@ schema `auth`. If it raises `STOP AND REPORT`, stop. Do not add a grant on
 Two additional public clients, no client secret, no DCR, no `openid`:
 
 1. External A. Redirect is the loopback MCP callback the external client
-   uses. Resource is the loopback MCP URL, for example
-   `http://127.0.0.1:8788/mcp`.
+   uses. `sql/07` inserts that row's `mcp_resource` as the fixed constant
+   `http://127.0.0.1:8788/mcp`. It is not taken from `ari.mcp_resource`.
 2. B, labeled TEST-only public PKCE. Redirect is
    `http://127.0.0.1:8788/oauth/downstream/callback`. Do not send a `resource`
    parameter. Scope is `email`.
@@ -64,8 +64,9 @@ select set_config('ari.project_ref', 'odbcejsuuqdzhabjmozi', false);
    Do not apply `sql/02`.
 2. `sql/07-downstream-and-external-a.sql` with `ari.oauth_client_id`,
    `ari.external_a_client_id`, `ari.downstream_client_id`, `ari.mcp_resource`,
-   and `ari.agent_id` set in the same batch. `ari.agent_id` is the same
-   trusted agent for A and B.
+   and `ari.agent_id` set in the same batch. `ari.mcp_resource` stays the
+   hosted TEST `/mcp` URL and is the baseline A resource only. `ari.agent_id`
+   is the same trusted agent for A and B.
 3. `sql/05-source-session-liveness.sql`.
 4. `sql/06-ingress-client-rls.sql` with the baseline and external A client ids.
 

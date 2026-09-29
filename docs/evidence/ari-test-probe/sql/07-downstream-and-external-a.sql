@@ -20,11 +20,15 @@
 -- Prerequisite: sql/01 and sql/04 already applied. Do not recreate the user.
 -- Do not apply sql/02.
 --
+-- ari.mcp_resource is the baseline A row only. External A does not read it.
+-- sql/07 inserts external A mcp_resource as the fixed constant
+-- http://127.0.0.1:8788/mcp. That value is not a set_config parameter.
+--
 -- Hook order:
 --   1. no client_id -> ordinary login, claims unchanged
 --   2. openid -> structured 403 openid_scope_refused
---   3. exact A (baseline or external) -> mcp_ingress, MCP resource aud,
---      fresh decoy session_id, source_session_id, trusted agent_id
+--   3. exact A (baseline or external) -> mcp_ingress, that row's mcp_resource
+--      as aud, fresh decoy session_id, source_session_id, trusted agent_id
 --   4. exact B -> role authenticated, aud authenticated, REAL session_id,
 --      trusted agent_id. No source_session_id. No fresh decoy.
 --   5. anything else -> structured 403 unmapped_client_id
@@ -109,7 +113,7 @@ begin
     check (probe_label in ('ari-test-synthetic', 'ari-test-external-a'));
 
   insert into ari_probe.mcp_client (client_id, mcp_resource, agent_id, probe_label)
-  values (v_external, v_mcp_resource, v_agent_id, 'ari-test-external-a')
+  values (v_external, 'http://127.0.0.1:8788/mcp', v_agent_id, 'ari-test-external-a')
   on conflict (client_id) do update
     set mcp_resource = excluded.mcp_resource,
         agent_id = excluded.agent_id,
@@ -121,6 +125,7 @@ begin
     from ari_probe.mcp_client as mapping
     where mapping.client_id = v_baseline
       and mapping.probe_label = 'ari-test-synthetic'
+      and mapping.mcp_resource = v_mcp_resource
   ) then
     raise exception 'baseline A mapping was not left intact';
   end if;
@@ -131,8 +136,22 @@ begin
     where mapping.client_id = v_external
       and mapping.probe_label = 'ari-test-external-a'
       and mapping.agent_id = v_agent_id
+      and mapping.mcp_resource = 'http://127.0.0.1:8788/mcp'
   ) then
     raise exception 'external A mapping was not inserted';
+  end if;
+
+  if exists (
+    select 1
+    from ari_probe.mcp_client as baseline
+    join ari_probe.mcp_client as external
+      on baseline.mcp_resource = external.mcp_resource
+    where baseline.client_id = v_baseline
+      and baseline.probe_label = 'ari-test-synthetic'
+      and external.client_id = v_external
+      and external.probe_label = 'ari-test-external-a'
+  ) then
+    raise exception 'external A resource must differ from baseline A';
   end if;
 
   create table if not exists ari_probe.downstream_client (
