@@ -2,13 +2,23 @@
  * Loopback consent and code exchange for the controller host.
  * plan, redact, and listenOnce do not dial a network. performConsent,
  * exchangeAuthorizationCode, runConsentExchange, and runOpenIdNegative dial
- * only through the fetch function the caller passes. This packet does not
- * install a hook. Do not put owner keys, refresh tokens, access tokens,
- * authorization codes, or verifiers in a URL, log, channel, or artifact.
+ * only through the fetch function the caller passes. `run` keeps Token A and
+ * Token B in memory and passes them to runProbe. It does not export or print
+ * them. This packet does not install a hook. Do not put owner keys, refresh
+ * tokens, access tokens, authorization codes, or verifiers in a URL, log,
+ * channel, or artifact.
  */
 import { createHash, randomBytes } from 'node:crypto';
 import { createServer } from 'node:http';
 import { pathToFileURL } from 'node:url';
+import {
+  ALLOWED_PROJECT_REF,
+  EXPECTED_ORIGIN,
+  MCP_RESOURCE,
+  SERVICE_ROLE_ENV_NAMES,
+  SYNTHETIC_EMAIL,
+} from './decisions.mjs';
+import { runProbe } from './probe.mjs';
 
 export const FORBIDDEN_PROJECT_REF = 'lygftpbjgqgvuunkwnxf';
 export const DISCOVERY = Object.freeze({
@@ -408,90 +418,113 @@ async function consentWithCode(input) {
 
 export async function performConsent(input) {
   const consent = await consentWithCode(input);
+  if (typeof input.retainCode === 'function' && typeof consent.code === 'string') {
+    input.retainCode(consent.code);
+  }
   const receipt = { ...consent };
   delete receipt.code;
   return receipt;
 }
 
-export async function exchangeAuthorizationCode(input) {
+function secretResult(receipt) {
+  return { accessToken: null, refreshToken: null, receipt };
+}
+
+async function exchangeWithSecrets(input) {
   const guard = guardTarget(input);
   if (guard) {
-    return baseReceipt({
-      ok: false,
-      reason: guard,
-      exchanged: false,
-      idTokenPresent: false,
-      status: null,
-    });
+    return secretResult(
+      baseReceipt({
+        ok: false,
+        reason: guard,
+        exchanged: false,
+        idTokenPresent: false,
+        status: null,
+      }),
+    );
   }
   if (typeof input.codeVerifier !== 'string' || input.codeVerifier.length === 0) {
-    return baseReceipt({
-      ok: false,
-      reason: 'pkce_verifier_required',
-      exchanged: false,
-      idTokenPresent: false,
-      status: null,
-    });
+    return secretResult(
+      baseReceipt({
+        ok: false,
+        reason: 'pkce_verifier_required',
+        exchanged: false,
+        idTokenPresent: false,
+        status: null,
+      }),
+    );
   }
   const challenge = createHash('sha256').update(input.codeVerifier).digest('base64url');
   if (typeof input.codeChallenge === 'string' && input.codeChallenge !== challenge) {
-    return baseReceipt({
-      ok: false,
-      reason: 'pkce_s256_mismatch',
-      exchanged: false,
-      idTokenPresent: false,
-      status: null,
-      codeChallengeMethod: 'S256',
-    });
+    return secretResult(
+      baseReceipt({
+        ok: false,
+        reason: 'pkce_s256_mismatch',
+        exchanged: false,
+        idTokenPresent: false,
+        status: null,
+        codeChallengeMethod: 'S256',
+      }),
+    );
   }
   if (typeof input.code !== 'string' || input.code.length === 0) {
-    return baseReceipt({
-      ok: false,
-      reason: 'authorization_code_required',
-      exchanged: false,
-      idTokenPresent: false,
-      status: null,
-    });
+    return secretResult(
+      baseReceipt({
+        ok: false,
+        reason: 'authorization_code_required',
+        exchanged: false,
+        idTokenPresent: false,
+        status: null,
+      }),
+    );
   }
   const redirect = assertRedirectUri(input.redirectUri);
   if (!redirect.ok) {
-    return baseReceipt({
-      ok: false,
-      reason: redirect.reason,
-      exchanged: false,
-      idTokenPresent: false,
-      status: null,
-    });
+    return secretResult(
+      baseReceipt({
+        ok: false,
+        reason: redirect.reason,
+        exchanged: false,
+        idTokenPresent: false,
+        status: null,
+      }),
+    );
   }
   if (typeof input.clientId !== 'string' || input.clientId.length === 0) {
-    return baseReceipt({
-      ok: false,
-      reason: 'oauth_client_id_required',
-      exchanged: false,
-      idTokenPresent: false,
-      status: null,
-    });
+    return secretResult(
+      baseReceipt({
+        ok: false,
+        reason: 'oauth_client_id_required',
+        exchanged: false,
+        idTokenPresent: false,
+        status: null,
+      }),
+    );
   }
   if (typeof input.resource !== 'string' || input.resource.length === 0) {
-    return baseReceipt({
-      ok: false,
-      reason: 'mcp_resource_required',
-      exchanged: false,
-      idTokenPresent: false,
-      status: null,
-    });
+    return secretResult(
+      baseReceipt({
+        ok: false,
+        reason: 'mcp_resource_required',
+        exchanged: false,
+        idTokenPresent: false,
+        status: null,
+      }),
+    );
   }
   let tokenUrl;
   try {
     tokenUrl = new URL('/auth/v1/oauth/token', input.authOrigin);
   } catch {
-    return baseReceipt({
-      ok: false,
-      reason: 'auth_origin_unreadable',
-      exchanged: false,
-      idTokenPresent: false,
-      status: null,
-    });
+    return secretResult(
+      baseReceipt({
+        ok: false,
+        reason: 'auth_origin_unreadable',
+        exchanged: false,
+        idTokenPresent: false,
+        status: null,
+      }),
+    );
   }
   const body = new URLSearchParams({
     grant_type: 'authorization_code',
@@ -512,24 +545,58 @@ export async function exchangeAuthorizationCode(input) {
     });
     const text = await readBody(response);
     const redacted = redactResponseBody(text);
-    return baseReceipt({
-      ok: redacted.ok,
-      reason: redacted.reason,
-      exchanged: true,
-      status: response.status,
-      idTokenPresent: redacted.reason === 'id_token_present',
-      secretKeyNames: redacted.secretKeyNames ?? [],
-      codeChallengeMethod: 'S256',
-    });
+    const parsed = parseJson(text);
+    const accessToken =
+      parsed !== null &&
+      typeof parsed === 'object' &&
+      !Array.isArray(parsed) &&
+      typeof parsed.access_token === 'string'
+        ? parsed.access_token
+        : null;
+    const refreshToken =
+      parsed !== null &&
+      typeof parsed === 'object' &&
+      !Array.isArray(parsed) &&
+      typeof parsed.refresh_token === 'string'
+        ? parsed.refresh_token
+        : null;
+    return {
+      accessToken,
+      refreshToken,
+      receipt: baseReceipt({
+        ok: redacted.ok,
+        reason: redacted.reason,
+        exchanged: true,
+        status: response.status,
+        idTokenPresent: redacted.reason === 'id_token_present',
+        secretKeyNames: redacted.secretKeyNames ?? [],
+        codeChallengeMethod: 'S256',
+      }),
+    };
   } catch {
-    return baseReceipt({
-      ok: false,
-      reason: 'exchange_transport_failed',
-      exchanged: false,
-      idTokenPresent: false,
-      status: null,
+    return {
+      accessToken: null,
+      refreshToken: null,
+      receipt: baseReceipt({
+        ok: false,
+        reason: 'exchange_transport_failed',
+        exchanged: false,
+        idTokenPresent: false,
+        status: null,
+      }),
+    };
+  }
+}
+
+export async function exchangeAuthorizationCode(input) {
+  const exchanged = await exchangeWithSecrets(input);
+  if (typeof input.retainTokens === 'function') {
+    input.retainTokens({
+      accessToken: exchanged.accessToken,
+      refreshToken: exchanged.refreshToken,
     });
   }
+  return exchanged.receipt;
 }
 
 export async function runConsentExchange(input) {
@@ -728,6 +795,7 @@ export function planConsent() {
     openidScopeRefused: true,
     openidNegativeLabel: 'openid_negative',
     consentExchangeImplemented: true,
+    inProcessProbe: true,
     discovery: DISCOVERY,
     controls: CONTROLS,
     forbiddenProjectRef: FORBIDDEN_PROJECT_REF,
@@ -762,6 +830,486 @@ export function listenOnce({ port = 0 } = {}) {
   });
 }
 
+function remember(secrets, value) {
+  if (typeof value === 'string' && value.length >= 8) secrets.push(value);
+}
+
+function scrub(receipt, secrets) {
+  const text = JSON.stringify(receipt);
+  for (const secret of secrets) {
+    if (text.includes(secret)) {
+      return {
+        ok: false,
+        reason: 'receipt_included_credential',
+        packet: 'ari-test-consent-probe',
+        hookInstalledByThisPacket: false,
+        acceptance: false,
+        revocationClaimed: false,
+        exportedToEnv: false,
+        probeRan: false,
+      };
+    }
+  }
+  return receipt;
+}
+
+function packetFlags(extra) {
+  return {
+    packet: 'ari-test-consent-probe',
+    hookInstalledByThisPacket: false,
+    acceptance: false,
+    revocationClaimed: false,
+    exportedToEnv: false,
+    tokenBLabel: 'POSITIVE_CONTROL_NOT_MCP',
+    tokenBSource: 'password_login',
+    ...extra,
+  };
+}
+
+function claimSummary(value) {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return null;
+  const text = (key) => (typeof value[key] === 'string' ? value[key] : null);
+  return { role: text('role'), aud: value.aud ?? null, iss: text('iss'), sub: text('sub') };
+}
+
+function publicProbeSummary(probe) {
+  if (probe === null || typeof probe !== 'object') {
+    return { ok: false, reason: 'probe_unreadable' };
+  }
+  return {
+    ok: probe.ok === true,
+    exitCode: typeof probe.exitCode === 'number' ? probe.exitCode : null,
+    reason: typeof probe.reason === 'string' ? probe.reason : null,
+    requests: typeof probe.requests === 'number' ? probe.requests : 0,
+    rows: Array.isArray(probe.rows)
+      ? probe.rows.map((row) => ({
+          id: row.id ?? null,
+          credential: row.credential ?? null,
+          status: row.status ?? null,
+          verdict: row.verdict ?? null,
+          label: row.label ?? null,
+        }))
+      : [],
+    tokenA: claimSummary(probe.tokenA),
+    tokenB: claimSummary(probe.tokenB),
+  };
+}
+
+async function passwordLogin(input) {
+  const url = new URL('/auth/v1/token', input.authOrigin);
+  url.searchParams.set('grant_type', 'password');
+  const response = await input.fetch(url, {
+    method: 'POST',
+    headers: {
+      apikey: input.publishableKey,
+      'content-type': 'application/json',
+    },
+    body: JSON.stringify({ email: SYNTHETIC_EMAIL, password: input.password }),
+  });
+  const text = await readBody(response);
+  const parsed = parseJson(text);
+  const accessToken =
+    parsed !== null &&
+    typeof parsed === 'object' &&
+    !Array.isArray(parsed) &&
+    typeof parsed.access_token === 'string'
+      ? parsed.access_token
+      : null;
+  const refreshToken =
+    parsed !== null &&
+    typeof parsed === 'object' &&
+    !Array.isArray(parsed) &&
+    typeof parsed.refresh_token === 'string'
+      ? parsed.refresh_token
+      : null;
+  const redacted = redactResponseBody(text);
+  const httpOk = response.status >= 200 && response.status < 300;
+  return {
+    accessToken,
+    refreshToken,
+    receipt: baseReceipt({
+      ok: httpOk && redacted.ok === true && accessToken !== null,
+      reason: redacted.reason === 'id_token_present' || !httpOk ? redacted.reason : 'redacted',
+      label: 'POSITIVE_CONTROL_NOT_MCP',
+      status: response.status,
+      idTokenPresent: redacted.reason === 'id_token_present',
+      secretKeyNames: redacted.secretKeyNames ?? [],
+    }),
+  };
+}
+
+async function startAuthorization(input) {
+  const pkce = createPkce();
+  let authorizeEndpoint;
+  try {
+    authorizeEndpoint = new URL('/auth/v1/oauth/authorize', input.authOrigin).toString();
+  } catch {
+    return {
+      ok: false,
+      reason: 'auth_origin_unreadable',
+      pkce,
+      authorizationId: null,
+      idTokenPresent: false,
+      status: null,
+    };
+  }
+  const built = buildAuthorizeUrl({
+    authorizeEndpoint,
+    clientId: input.clientId,
+    redirectUri: input.redirectUri,
+    scopes: input.scopes ?? ['email'],
+    resource: input.resource ?? MCP_RESOURCE,
+    codeChallenge: pkce.codeChallenge,
+    state: input.state ?? 'ari-probe',
+  });
+  if (!built.ok) {
+    return {
+      ok: false,
+      reason: built.reason,
+      pkce,
+      authorizationId: null,
+      idTokenPresent: false,
+      status: null,
+    };
+  }
+  try {
+    const response = await input.fetch(built.url, {
+      method: 'GET',
+      redirect: 'manual',
+      headers: { apikey: input.publishableKey },
+    });
+    const text = await readBody(response);
+    const authorizationId = authorizationIdFrom(response, text);
+    const idTokenPresent = idTokenIn(text);
+    return {
+      ok: typeof authorizationId === 'string' && authorizationId.length > 0 && !idTokenPresent,
+      reason: idTokenPresent
+        ? 'id_token_present'
+        : authorizationId
+          ? 'authorized'
+          : 'authorization_id_missing',
+      pkce,
+      authorizationId,
+      idTokenPresent,
+      status: response.status,
+    };
+  } catch {
+    return {
+      ok: false,
+      reason: 'authorize_transport_failed',
+      pkce,
+      authorizationId: null,
+      idTokenPresent: false,
+      status: null,
+    };
+  }
+}
+
+export async function runInProcessProbe(input) {
+  const secrets = [];
+  const fetchImpl = input.fetch;
+  remember(secrets, input.password);
+  remember(secrets, input.publishableKey);
+  remember(secrets, input.env?.ARI_TEST_TOKEN_A);
+  remember(secrets, input.env?.ARI_TEST_TOKEN_B);
+  for (const name of SERVICE_ROLE_ENV_NAMES) remember(secrets, input.env?.[name]);
+  const guard = guardTarget({
+    ...input,
+    fetch: fetchImpl,
+    resource: input.resource ?? MCP_RESOURCE,
+  });
+  if (guard) {
+    return scrub(
+      packetFlags({ ok: false, reason: guard, stage: 'guard', probeRan: false }),
+      secrets,
+    );
+  }
+  if (input.projectRef !== ALLOWED_PROJECT_REF || input.authOrigin !== EXPECTED_ORIGIN) {
+    return scrub(
+      packetFlags({ ok: false, reason: 'target_not_ari_test', stage: 'guard', probeRan: false }),
+      secrets,
+    );
+  }
+  if (typeof input.clientId !== 'string' || input.clientId.length === 0) {
+    return scrub(
+      packetFlags({
+        ok: false,
+        reason: 'oauth_client_id_required',
+        stage: 'guard',
+        probeRan: false,
+      }),
+      secrets,
+    );
+  }
+  if (typeof input.password !== 'string' || input.password.length === 0) {
+    return scrub(
+      packetFlags({
+        ok: false,
+        reason: 'synthetic_password_required',
+        stage: 'password_login',
+        probeRan: false,
+      }),
+      secrets,
+    );
+  }
+  const started = await startAuthorization({ ...input, fetch: fetchImpl });
+  remember(secrets, started.pkce?.codeVerifier);
+  if (!started.ok) {
+    return scrub(
+      packetFlags({
+        ok: false,
+        reason: started.reason,
+        stage: 'authorize',
+        probeRan: false,
+        openidSent: false,
+        idTokenPresent: started.idTokenPresent === true,
+      }),
+      secrets,
+    );
+  }
+  const login = await passwordLogin({ ...input, fetch: fetchImpl });
+  remember(secrets, login.accessToken);
+  remember(secrets, login.refreshToken);
+  if (login.accessToken === null || login.receipt.ok !== true) {
+    return scrub(
+      packetFlags({
+        ok: false,
+        reason:
+          login.receipt.idTokenPresent === true ? 'id_token_present' : 'password_login_failed',
+        stage: 'password_login',
+        probeRan: false,
+        idTokenPresent: login.receipt.idTokenPresent === true,
+        tokenBInMemory: false,
+      }),
+      secrets,
+    );
+  }
+  let code = null;
+  const consent = await performConsent({
+    fetch: fetchImpl,
+    authOrigin: input.authOrigin,
+    authorizationId: started.authorizationId,
+    userAccessToken: login.accessToken,
+    publishableKey: input.publishableKey,
+    retainCode(value) {
+      code = value;
+    },
+  });
+  remember(secrets, code);
+  if (consent.ok !== true || typeof code !== 'string' || code.length === 0) {
+    return scrub(
+      packetFlags({
+        ok: false,
+        reason: consent.ok === true ? 'authorization_code_missing' : consent.reason,
+        stage: 'consent',
+        consentPerformed: consent.performed === true,
+        probeRan: false,
+        idTokenPresent: consent.idTokenPresent === true,
+        tokenBInMemory: true,
+      }),
+      secrets,
+    );
+  }
+  let tokenA = null;
+  let refreshA = null;
+  const exchange = await exchangeAuthorizationCode({
+    fetch: fetchImpl,
+    authOrigin: input.authOrigin,
+    clientId: input.clientId,
+    redirectUri: input.redirectUri,
+    resource: input.resource ?? MCP_RESOURCE,
+    publishableKey: input.publishableKey,
+    code,
+    codeVerifier: started.pkce.codeVerifier,
+    codeChallenge: started.pkce.codeChallenge,
+    retainTokens(tokens) {
+      tokenA = tokens.accessToken;
+      refreshA = tokens.refreshToken;
+    },
+  });
+  remember(secrets, tokenA);
+  remember(secrets, refreshA);
+  if (typeof tokenA !== 'string' || exchange.ok !== true || exchange.idTokenPresent === true) {
+    return scrub(
+      packetFlags({
+        ok: false,
+        reason:
+          exchange.idTokenPresent === true
+            ? 'id_token_present'
+            : (exchange.reason ?? 'exchange_failed'),
+        stage: 'exchange',
+        consentPerformed: true,
+        exchangePerformed: exchange.exchanged === true,
+        probeRan: false,
+        idTokenPresent: exchange.idTokenPresent === true,
+        tokenAInMemory: false,
+        tokenBInMemory: true,
+        codeChallengeMethod: 'S256',
+      }),
+      secrets,
+    );
+  }
+  const probeImpl = input.runProbe ?? runProbe;
+  let probe;
+  try {
+    probe = await probeImpl({
+      projectRef: input.projectRef,
+      supabaseUrl: input.authOrigin,
+      publishableKey: input.publishableKey,
+      expectedClientId: input.clientId,
+      jwks: input.jwks,
+      tokenA,
+      tokenB: login.accessToken,
+      env: input.env ?? {},
+      fetch: fetchImpl,
+      allowLoopback: input.allowLoopback === true,
+      mcpEdge: input.mcpEdge,
+      joinRealtime: input.joinRealtime,
+    });
+  } catch {
+    probe = { ok: false, exitCode: 4, reason: 'probe_failed', rows: [], requests: 0 };
+  }
+  return scrub(
+    packetFlags({
+      ok: probe?.ok === true,
+      reason: typeof probe?.reason === 'string' ? probe.reason : 'probe_finished',
+      stage: 'probe',
+      order: ['authorize', 'password_login', 'consent', 'exchange', 'probe'],
+      consentPerformed: true,
+      exchangePerformed: true,
+      probeRan: true,
+      tokenAInMemory: true,
+      tokenBInMemory: true,
+      idTokenPresent: false,
+      codeChallengeMethod: 'S256',
+      openidSent: false,
+      probe: publicProbeSummary(probe),
+    }),
+    secrets,
+  );
+}
+
+export async function runLabelledOpenIdNegative(input) {
+  const secrets = [];
+  remember(secrets, input.password);
+  remember(secrets, input.publishableKey);
+  remember(secrets, input.env?.ARI_TEST_TOKEN_A);
+  remember(secrets, input.env?.ARI_TEST_TOKEN_B);
+  let userAccessToken = typeof input.userAccessToken === 'string' ? input.userAccessToken : '';
+  remember(secrets, userAccessToken);
+  if (typeof input.password === 'string' && input.password.length > 0) {
+    const login = await passwordLogin({ ...input, fetch: input.fetch });
+    remember(secrets, login.accessToken);
+    remember(secrets, login.refreshToken);
+    if (login.accessToken === null || login.receipt.idTokenPresent === true) {
+      return scrub(
+        packetFlags({
+          ok: false,
+          label: 'openid_negative',
+          reason:
+            login.receipt.idTokenPresent === true ? 'id_token_present' : 'password_login_failed',
+          openidSent: false,
+          probeRan: false,
+          rejectionStage: null,
+          idTokenPresent: login.receipt.idTokenPresent === true,
+        }),
+        secrets,
+      );
+    }
+    userAccessToken = login.accessToken;
+  }
+  const result = await runOpenIdNegative({
+    ...input,
+    userAccessToken,
+    resource: input.resource ?? MCP_RESOURCE,
+    scopes: input.scopes ?? ['openid', 'email'],
+  });
+  return scrub(
+    {
+      ...result,
+      probeRan: false,
+      exportedToEnv: false,
+      tokenAInMemory: false,
+      acceptance: false,
+      hookInstalledByThisPacket: false,
+    },
+    secrets,
+  );
+}
+
+export function runConfigFromEnv(env) {
+  return {
+    authOrigin: env.ARI_TEST_SUPABASE_URL,
+    publishableKey: env.ARI_TEST_PUBLISHABLE_KEY,
+    clientId: env.ARI_TEST_EXPECTED_CLIENT_ID,
+    redirectUri:
+      typeof env.ARI_TEST_REDIRECT_URI === 'string' && env.ARI_TEST_REDIRECT_URI.length > 0
+        ? env.ARI_TEST_REDIRECT_URI
+        : 'http://127.0.0.1:8787/callback',
+    resource: MCP_RESOURCE,
+    projectRef: env.ARI_TEST_PROJECT_REF,
+    jwks: env.ARI_TEST_JWKS_JSON,
+    password: env.ARI_TEST_SYNTHETIC_PASSWORD,
+    email: SYNTHETIC_EMAIL,
+    env,
+    allowLoopback: env.ARI_TEST_ALLOW_LOOPBACK === '1',
+  };
+}
+
+function writeReceipt(receipt, stdout, stderr) {
+  stdout.write(`${JSON.stringify(receipt)}\n`);
+  if (receipt?.reason === 'receipt_included_credential') {
+    stderr.write('receipt included a credential\n');
+    return 2;
+  }
+  if (receipt?.ok === true) return 0;
+  if (typeof receipt?.probe?.exitCode === 'number') return receipt.probe.exitCode;
+  return 4;
+}
+
+export async function runCli(argv, io = {}) {
+  const stdout = io.stdout ?? process.stdout;
+  const stderr = io.stderr ?? process.stderr;
+  const env = io.env ?? process.env;
+  const fetchImpl = io.fetch ?? globalThis.fetch;
+  const command = argv[2] ?? 'plan';
+  if (command === 'plan') {
+    stdout.write(`${JSON.stringify(planConsent(), null, 2)}\n`);
+    return 0;
+  }
+  if (command === 'redact') {
+    try {
+      const receipt = redactResponseBody(await (io.readStdin ?? readStdin)());
+      stdout.write(`${JSON.stringify(receipt)}\n`);
+      return receipt.ok ? 0 : 4;
+    } catch {
+      stderr.write('token body was not redacted\n');
+      return 2;
+    }
+  }
+  if (command === 'run') {
+    const receipt = await runInProcessProbe({
+      ...runConfigFromEnv(env),
+      fetch: fetchImpl,
+      runProbe: io.runProbe,
+      mcpEdge: io.mcpEdge,
+      joinRealtime: io.joinRealtime,
+    });
+    return writeReceipt(receipt, stdout, stderr);
+  }
+  if (command === 'openid-negative') {
+    const receipt = await runLabelledOpenIdNegative({
+      ...runConfigFromEnv(env),
+      fetch: fetchImpl,
+    });
+    return writeReceipt(receipt, stdout, stderr);
+  }
+  stderr.write(
+    'usage: node docs/evidence/ari-test-probe/consent-harness.mjs [plan|redact|run|openid-negative]\n',
+  );
+  return 2;
+}
+
 async function readStdin() {
   const chunks = [];
   let size = 0;
@@ -774,26 +1322,7 @@ async function readStdin() {
 }
 
 async function main() {
-  const command = process.argv[2] ?? 'plan';
-  if (command === 'plan') {
-    process.stdout.write(`${JSON.stringify(planConsent(), null, 2)}\n`);
-    return;
-  }
-  if (command === 'redact') {
-    try {
-      const receipt = redactResponseBody(await readStdin());
-      process.stdout.write(`${JSON.stringify(receipt)}\n`);
-      process.exitCode = receipt.ok ? 0 : 4;
-    } catch {
-      process.stderr.write('token body was not redacted\n');
-      process.exitCode = 2;
-    }
-    return;
-  }
-  process.stderr.write(
-    'usage: node docs/evidence/ari-test-probe/consent-harness.mjs [plan|redact]\n',
-  );
-  process.exitCode = 2;
+  process.exitCode = await runCli(process.argv);
 }
 
 const invokedPath = process.argv[1];

@@ -78,7 +78,7 @@ for the same `sub`. No `service_role` key is accepted in the probe shell.
 | `sql/02-hook-for-ariadne.sql` | Do not apply. Superseded by `sql/04`. |
 | `hook-v2.mjs` | Local decision oracle. Kept only where the PGlite test asserts the same results as `sql/04`. |
 | `hook-v2.pglite.test.mjs` | Loads `sql/04` verbatim in `@electric-sql/pglite`. No Docker and no hosted project. |
-| `consent-harness.mjs` | Consent GET/POST, code exchange, and the labelled `openid_negative` path. Receipts are redacted. |
+| `consent-harness.mjs` | `run` consents, exchanges, and calls the probe in one process. `openid-negative` is separate. Receipts are redacted. |
 | `probe.mjs` | Not against hosted TEST in this slice. |
 
 Local decision tests, with no network:
@@ -180,6 +180,18 @@ TEST.
 sends `openid` on purpose. It expects failure and no `id_token`. The receipt
 records `rejectionStage` as `authorize` or `exchange`.
 
+`node docs/evidence/ari-test-probe/consent-harness.mjs run` is one process:
+authorize, the synthetic user's password login, `performConsent`,
+`exchangeAuthorizationCode`, then `runProbe`. Token A is the code-exchange
+access token. Token B is the password-login access token. Both stay in
+memory. The command does not export them and does not write them to a file.
+Stdout is only the redacted receipt.
+
+`node docs/evidence/ari-test-probe/consent-harness.mjs openid-negative`
+sends `openid` on purpose. It expects failure and no `id_token`. It does
+not call `runProbe`.
+
+Do not run either command against hosted TEST from this branch.
 `consent-harness.mjs redact` reads a response on stdin and prints key names
 only. Do not paste a verifier, authorization code, access token, refresh
 token, or `id_token` into chat, git, or an artifact.
