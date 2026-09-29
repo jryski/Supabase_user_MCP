@@ -79,6 +79,7 @@ for the same `sub`. No `service_role` key is accepted in the probe shell.
 | `hook-v2.mjs` | Local decision oracle. Kept only where the PGlite test asserts the same results as `sql/04`. |
 | `hook-v2.pglite.test.mjs` | Loads `sql/04` verbatim in `@electric-sql/pglite`. No Docker and no hosted project. |
 | `consent-harness.mjs` | `run` consents, exchanges, and calls the probe in one process. `openid-negative` is separate. Receipts are redacted. |
+| `oauth-session-cleanup.md` | Reviewed cleanup for the synthetic OAuth session. Not executed from this branch. |
 | `probe.mjs` | Not against hosted TEST in this slice. |
 
 Local decision tests, with no network:
@@ -160,6 +161,11 @@ drop table if exists ari_probe.mcp_client;
 Do not drop the synthetic user, the marker fixture, or `mcp_ingress` in
 that rollback.
 
+Reviewed session cleanup, after a controller run, is
+`oauth-session-cleanup.md`. It deletes one `auth.sessions` row by
+`source_session_id` on TEST only. It is not executed from this branch and
+it is not a revocation receipt.
+
 ## Loopback consent harness
 
 The redirect is `http://127.0.0.1:<port>/callback`. The controller sets the
@@ -182,11 +188,12 @@ sends `openid` on purpose. It expects failure and no `id_token`. The receipt
 records `rejectionStage` as `authorize` or `exchange`.
 
 `node docs/evidence/ari-test-probe/consent-harness.mjs run` is one process:
-authorize, the synthetic user's password login, `performConsent`,
-`exchangeAuthorizationCode`, then `runProbe`. Token A is the code-exchange
-access token. Token B is the password-login access token. Both stay in
-memory. The command does not export them and does not write them to a file.
-Stdout is only the redacted receipt.
+authorize, the synthetic user's password login, consent, code exchange, then
+`runProbe`. Those consent and exchange steps are private helpers. The
+exported consent and exchange functions return redacted receipts only.
+Token A is the code-exchange access token. Token B is the password-login
+access token. Both stay in memory. The command does not export them and
+does not write them to a file. Stdout is only the redacted receipt.
 
 `node docs/evidence/ari-test-probe/consent-harness.mjs openid-negative`
 sends `openid` on purpose. It expects failure and no `id_token`. It does

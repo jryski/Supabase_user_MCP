@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { test } from 'node:test';
+import { describe, test } from 'node:test';
 import { createHash } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import {
@@ -342,210 +342,372 @@ test('redact drops consent redirect codes and the README pipes the live commands
   assert.match(readme, /consent-harness\.mjs redact/g);
   assert.match(readme, /does not run on each MCP\s+call/);
   assert.match(readme, /adapter has no liveness check/);
+  const cleanup = await readFile(new URL('./oauth-session-cleanup.md', import.meta.url), 'utf8');
+  assert.match(cleanup, /source_session_id/);
+  assert.match(cleanup, /not a revocation receipt/);
+  assert.match(cleanup, /Not executed from this branch/);
+  assert.match(cleanup, /user_rows` must still be 1/);
 });
 
-function captureStream() {
-  const chunks = [];
-  return {
-    chunks,
-    write(value) {
-      chunks.push(String(value));
-    },
-    text() {
-      return chunks.join('');
-    },
-  };
+const CONSOLE_METHODS = ['log', 'info', 'warn', 'error', 'debug'];
+
+function streamText(value) {
+  if (typeof value === 'string') return value;
+  if (Buffer.isBuffer(value)) return value.toString('utf8');
+  if (value instanceof Uint8Array) return Buffer.from(value).toString('utf8');
+  return String(value ?? '');
 }
 
-test('run keeps Token A and Token B in memory and out of stdout', async () => {
-  const tokenA = 'token-a-value-must-not-leak-aaaa';
-  const tokenB = 'token-b-value-must-not-leak-bbbb';
-  const refreshA = 'refresh-a-must-not-leak-aaaa';
-  const refreshB = 'refresh-b-must-not-leak-bbbb';
-  const code = 'auth-code-must-not-leak-cccc';
-  const password = 'synthetic-password-must-not-leak';
-  const canary = 'env-token-must-not-leak-eeee';
-  const env = {
-    ARI_TEST_PROJECT_REF: 'odbcejsuuqdzhabjmozi',
-    ARI_TEST_SUPABASE_URL: 'https://odbcejsuuqdzhabjmozi.supabase.co',
-    ARI_TEST_PUBLISHABLE_KEY: 'publishable-key',
-    ARI_TEST_EXPECTED_CLIENT_ID: CLIENT,
-    ARI_TEST_JWKS_JSON: '{"keys":[]}',
-    ARI_TEST_SYNTHETIC_PASSWORD: password,
-    ARI_TEST_REDIRECT_URI: REDIRECT,
-    ARI_TEST_TOKEN_A: canary,
-  };
-  const calls = [];
-  const fetchImpl = async (url, init) => {
-    calls.push({ url: `${url}`, init });
-    const href = `${url}`;
-    if (href.includes('grant_type=password')) {
-      return jsonResponse(200, {
-        access_token: tokenB,
-        refresh_token: refreshB,
-        token_type: 'bearer',
-      });
-    }
-    if (href.includes('/oauth/authorize?')) {
-      return jsonResponse(302, '', { location: '/oauth/consent?authorization_id=authz-run' });
-    }
-    if (init?.method === 'GET' && href.includes('/oauth/authorizations/')) {
-      return jsonResponse(200, { authorization_id: 'authz-run' });
-    }
-    if (href.endsWith('/consent')) {
-      return jsonResponse(200, { redirect_url: `${REDIRECT}?code=${code}` });
-    }
-    if (href.endsWith('/oauth/token')) {
-      return jsonResponse(200, {
-        access_token: tokenA,
-        refresh_token: refreshA,
-        token_type: 'bearer',
-      });
-    }
-    throw new Error('unexpected request');
-  };
-  const seen = {};
-  const stdout = captureStream();
-  const stderr = captureStream();
-  const exitCode = await runCli(['node', 'consent-harness.mjs', 'run'], {
-    env,
-    fetch: fetchImpl,
-    stdout,
-    stderr,
-    runProbe: async (options) => {
-      seen.tokenA = options.tokenA;
-      seen.tokenB = options.tokenB;
-      seen.exported = options.env.ARI_TEST_TOKEN_A;
-      return { ok: false, exitCode: 3, reason: 'jwt_malformed', rows: [], requests: 0 };
-    },
-  });
-  assert.equal(seen.tokenA, tokenA);
-  assert.equal(seen.tokenB, tokenB);
-  assert.equal(seen.exported, canary);
-  assert.equal(Object.hasOwn(env, 'ARI_TEST_TOKEN_B'), false);
-  assert.equal(calls[0].url.includes('/oauth/authorize?'), true);
-  assert.equal(new URL(calls[0].url).searchParams.get('scope').includes('openid'), false);
-  assert.equal(calls[1].url.includes('grant_type=password'), true);
-  assert.equal(
-    calls.some(
-      (call) => call.init?.method === 'GET' && call.url.includes('/oauth/authorizations/'),
-    ),
-    true,
-  );
-  assert.equal(
-    calls.some((call) => call.init?.method === 'POST' && call.url.endsWith('/consent')),
-    true,
-  );
-  const tokenCall = calls.find((call) => call.url.endsWith('/oauth/token'));
-  const params = new URLSearchParams(tokenCall.init.body);
-  assert.equal(params.get('grant_type'), 'authorization_code');
-  assert.equal(params.get('code'), code);
-  assert.equal(params.get('code_verifier')?.length > 0, true);
-  const receipt = JSON.parse(stdout.text());
-  assert.equal(exitCode, 3);
-  assert.equal(receipt.probeRan, true);
-  assert.equal(receipt.tokenAInMemory, true);
-  assert.equal(receipt.tokenBInMemory, true);
-  assert.equal(receipt.exportedToEnv, false);
-  assert.equal(receipt.acceptance, false);
-  assert.equal(receipt.hookInstalledByThisPacket, false);
-  assert.deepEqual(receipt.order, ['authorize', 'password_login', 'consent', 'exchange', 'probe']);
-  const printed = `${stdout.text()}\n${stderr.text()}\n${JSON.stringify(receipt)}`;
-  for (const secret of [
-    tokenA,
-    tokenB,
-    refreshA,
-    refreshB,
-    code,
-    password,
-    canary,
-    params.get('code_verifier'),
-  ]) {
-    assert.equal(printed.includes(secret), false);
-  }
-  const direct = await runInProcessProbe({
-    fetch: fetchImpl,
-    authOrigin: env.ARI_TEST_SUPABASE_URL,
-    publishableKey: env.ARI_TEST_PUBLISHABLE_KEY,
-    clientId: CLIENT,
-    redirectUri: REDIRECT,
-    resource: 'https://odbcejsuuqdzhabjmozi.supabase.co/mcp',
-    projectRef: env.ARI_TEST_PROJECT_REF,
-    jwks: env.ARI_TEST_JWKS_JSON,
-    password,
-    env,
-  });
-  assert.equal(direct.probeRan, true);
-  assert.equal(direct.probe.reason, 'jwt_malformed');
-  assert.equal(JSON.stringify(direct).includes(tokenA), false);
-  assert.equal(JSON.stringify(direct).includes(tokenB), false);
-});
+let streamCaptureTail = Promise.resolve();
 
-test('openid-negative CLI expects failure and does not print an id_token', async () => {
-  const tokenB = 'token-b-value-must-not-leak-bbbb';
-  const refreshB = 'refresh-b-must-not-leak-bbbb';
-  const code = 'openid-code-must-not-leak-cccc';
-  const idToken = 'id-token-value-must-not-leak-dddd';
-  const access = 'token-a-value-must-not-leak-aaaa';
-  const password = 'synthetic-password-must-not-leak';
-  const env = {
-    ARI_TEST_PROJECT_REF: 'odbcejsuuqdzhabjmozi',
-    ARI_TEST_SUPABASE_URL: 'https://odbcejsuuqdzhabjmozi.supabase.co',
-    ARI_TEST_PUBLISHABLE_KEY: 'publishable-key',
-    ARI_TEST_EXPECTED_CLIENT_ID: CLIENT,
-    ARI_TEST_REDIRECT_URI: REDIRECT,
-    ARI_TEST_SYNTHETIC_PASSWORD: password,
-  };
-  let probeCalled = false;
-  const calls = [];
-  const fetchImpl = async (url, init) => {
-    calls.push({ url: `${url}`, init });
-    const href = `${url}`;
-    if (href.includes('grant_type=password')) {
-      return jsonResponse(200, {
-        access_token: tokenB,
-        refresh_token: refreshB,
-        token_type: 'bearer',
-      });
-    }
-    if (href.includes('/oauth/authorize?')) {
-      return jsonResponse(302, '', { location: '/oauth/consent?authorization_id=authz-openid' });
-    }
-    if (init?.method === 'GET' && href.includes('/oauth/authorizations/')) {
-      return jsonResponse(200, { authorization_id: 'authz-openid' });
-    }
-    if (href.endsWith('/consent')) {
-      return jsonResponse(200, { redirect_url: `${REDIRECT}?code=${code}` });
-    }
-    return jsonResponse(200, { id_token: idToken, access_token: access });
-  };
-  const stdout = captureStream();
-  const stderr = captureStream();
-  const exitCode = await runCli(['node', 'consent-harness.mjs', 'openid-negative'], {
-    env,
-    fetch: fetchImpl,
-    stdout,
-    stderr,
-    runProbe: async () => {
-      probeCalled = true;
-      return { ok: true };
-    },
+async function captureProcessStreams(fn) {
+  const previous = streamCaptureTail;
+  let release;
+  streamCaptureTail = new Promise((resolve) => {
+    release = resolve;
   });
-  const receipt = JSON.parse(stdout.text());
-  assert.equal(probeCalled, false);
-  assert.equal(receipt.probeRan, false);
-  assert.equal(receipt.label, 'openid_negative');
-  assert.equal(receipt.openidSent, true);
-  assert.equal(receipt.rejectionStage, 'exchange');
-  const authorize = calls.find((call) => call.url.includes('/oauth/authorize?'));
-  assert.equal(new URL(authorize.url).searchParams.get('scope').includes('openid'), true);
-  assert.equal(receipt.idTokenPresent, true);
-  assert.equal(receipt.ok, false);
-  assert.equal(exitCode, 4);
-  const printed = `${stdout.text()}\n${stderr.text()}`;
-  for (const secret of [tokenB, refreshB, code, idToken, access, password]) {
-    assert.equal(printed.includes(secret), false);
+  await previous;
+  const stdoutChunks = [];
+  const stderrChunks = [];
+  const consoleChunks = [];
+  const stdoutWrite = process.stdout.write;
+  const stderrWrite = process.stderr.write;
+  const savedConsole = {};
+  process.stdout.write = function captureStdout(chunk, encoding, callback) {
+    stdoutChunks.push(streamText(chunk));
+    return stdoutWrite.call(process.stdout, chunk, encoding, callback);
+  };
+  process.stderr.write = function captureStderr(chunk, encoding, callback) {
+    stderrChunks.push(streamText(chunk));
+    return stderrWrite.call(process.stderr, chunk, encoding, callback);
+  };
+  for (const method of CONSOLE_METHODS) {
+    savedConsole[method] = console[method];
+    console[method] = (...args) => {
+      consoleChunks.push(
+        args.map((item) => (typeof item === 'string' ? item : JSON.stringify(item))).join(' '),
+      );
+      return savedConsole[method].apply(console, args);
+    };
   }
+  try {
+    const result = await fn();
+    return {
+      result,
+      stdout: stdoutChunks.join(''),
+      stderr: stderrChunks.join(''),
+      console: consoleChunks.join('\n'),
+    };
+  } finally {
+    process.stdout.write = stdoutWrite;
+    process.stderr.write = stderrWrite;
+    for (const method of CONSOLE_METHODS) console[method] = savedConsole[method];
+    release();
+  }
+}
+
+function assertStreamsClean(streams, sentinels) {
+  const output = `${streams.stdout}\n${streams.stderr}\n${streams.console}`;
+  const leaked = sentinels.filter(
+    (secret) => typeof secret === 'string' && secret.length > 0 && output.includes(secret),
+  );
+  assert.deepEqual(leaked, []);
+}
+
+function jsonLine(stdout, marker) {
+  const markerAt = stdout.indexOf(marker);
+  assert.ok(markerAt !== -1, 'receipt missing from process stdout');
+  const start = stdout.lastIndexOf('{', markerAt);
+  assert.ok(start !== -1, 'receipt missing from process stdout');
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+  for (let index = start; index < stdout.length; index += 1) {
+    const char = stdout[index];
+    if (inString) {
+      if (escaped) escaped = false;
+      else if (char === '\\') escaped = true;
+      else if (char === '"') inString = false;
+      continue;
+    }
+    if (char === '"') inString = true;
+    else if (char === '{') depth += 1;
+    else if (char === '}') {
+      depth -= 1;
+      if (depth === 0) return JSON.parse(stdout.slice(start, index + 1));
+    }
+  }
+  assert.fail('receipt missing from process stdout');
+}
+
+describe('process stream sentinels', { concurrency: false }, () => {
+  test('Warden mutation: process.stdout.write of token A before runProbe fails the sentinel scan', async () => {
+    const tokenA = 'token-a-value-must-not-leak-aaaa';
+    const tokenB = 'token-b-value-must-not-leak-bbbb';
+    const refreshA = 'refresh-a-must-not-leak-aaaa';
+    const refreshB = 'refresh-b-must-not-leak-bbbb';
+    const code = 'auth-code-must-not-leak-cccc';
+    const password = 'synthetic-password-must-not-leak';
+    const canary = 'env-token-must-not-leak-eeee';
+    const env = {
+      ARI_TEST_PROJECT_REF: 'odbcejsuuqdzhabjmozi',
+      ARI_TEST_SUPABASE_URL: 'https://odbcejsuuqdzhabjmozi.supabase.co',
+      ARI_TEST_PUBLISHABLE_KEY: 'publishable-key',
+      ARI_TEST_EXPECTED_CLIENT_ID: CLIENT,
+      ARI_TEST_JWKS_JSON: '{"keys":[]}',
+      ARI_TEST_SYNTHETIC_PASSWORD: password,
+      ARI_TEST_REDIRECT_URI: REDIRECT,
+      ARI_TEST_TOKEN_A: canary,
+    };
+    const calls = [];
+    const fetchImpl = async (url, init) => {
+      calls.push({ url: `${url}`, init });
+      const href = `${url}`;
+      if (href.includes('grant_type=password')) {
+        return jsonResponse(200, {
+          access_token: tokenB,
+          refresh_token: refreshB,
+          token_type: 'bearer',
+        });
+      }
+      if (href.includes('/oauth/authorize?')) {
+        return jsonResponse(302, '', { location: '/oauth/consent?authorization_id=authz-run' });
+      }
+      if (init?.method === 'GET' && href.includes('/oauth/authorizations/')) {
+        return jsonResponse(200, { authorization_id: 'authz-run' });
+      }
+      if (href.endsWith('/consent')) {
+        return jsonResponse(200, { redirect_url: `${REDIRECT}?code=${code}` });
+      }
+      if (href.endsWith('/oauth/token')) {
+        return jsonResponse(200, {
+          access_token: tokenA,
+          refresh_token: refreshA,
+          token_type: 'bearer',
+        });
+      }
+      throw new Error('unexpected request');
+    };
+    const seen = {};
+    const captured = await captureProcessStreams(() =>
+      runCli(['node', 'consent-harness.mjs', 'run'], {
+        env,
+        fetch: fetchImpl,
+        runProbe: async (options) => {
+          seen.tokenA = options.tokenA;
+          seen.tokenB = options.tokenB;
+          seen.exported = options.env.ARI_TEST_TOKEN_A;
+          return { ok: false, exitCode: 3, reason: 'jwt_malformed', rows: [], requests: 0 };
+        },
+      }),
+    );
+    const exitCode = captured.result;
+    assert.equal(seen.tokenA, tokenA);
+    assert.equal(seen.tokenB, tokenB);
+    assert.equal(seen.exported, canary);
+    assert.equal(Object.hasOwn(env, 'ARI_TEST_TOKEN_B'), false);
+    assert.equal(calls[0].url.includes('/oauth/authorize?'), true);
+    assert.equal(new URL(calls[0].url).searchParams.get('scope').includes('openid'), false);
+    assert.equal(calls[1].url.includes('grant_type=password'), true);
+    assert.equal(
+      calls.some(
+        (call) => call.init?.method === 'GET' && call.url.includes('/oauth/authorizations/'),
+      ),
+      true,
+    );
+    assert.equal(
+      calls.some((call) => call.init?.method === 'POST' && call.url.endsWith('/consent')),
+      true,
+    );
+    const tokenCall = calls.find((call) => call.url.endsWith('/oauth/token'));
+    const params = new URLSearchParams(tokenCall.init.body);
+    assert.equal(params.get('grant_type'), 'authorization_code');
+    assert.equal(params.get('code'), code);
+    assert.equal(params.get('code_verifier')?.length > 0, true);
+    const receipt = jsonLine(captured.stdout, '"packet":"ari-test-consent-probe"');
+    assert.equal(exitCode, 3);
+    assert.equal(receipt.probeRan, true);
+    assert.equal(receipt.tokenAInMemory, true);
+    assert.equal(receipt.tokenBInMemory, true);
+    assert.equal(receipt.exportedToEnv, false);
+    assert.equal(receipt.acceptance, false);
+    assert.equal(receipt.hookInstalledByThisPacket, false);
+    assert.deepEqual(receipt.order, [
+      'authorize',
+      'password_login',
+      'consent',
+      'exchange',
+      'probe',
+    ]);
+    const sentinels = [
+      tokenA,
+      tokenB,
+      refreshA,
+      refreshB,
+      code,
+      password,
+      canary,
+      params.get('code_verifier'),
+    ];
+    assertStreamsClean(captured, sentinels);
+    const direct = await captureProcessStreams(() =>
+      runInProcessProbe({
+        fetch: fetchImpl,
+        authOrigin: env.ARI_TEST_SUPABASE_URL,
+        publishableKey: env.ARI_TEST_PUBLISHABLE_KEY,
+        clientId: CLIENT,
+        redirectUri: REDIRECT,
+        resource: 'https://odbcejsuuqdzhabjmozi.supabase.co/mcp',
+        projectRef: env.ARI_TEST_PROJECT_REF,
+        jwks: env.ARI_TEST_JWKS_JSON,
+        password,
+        env,
+      }),
+    );
+    assert.equal(direct.result.probeRan, true);
+    assert.equal(direct.result.probe.reason, 'jwt_malformed');
+    assertStreamsClean(direct, sentinels);
+  });
+
+  test('failure paths keep sentinels off process stdout and stderr', async () => {
+    const tokenB = 'token-b-value-must-not-leak-bbbb';
+    const refreshB = 'refresh-b-must-not-leak-bbbb';
+    const code = 'auth-code-must-not-leak-cccc';
+    const password = 'synthetic-password-must-not-leak';
+    const canary = 'env-token-must-not-leak-eeee';
+    const env = {
+      ARI_TEST_PROJECT_REF: 'odbcejsuuqdzhabjmozi',
+      ARI_TEST_SUPABASE_URL: 'https://odbcejsuuqdzhabjmozi.supabase.co',
+      ARI_TEST_PUBLISHABLE_KEY: 'publishable-key',
+      ARI_TEST_EXPECTED_CLIENT_ID: CLIENT,
+      ARI_TEST_JWKS_JSON: '{"keys":[]}',
+      ARI_TEST_SYNTHETIC_PASSWORD: password,
+      ARI_TEST_REDIRECT_URI: REDIRECT,
+      ARI_TEST_TOKEN_A: canary,
+    };
+    const passwordFail = await captureProcessStreams(() =>
+      runCli(['node', 'consent-harness.mjs', 'run'], {
+        env,
+        fetch: async (url) => {
+          const href = `${url}`;
+          if (href.includes('/oauth/authorize?')) {
+            return jsonResponse(302, '', { location: '/oauth/consent?authorization_id=authz-run' });
+          }
+          if (href.includes('grant_type=password')) {
+            return jsonResponse(400, { error: 'invalid_grant' });
+          }
+          throw new Error('unexpected request');
+        },
+      }),
+    );
+    assert.equal(passwordFail.result, 4);
+    assert.equal(jsonLine(passwordFail.stdout, '"stage":"password_login"').probeRan, false);
+    assertStreamsClean(passwordFail, [password, canary, tokenB, refreshB]);
+
+    let verifier = '';
+    const exchangeFail = await captureProcessStreams(() =>
+      runCli(['node', 'consent-harness.mjs', 'run'], {
+        env,
+        fetch: async (url, init) => {
+          const href = `${url}`;
+          if (href.includes('grant_type=password')) {
+            return jsonResponse(200, {
+              access_token: tokenB,
+              refresh_token: refreshB,
+              token_type: 'bearer',
+            });
+          }
+          if (href.includes('/oauth/authorize?')) {
+            return jsonResponse(302, '', {
+              location: '/oauth/consent?authorization_id=authz-run',
+            });
+          }
+          if (init?.method === 'GET' && href.includes('/oauth/authorizations/')) {
+            return jsonResponse(200, { authorization_id: 'authz-run' });
+          }
+          if (href.endsWith('/consent')) {
+            return jsonResponse(200, { redirect_url: `${REDIRECT}?code=${code}` });
+          }
+          if (href.endsWith('/oauth/token')) {
+            verifier = new URLSearchParams(init.body).get('code_verifier') ?? '';
+            return jsonResponse(400, { error: 'invalid_grant' });
+          }
+          throw new Error('unexpected request');
+        },
+      }),
+    );
+    assert.equal(exchangeFail.result, 4);
+    assert.equal(jsonLine(exchangeFail.stdout, '"stage":"exchange"').probeRan, false);
+    assert.equal(verifier.length > 0, true);
+    assertStreamsClean(exchangeFail, [tokenB, refreshB, code, verifier, password, canary]);
+    assert.equal(exchangeFail.stderr.includes(tokenB), false);
+    assert.equal(exchangeFail.stderr.includes(code), false);
+  });
+
+  test('openid-negative CLI expects failure and does not print an id_token', async () => {
+    const tokenB = 'token-b-value-must-not-leak-bbbb';
+    const refreshB = 'refresh-b-must-not-leak-bbbb';
+    const code = 'openid-code-must-not-leak-cccc';
+    const idToken = 'id-token-value-must-not-leak-dddd';
+    const access = 'token-a-value-must-not-leak-aaaa';
+    const password = 'synthetic-password-must-not-leak';
+    const env = {
+      ARI_TEST_PROJECT_REF: 'odbcejsuuqdzhabjmozi',
+      ARI_TEST_SUPABASE_URL: 'https://odbcejsuuqdzhabjmozi.supabase.co',
+      ARI_TEST_PUBLISHABLE_KEY: 'publishable-key',
+      ARI_TEST_EXPECTED_CLIENT_ID: CLIENT,
+      ARI_TEST_REDIRECT_URI: REDIRECT,
+      ARI_TEST_SYNTHETIC_PASSWORD: password,
+    };
+    let probeCalled = false;
+    const calls = [];
+    const fetchImpl = async (url, init) => {
+      calls.push({ url: `${url}`, init });
+      const href = `${url}`;
+      if (href.includes('grant_type=password')) {
+        return jsonResponse(200, {
+          access_token: tokenB,
+          refresh_token: refreshB,
+          token_type: 'bearer',
+        });
+      }
+      if (href.includes('/oauth/authorize?')) {
+        return jsonResponse(302, '', { location: '/oauth/consent?authorization_id=authz-openid' });
+      }
+      if (init?.method === 'GET' && href.includes('/oauth/authorizations/')) {
+        return jsonResponse(200, { authorization_id: 'authz-openid' });
+      }
+      if (href.endsWith('/consent')) {
+        return jsonResponse(200, { redirect_url: `${REDIRECT}?code=${code}` });
+      }
+      return jsonResponse(200, { id_token: idToken, access_token: access });
+    };
+    const captured = await captureProcessStreams(() =>
+      runCli(['node', 'consent-harness.mjs', 'openid-negative'], {
+        env,
+        fetch: fetchImpl,
+        runProbe: async () => {
+          probeCalled = true;
+          return { ok: true };
+        },
+      }),
+    );
+    const exitCode = captured.result;
+    const receipt = jsonLine(captured.stdout, '"label":"openid_negative"');
+    assert.equal(probeCalled, false);
+    assert.equal(receipt.probeRan, false);
+    assert.equal(receipt.label, 'openid_negative');
+    assert.equal(receipt.openidSent, true);
+    assert.equal(receipt.rejectionStage, 'exchange');
+    const authorize = calls.find((call) => call.url.includes('/oauth/authorize?'));
+    assert.equal(new URL(authorize.url).searchParams.get('scope').includes('openid'), true);
+    assert.equal(receipt.idTokenPresent, true);
+    assert.equal(receipt.ok, false);
+    assert.equal(exitCode, 4);
+    assertStreamsClean(captured, [tokenB, refreshB, code, idToken, access, password]);
+    assert.equal(captured.stderr.includes(idToken), false);
+    assert.equal(captured.stderr.includes(access), false);
+  });
 });
 
 test('loopback listener does not echo token query values', async () => {

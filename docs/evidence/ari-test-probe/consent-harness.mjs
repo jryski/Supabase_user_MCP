@@ -418,16 +418,13 @@ async function consentWithCode(input) {
 
 export async function performConsent(input) {
   const consent = await consentWithCode(input);
-  if (typeof input.retainCode === 'function' && typeof consent.code === 'string') {
-    input.retainCode(consent.code);
-  }
   const receipt = { ...consent };
   delete receipt.code;
   return receipt;
 }
 
 function secretResult(receipt) {
-  return { accessToken: null, refreshToken: null, receipt };
+  return { accessToken: null, receipt };
 }
 
 async function exchangeWithSecrets(input) {
@@ -553,16 +550,8 @@ async function exchangeWithSecrets(input) {
       typeof parsed.access_token === 'string'
         ? parsed.access_token
         : null;
-    const refreshToken =
-      parsed !== null &&
-      typeof parsed === 'object' &&
-      !Array.isArray(parsed) &&
-      typeof parsed.refresh_token === 'string'
-        ? parsed.refresh_token
-        : null;
     return {
       accessToken,
-      refreshToken,
       receipt: baseReceipt({
         ok: redacted.ok,
         reason: redacted.reason,
@@ -574,28 +563,20 @@ async function exchangeWithSecrets(input) {
       }),
     };
   } catch {
-    return {
-      accessToken: null,
-      refreshToken: null,
-      receipt: baseReceipt({
+    return secretResult(
+      baseReceipt({
         ok: false,
         reason: 'exchange_transport_failed',
         exchanged: false,
         idTokenPresent: false,
         status: null,
       }),
-    };
+    );
   }
 }
 
 export async function exchangeAuthorizationCode(input) {
   const exchanged = await exchangeWithSecrets(input);
-  if (typeof input.retainTokens === 'function') {
-    input.retainTokens({
-      accessToken: exchanged.accessToken,
-      refreshToken: exchanged.refreshToken,
-    });
-  }
   return exchanged.receipt;
 }
 
@@ -915,18 +896,10 @@ async function passwordLogin(input) {
     typeof parsed.access_token === 'string'
       ? parsed.access_token
       : null;
-  const refreshToken =
-    parsed !== null &&
-    typeof parsed === 'object' &&
-    !Array.isArray(parsed) &&
-    typeof parsed.refresh_token === 'string'
-      ? parsed.refresh_token
-      : null;
   const redacted = redactResponseBody(text);
   const httpOk = response.status >= 200 && response.status < 300;
   return {
     accessToken,
-    refreshToken,
     receipt: baseReceipt({
       ok: httpOk && redacted.ok === true && accessToken !== null,
       reason: redacted.reason === 'id_token_present' || !httpOk ? redacted.reason : 'redacted',
@@ -1069,7 +1042,6 @@ export async function runInProcessProbe(input) {
   }
   const login = await passwordLogin({ ...input, fetch: fetchImpl });
   remember(secrets, login.accessToken);
-  remember(secrets, login.refreshToken);
   if (login.accessToken === null || login.receipt.ok !== true) {
     return scrub(
       packetFlags({
@@ -1084,19 +1056,16 @@ export async function runInProcessProbe(input) {
       secrets,
     );
   }
-  let code = null;
-  const consent = await performConsent({
+  const consent = await consentWithCode({
     fetch: fetchImpl,
     authOrigin: input.authOrigin,
     authorizationId: started.authorizationId,
     userAccessToken: login.accessToken,
     publishableKey: input.publishableKey,
-    retainCode(value) {
-      code = value;
-    },
   });
+  const code = typeof consent.code === 'string' ? consent.code : null;
   remember(secrets, code);
-  if (consent.ok !== true || typeof code !== 'string' || code.length === 0) {
+  if (consent.ok !== true || code === null) {
     return scrub(
       packetFlags({
         ok: false,
@@ -1110,9 +1079,7 @@ export async function runInProcessProbe(input) {
       secrets,
     );
   }
-  let tokenA = null;
-  let refreshA = null;
-  const exchange = await exchangeAuthorizationCode({
+  const exchanged = await exchangeWithSecrets({
     fetch: fetchImpl,
     authOrigin: input.authOrigin,
     clientId: input.clientId,
@@ -1122,13 +1089,10 @@ export async function runInProcessProbe(input) {
     code,
     codeVerifier: started.pkce.codeVerifier,
     codeChallenge: started.pkce.codeChallenge,
-    retainTokens(tokens) {
-      tokenA = tokens.accessToken;
-      refreshA = tokens.refreshToken;
-    },
   });
+  const tokenA = exchanged.accessToken;
+  const exchange = exchanged.receipt;
   remember(secrets, tokenA);
-  remember(secrets, refreshA);
   if (typeof tokenA !== 'string' || exchange.ok !== true || exchange.idTokenPresent === true) {
     return scrub(
       packetFlags({
@@ -1200,7 +1164,6 @@ export async function runLabelledOpenIdNegative(input) {
   if (typeof input.password === 'string' && input.password.length > 0) {
     const login = await passwordLogin({ ...input, fetch: input.fetch });
     remember(secrets, login.accessToken);
-    remember(secrets, login.refreshToken);
     if (login.accessToken === null || login.receipt.idTokenPresent === true) {
       return scrub(
         packetFlags({
