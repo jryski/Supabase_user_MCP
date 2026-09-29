@@ -1,17 +1,18 @@
-import { McpServer, type JSONRPCMessage, type Transport } from '@modelcontextprotocol/server';
+import { type JSONRPCMessage, McpServer, type Transport } from '@modelcontextprotocol/server';
 import {
+  ARTIFACT_INSPECTION_TOOLS,
   COMPATIBILITY_PROBE_TOOL,
   CompatibilityProbeOutputSchema,
   createReadToolMcpResult,
   MAX_REQUEST_ID_BYTES,
   MAX_RESPONSE_BYTES,
-  ARTIFACT_INSPECTION_TOOLS,
   MEMORY_GET_TOOL,
   MEMORY_LIST_RECENT_TOOL,
   MEMORY_RETRIEVE_TOOL,
   MEMORY_SEARCH_TOOL,
   SESSION_CAPABILITIES_GET_TOOL,
 } from '@supabase-user-mcp/contracts';
+import { type AriTestMarkerSeam, registerAriTestMarkerTool } from './ari-test-marker.js';
 import {
   type ArtifactMcpRegistrationConfig,
   prepareArtifactMcpRegistration,
@@ -21,8 +22,8 @@ import { createMemoryGet } from './memory-get.js';
 import { createMemoryListRecent } from './memory-list-recent.js';
 import { createMemoryRetrieve } from './memory-retrieve.js';
 import { createMemorySearch } from './memory-search.js';
-import { createSessionCapabilitiesGet } from './session-capabilities-get.js';
 import type { ReadToolGovernancePolicy, ReadToolOperationalEvent } from './read-tool-governor.js';
+import { createSessionCapabilitiesGet } from './session-capabilities-get.js';
 
 export const SERVER_NAME = 'supabase-user-mcp';
 export const SERVER_VERSION = '0.1.0-alpha.1';
@@ -35,6 +36,11 @@ export interface ReadOnlyServerOptions {
   readonly artifactRegistration?: ArtifactMcpRegistrationConfig;
   /** Opt-in draft two-tool registration for synthetic contract tests only. */
   readonly registerDraftTwoTools?: boolean;
+  /**
+   * TEST-only marker tool. Omitted by the default CLI. F1 on the marker
+   * table does not cover other surfaces.
+   */
+  readonly ariTestMarker?: AriTestMarkerSeam;
 }
 
 /** Guarded read-only product server; must be a real {@link McpServer} for process stdio negotiation. */
@@ -330,6 +336,9 @@ export async function createReadOnlyServer(
   }
 
   artifactRegistration?.register(server);
+  if (options.ariTestMarker !== undefined) {
+    registerAriTestMarkerTool(server, options.ariTestMarker);
+  }
 
   const connectWithBoundedTransport = server.connect.bind(server);
   server.connect = async (transport: Transport) =>

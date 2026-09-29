@@ -2,9 +2,9 @@ import { createServer, type IncomingMessage, type ServerResponse } from 'node:ht
 
 import type { AuthorizationServerMetadata } from '@modelcontextprotocol/server';
 import {
+  canonicalizeResourceUri,
   MAX_RESPONSE_BYTES,
   MAX_TOOL_EXECUTION_MS,
-  canonicalizeResourceUri,
 } from '@supabase-user-mcp/contracts';
 
 import { createRemoteHttpProfile, type RemoteHttpHandler } from './remote-http-profile.js';
@@ -141,6 +141,15 @@ function declaredContentLength(req: IncomingMessage): number | undefined {
   return parsed;
 }
 
+/**
+ * Scheme comes from the accepted socket. X-Forwarded-Proto and
+ * X-Forwarded-Host are ignored so a client cannot retarget the resource URL.
+ */
+function socketScheme(req: IncomingMessage): 'https' | 'http' {
+  const socket = req.socket as { encrypted?: boolean } | undefined;
+  return socket?.encrypted === true ? 'https' : 'http';
+}
+
 function pauseIncoming(req: IncomingMessage): void {
   req.pause();
   req.removeAllListeners('data');
@@ -220,7 +229,7 @@ export async function readBoundedIncomingMessage(
             ? undefined
             : new Uint8Array(Buffer.concat(chunks));
         succeed(
-          new Request(`https://${host}${req.url}`, {
+          new Request(`${socketScheme(req)}://${host}${req.url}`, {
             method,
             headers: headerRecord(req),
             ...(body === undefined ? {} : { body }),

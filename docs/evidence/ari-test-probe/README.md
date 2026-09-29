@@ -87,6 +87,10 @@ for the same `sub`. No `service_role` key is accepted in the probe shell.
 | `sql/01-synthetic-fixture.sql` | Ariadne, after the throwaway user exists. Do not recreate it. |
 | `sql/03-mcp-ingress-role.sql` | Ariadne, on TEST only, one batch with `set_config`. Not this agent. |
 | `sql/04-hook-v2-for-ariadne.sql` | Ariadne, only after Warden reviews v2. Not this agent. |
+| `sql/05-source-session-liveness.sql` | Lane B. Controller only, after G5. Not this agent. |
+| `sql/06-ingress-client-rls.sql` | Lane B F1 on the marker table only. Not this agent. |
+| `sql/07-downstream-and-external-a.sql` | Lane B additive B and external A mapping. Does not replace `sql/03`. Not this agent. |
+| `lane-b-controller.md` | Later G5 and live steps. Not executed from this branch. |
 | `sql/02-hook-for-ariadne.sql` | Do not apply. Superseded by `sql/04`. |
 | `hook-v2.mjs` | Local decision oracle. Kept only where the PGlite test asserts the same results as `sql/04`. |
 | `hook-v2.pglite.test.mjs` | Loads `sql/04` verbatim in `@electric-sql/pglite`. No Docker and no hosted project. |

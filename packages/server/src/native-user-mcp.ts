@@ -27,15 +27,20 @@ import {
  * builds an unused same-bearer user client and an unused admin client before
  * the handler runs. This adapter never calls either client.
  *
- * Token B, a distinct Data API credential, is unresolved. A resource-only
- * Token A fails closed with `downstream_credential_unresolved`.
+ * Token B, a distinct Data API credential, is unresolved on this adapter.
+ * A verified Token A with no `onVerified` dispatch fails closed with
+ * `downstream_credential_unresolved`.
  *
  * MCP-side check: `aud` must be one value, and that value must canonicalize
  * to the MCP resource. Jose matches any array entry, so extra audiences are
  * rejected here. Token A `role` must be the configured ingress role
- * `mcp_ingress`. `role=authenticated` is rejected. Upstream Data API denial
- * and Token B remain open. This module does not create the Postgres role
- * and does not install an Auth hook.
+ * `mcp_ingress`. `role=authenticated` is rejected. This module does not
+ * create the Postgres role and does not install an Auth hook.
+ *
+ * When `expectedAgentId` is set, Token A must also carry that `agent_id`
+ * and a signed `source_session_id`: a non-nil UUID distinct from the decoy
+ * `session_id`. `onVerified` runs only after those checks. Omitting it
+ * keeps the default 403.
  */
 export const SUPABASE_SERVER_PIN = '1.7.2' as const;
 export const MCP_INGRESS_ROLE = 'mcp_ingress' as const;
@@ -68,6 +73,25 @@ export class NativeUserMcpConfigError extends Error {
   }
 }
 
+export interface VerifiedNativeUserPrincipal {
+  readonly sub: string;
+  readonly clientId: string;
+  readonly sessionId: string;
+  readonly sourceSessionId: string;
+  readonly agentId: string;
+  readonly issuer: string;
+  readonly resourceServer: string;
+}
+
+/**
+ * Invoked only after Token A verifies. The request still carries Token A.
+ * Callers must not copy that bearer into a Data API client.
+ */
+export type VerifiedNativeUserDispatch = (
+  principal: VerifiedNativeUserPrincipal,
+  request: Request,
+) => Response | Promise<Response>;
+
 export interface NativeUserMcpConfig {
   /** Public MCP resource URL. Bound as the Token A audience. */
   readonly resourceServer: string;
@@ -87,6 +111,16 @@ export interface NativeUserMcpConfig {
   readonly publishableKey: string;
   /** Inline asymmetric JWKS, or an https (or loopback http) JWKS URL. */
   readonly jwks: Exclude<SupabaseEnv['jwks'], null>;
+  /**
+   * When set, `agent_id` must match and `source_session_id` must be a
+   * non-decoy UUID. Required when `onVerified` is set.
+   */
+  readonly expectedAgentId?: string;
+  /**
+   * Optional dispatch after verification. Absent means the handler returns
+   * 403 `downstream_credential_unresolved`.
+   */
+  readonly onVerified?: VerifiedNativeUserDispatch;
 }
 
 interface ResolvedNativeUserMcpConfig {
@@ -95,6 +129,27 @@ interface ResolvedNativeUserMcpConfig {
   readonly expectedClientId: string;
   readonly ingressRole: typeof MCP_INGRESS_ROLE;
   readonly env: SupabaseEnv;
+  readonly expectedAgentId: string | undefined;
+  readonly onVerified: VerifiedNativeUserDispatch | undefined;
+}
+
+export function nativeUserMcpIssuer(supabaseUrl: string): string {
+  let parsed: URL;
+  try {
+    parsed = new URL(supabaseUrl);
+  } catch {
+    invalidConfig();
+  }
+  if (
+    parsed.protocol !== 'https:' ||
+    parsed.username !== '' ||
+    parsed.password !== '' ||
+    parsed.hash !== '' ||
+    parsed.search !== ''
+  ) {
+    invalidConfig();
+  }
+  return fromSupabaseUrl(parsed.origin + parsed.pathname.replace(/\/$/u, ''));
 }
 
 function invalidConfig(): never {
@@ -166,6 +221,15 @@ function assertIngressRole(value: string): typeof MCP_INGRESS_ROLE {
   return MCP_INGRESS_ROLE;
 }
 
+function assertAgentId(value: string | undefined): string | undefined {
+  if (value === undefined) return undefined;
+  if (value.length === 0 || value.length > 128 || value !== value.trim() || /\s/u.test(value)) {
+    invalidConfig();
+  }
+  if (isJwtShaped(value)) invalidConfig();
+  return value;
+}
+
 function assertPublishableKey(value: string): string {
   const key = value.trim();
   if (key.length === 0 || key.length > 256 || key !== value || isJwtShaped(key)) invalidConfig();
@@ -209,7 +273,9 @@ function resolveNativeUserMcpConfig(config: NativeUserMcpConfig): ResolvedNative
   const expectedClientId = RemoteOAuthClientIdSchema.safeParse(config.expectedClientId);
   if (!expectedClientId.success) invalidConfig();
   const ingressRole = assertIngressRole(config.ingressRole);
-  const issuer = fromSupabaseUrl(supabaseUrl.origin + supabaseUrl.pathname.replace(/\/$/u, ''));
+  const expectedAgentId = assertAgentId(config.expectedAgentId);
+  if (config.onVerified !== undefined && expectedAgentId === undefined) invalidConfig();
+  const issuer = nativeUserMcpIssuer(config.supabaseUrl);
   const env: SupabaseEnv = {
     url: supabaseUrl.origin + supabaseUrl.pathname.replace(/\/$/u, ''),
     publishableKeys: { default: assertPublishableKey(config.publishableKey) },
@@ -222,6 +288,8 @@ function resolveNativeUserMcpConfig(config: NativeUserMcpConfig): ResolvedNative
     expectedClientId: expectedClientId.data,
     ingressRole,
     env,
+    expectedAgentId,
+    onVerified: config.onVerified,
   };
 }
 
@@ -257,20 +325,60 @@ function mcpClaimsRejected(claims: JWTClaims, expected: ResolvedNativeUserMcpCon
   if (explicitResourceMismatch(claims, expected.resourceServer)) return true;
   if (userMetadataAttemptsAuthorization(claims)) return true;
   if (extractServerControlledClientId(claims) !== expected.expectedClientId) return true;
-  return sessionIdRejected(claims.session_id);
+  if (sessionIdRejected(claims.session_id)) return true;
+  if (expected.expectedAgentId !== undefined) {
+    if (claims.agent_id !== expected.expectedAgentId) return true;
+    if (sessionIdRejected(claims.source_session_id)) return true;
+    if (claims.source_session_id === claims.session_id) return true;
+  }
+  return false;
 }
 
-function respondAfterVerifiedMcpAuth(
+function verifiedPrincipal(
+  claims: JWTClaims,
+  expected: ResolvedNativeUserMcpConfig,
+): VerifiedNativeUserPrincipal {
+  const sessionId = claims.session_id;
+  const sourceSessionId = claims.source_session_id;
+  const agentId = claims.agent_id;
+  if (
+    expected.expectedAgentId === undefined ||
+    typeof sessionId !== 'string' ||
+    typeof sourceSessionId !== 'string' ||
+    agentId !== expected.expectedAgentId
+  ) {
+    throw new NativeUserMcpConfigError();
+  }
+  return {
+    sub: claims.sub,
+    clientId: expected.expectedClientId,
+    sessionId,
+    sourceSessionId,
+    agentId,
+    issuer: expected.issuer,
+    resourceServer: expected.resourceServer,
+  };
+}
+
+async function respondAfterVerifiedMcpAuth(
+  request: Request,
   ctx: SupabaseContext,
   expected: ResolvedNativeUserMcpConfig,
-): Response {
+): Promise<Response> {
   if (ctx.authMode !== 'user' || ctx.jwtClaims === null || ctx.userClaims === null) {
     return jsonResponse(401, ADAPTER_AUTH_ERROR);
   }
   if (ctx.userClaims.id !== ctx.jwtClaims.sub || mcpClaimsRejected(ctx.jwtClaims, expected)) {
     return jsonResponse(401, ADAPTER_AUTH_ERROR);
   }
-  return jsonResponse(403, DOWNSTREAM_CREDENTIAL_UNRESOLVED);
+  if (expected.onVerified === undefined) {
+    return jsonResponse(403, DOWNSTREAM_CREDENTIAL_UNRESOLVED);
+  }
+  try {
+    return await expected.onVerified(verifiedPrincipal(ctx.jwtClaims, expected), request);
+  } catch {
+    return jsonResponse(403, DOWNSTREAM_CREDENTIAL_UNRESOLVED);
+  }
 }
 
 async function boundIngress(request: Request): Promise<Request | Response> {
@@ -349,7 +457,7 @@ export function createNativeUserMcpHandler(
           },
         },
       },
-      async (_request, ctx) => respondAfterVerifiedMcpAuth(ctx, resolved),
+      async (request, ctx) => respondAfterVerifiedMcpAuth(request, ctx, resolved),
     ),
   );
 

@@ -309,6 +309,73 @@ describe('native user MCP adapter', () => {
     expect(await response.json()).toEqual({ error: 'payload_too_large' });
   });
 
+  it('keeps the default 403 when no dispatch is configured and checks the paired principal when it is', async () => {
+    const { privateKey, jwks } = await es256Jwks();
+    const source = '55555555-5555-4555-8555-555555555555';
+    const decoy = '44444444-4444-4444-8444-444444444444';
+    const agent = 'hook-only-agent';
+    const paired = await new SignJWT({
+      role: MCP_INGRESS_ROLE,
+      client_id: CLIENT,
+      session_id: decoy,
+      source_session_id: source,
+      agent_id: agent,
+    })
+      .setProtectedHeader({ alg: 'ES256', kid: 'g2-test', typ: 'JWT' })
+      .setSubject(PRINCIPAL)
+      .setIssuer(ISSUER)
+      .setAudience(RESOURCE)
+      .setIssuedAt()
+      .setExpirationTime('2m')
+      .sign(privateKey);
+    const untouched = createNativeUserMcpHandler({
+      resourceServer: RESOURCE,
+      supabaseUrl: SUPABASE_URL,
+      expectedClientId: CLIENT,
+      ingressRole: MCP_INGRESS_ROLE,
+      publishableKey: PUBLISHABLE_KEY,
+      jwks,
+      expectedAgentId: agent,
+    });
+    const closed = await untouched(mcpPost(paired));
+    expect(closed.status).toBe(403);
+    expect(await closed.json()).toEqual({ error: DOWNSTREAM_CREDENTIAL_UNRESOLVED });
+
+    let seen = '';
+    const dispatched = createNativeUserMcpHandler({
+      resourceServer: RESOURCE,
+      supabaseUrl: SUPABASE_URL,
+      expectedClientId: CLIENT,
+      ingressRole: MCP_INGRESS_ROLE,
+      publishableKey: PUBLISHABLE_KEY,
+      jwks,
+      expectedAgentId: agent,
+      onVerified: (principal) => {
+        seen = principal.sourceSessionId;
+        return new Response(JSON.stringify({ ok: true }), { status: 200 });
+      },
+    });
+    const opened = await dispatched(mcpPost(paired));
+    expect(opened.status).toBe(200);
+    expect(seen).toBe(source);
+
+    const sameSession = await new SignJWT({
+      role: MCP_INGRESS_ROLE,
+      client_id: CLIENT,
+      session_id: source,
+      source_session_id: source,
+      agent_id: agent,
+    })
+      .setProtectedHeader({ alg: 'ES256', kid: 'g2-test', typ: 'JWT' })
+      .setSubject(PRINCIPAL)
+      .setIssuer(ISSUER)
+      .setAudience(RESOURCE)
+      .setIssuedAt()
+      .setExpirationTime('2m')
+      .sign(privateKey);
+    await expectInvalidToken(await dispatched(mcpPost(sameSession)), sameSession);
+  });
+
   it('rejects symmetric JWKS and JWT-shaped publishable keys', async () => {
     expect(() =>
       createNativeUserMcpHandler({

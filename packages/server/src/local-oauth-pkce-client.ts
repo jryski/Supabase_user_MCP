@@ -176,26 +176,51 @@ export async function registerLocalPublicOAuthClient(input: {
   };
 }
 
+export function buildLocalAuthorizationUrl(input: {
+  readonly authOrigin: string;
+  readonly clientId: string;
+  readonly redirectUri: string;
+  readonly state: string;
+  readonly codeChallenge: string;
+  readonly scope: string;
+  /** Omitted for the TEST-only public PKCE Token B grant. */
+  readonly resource?: string;
+}): string {
+  const authorize = new URL('/auth/v1/oauth/authorize', input.authOrigin);
+  authorize.searchParams.set('response_type', 'code');
+  authorize.searchParams.set('client_id', input.clientId);
+  authorize.searchParams.set('redirect_uri', input.redirectUri);
+  authorize.searchParams.set('scope', input.scope);
+  authorize.searchParams.set('state', input.state);
+  authorize.searchParams.set('code_challenge', input.codeChallenge);
+  authorize.searchParams.set('code_challenge_method', 'S256');
+  if (input.resource !== undefined) {
+    authorize.searchParams.set('resource', canonicalizeResourceUri(input.resource));
+  }
+  return authorize.toString();
+}
+
 export async function startLocalAuthorization(input: {
   readonly authOrigin: string;
   readonly clientId: string;
   readonly redirectUri: string;
-  readonly resource: string;
+  readonly resource?: string;
   readonly codeChallenge: string;
   readonly state: string;
   readonly scope?: string;
   readonly projectPublishableKey?: string;
 }): Promise<{ readonly authorizationId: string; readonly location: string }> {
-  const resource = canonicalizeResourceUri(input.resource);
-  const authorize = new URL('/auth/v1/oauth/authorize', input.authOrigin);
-  authorize.searchParams.set('response_type', 'code');
-  authorize.searchParams.set('client_id', input.clientId);
-  authorize.searchParams.set('redirect_uri', input.redirectUri);
-  authorize.searchParams.set('scope', input.scope ?? 'openid');
-  authorize.searchParams.set('state', input.state);
-  authorize.searchParams.set('code_challenge', input.codeChallenge);
-  authorize.searchParams.set('code_challenge_method', 'S256');
-  authorize.searchParams.set('resource', resource);
+  const authorize = new URL(
+    buildLocalAuthorizationUrl({
+      authOrigin: input.authOrigin,
+      clientId: input.clientId,
+      redirectUri: input.redirectUri,
+      state: input.state,
+      codeChallenge: input.codeChallenge,
+      scope: input.scope ?? 'openid',
+      ...(input.resource === undefined ? {} : { resource: input.resource }),
+    }),
+  );
   const headers: Record<string, string> = {};
   if (input.projectPublishableKey !== undefined) {
     headers.apikey = input.projectPublishableKey;
@@ -260,8 +285,10 @@ export async function exchangeLocalAuthorizationCode(input: {
   readonly redirectUri: string;
   readonly code: string;
   readonly codeVerifier: string;
-  readonly resource: string;
+  /** Omitted for the TEST-only public PKCE Token B grant. */
+  readonly resource?: string;
   readonly projectPublishableKey?: string;
+  readonly fetch?: FetchLike;
 }): Promise<{ readonly accessToken: string; readonly refreshToken: string | null }> {
   const body = new URLSearchParams({
     grant_type: 'authorization_code',
@@ -269,16 +296,23 @@ export async function exchangeLocalAuthorizationCode(input: {
     redirect_uri: input.redirectUri,
     code: input.code,
     code_verifier: input.codeVerifier,
-    resource: canonicalizeResourceUri(input.resource),
   });
-  const response = await fetch(new URL('/auth/v1/oauth/token', input.authOrigin), {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/x-www-form-urlencoded',
-      ...(input.projectPublishableKey === undefined ? {} : { apikey: input.projectPublishableKey }),
+  if (input.resource !== undefined) {
+    body.set('resource', canonicalizeResourceUri(input.resource));
+  }
+  const response = await resolveFetch(input.fetch)(
+    new URL('/auth/v1/oauth/token', input.authOrigin),
+    {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/x-www-form-urlencoded',
+        ...(input.projectPublishableKey === undefined
+          ? {}
+          : { apikey: input.projectPublishableKey }),
+      },
+      body,
     },
-    body,
-  });
+  );
   if (!response.ok) {
     throw new Error(`token exchange failed: ${response.status}`);
   }
