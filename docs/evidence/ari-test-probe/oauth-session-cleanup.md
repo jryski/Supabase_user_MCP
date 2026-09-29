@@ -17,9 +17,10 @@ Do not delete by the fresh `session_id` claim. That value is not an
 or `mcp_ingress`.
 
 Confirm the dashboard ref before the batch. Stop if it is not the TEST ref.
-Replace `<source_session_id>` with the claim value from the redacted probe
-receipt. Do not paste access tokens, refresh tokens, or authorization codes
-into the batch.
+Replace `<source_session_id>` with `probe.tokenA.source_session_id` from the
+redacted probe receipt. That summary also includes `session_id`, `agent_id`,
+and `client_id`. Do not decode Token A. Do not paste access tokens, refresh
+tokens, or authorization codes into the batch.
 
 ## Before
 

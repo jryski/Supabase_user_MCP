@@ -850,7 +850,16 @@ function packetFlags(extra) {
 function claimSummary(value) {
   if (value === null || typeof value !== 'object' || Array.isArray(value)) return null;
   const text = (key) => (typeof value[key] === 'string' ? value[key] : null);
-  return { role: text('role'), aud: value.aud ?? null, iss: text('iss'), sub: text('sub') };
+  return {
+    role: text('role'),
+    aud: value.aud ?? null,
+    iss: text('iss'),
+    sub: text('sub'),
+    session_id: text('session_id'),
+    source_session_id: text('source_session_id'),
+    agent_id: text('agent_id'),
+    client_id: text('client_id'),
+  };
 }
 
 function publicProbeSummary(probe) {

@@ -105,11 +105,16 @@ async function readBody(response) {
 }
 
 function summarizeClaims(claims) {
+  const text = (key) => (typeof claims[key] === 'string' ? claims[key] : null);
   return {
-    role: typeof claims.role === 'string' ? claims.role : null,
+    role: text('role'),
     aud: claims.aud ?? null,
-    iss: typeof claims.iss === 'string' ? claims.iss : null,
-    sub: typeof claims.sub === 'string' ? claims.sub : null,
+    iss: text('iss'),
+    sub: text('sub'),
+    session_id: text('session_id'),
+    source_session_id: text('source_session_id'),
+    agent_id: text('agent_id'),
+    client_id: text('client_id'),
   };
 }
 
