@@ -15,6 +15,7 @@ import {
   MCP_EDGE_ACCEPTANCE,
   MCP_RESOURCE,
   realtimeVerdict,
+  storageSeedVerdict,
 } from './decisions.mjs';
 import { runProbe } from './probe.mjs';
 
@@ -22,7 +23,7 @@ const SUBJECT = '11111111-1111-4111-8111-111111111111';
 const SESSION = '22222222-2222-4222-8222-222222222222';
 const ISSUER = `https://${ALLOWED_PROJECT_REF}.supabase.co/auth/v1`;
 const REST_DENY = JSON.stringify({ code: '42501', message: 'permission denied' });
-const GRAPHQL_DENY = JSON.stringify({ errors: [{ message: 'permission denied' }] });
+const GRAPHQL_DENY = JSON.stringify({ data: {} });
 const GRAPHQL_OK = JSON.stringify({
   data: { ariProbeMarkerCollection: { edges: [{ node: { marker: MARKER } }] } },
 });
@@ -320,6 +321,145 @@ test('holds only explicit denials plus status-and-body positive controls', async
   assert.equal(dataRowVerdict('rest', 'token_b', 200, 'ok').verdict, 'inconclusive');
   assert.equal(dataRowVerdict('storage', 'token_a', 401, 'no').verdict, 'inconclusive');
   assert.equal(dataRowVerdict('storage', 'token_a', 404, 'missing').verdict, 'deny');
+});
+
+test('Warden falsifiers never produce matrix_held', async () => {
+  const roleQuoted = JSON.stringify({
+    code: '22023',
+    message: 'role "mcp_ingress" does not exist',
+  });
+  const roleEllipsis = JSON.stringify({
+    error: 'DatabaseError',
+    message: 'role … does not exist',
+  });
+  const badRequest = JSON.stringify({ message: 'bad request' });
+  assert.equal(
+    dataRowVerdict('graphql', 'token_a', 400, roleQuoted).verdict,
+    'ingress_role_missing',
+  );
+  assert.notEqual(dataRowVerdict('graphql', 'token_a', 400, roleQuoted).verdict, 'deny');
+  assert.equal(dataRowVerdict('graphql', 'token_a', 401, badRequest).verdict, 'inconclusive');
+  assert.equal(
+    dataRowVerdict('storage', 'token_a', 400, roleEllipsis).verdict,
+    'ingress_role_missing',
+  );
+  assert.equal(dataRowVerdict('storage', 'token_a', 400, badRequest).verdict, 'inconclusive');
+  assert.equal(dataRowVerdict('rest', 'token_a', 400, roleQuoted).verdict, 'inconclusive');
+  assert.notEqual(dataRowVerdict('rest', 'token_a', 400, roleQuoted).verdict, 'deny');
+  assert.notEqual(storageSeedVerdict(400).verdict, 'seeded');
+  assert.equal(storageSeedVerdict(400).verdict, 'inconclusive');
+  assert.equal(dataRowVerdict('graphql', 'token_a', 200, '{}').verdict, 'inconclusive');
+  assert.equal(
+    dataRowVerdict(
+      'graphql',
+      'token_a',
+      200,
+      JSON.stringify({ errors: [{ message: 'unknown field ariProbeMarkerCollection' }] }),
+    ).verdict,
+    'deny',
+  );
+
+  const probe = await readyProbe();
+  async function runCase(override) {
+    return runProbe(
+      await readyProbe({
+        tokenA: probe.tokenA,
+        tokenB: probe.tokenB,
+        jwks: probe.jwks,
+        joinRealtime: async ({ token }) => (token === probe.tokenB ? 'ok' : 'denied'),
+        fetch: async (url, init) => {
+          const path = new URL(url).pathname;
+          const header = init.headers.authorization ?? '';
+          const tokenB = header.includes(probe.tokenB);
+          const kind = header.length === 0 ? 'publishable' : tokenB ? 'token_b' : 'token_a';
+          const replaced = override(path, init.method, kind);
+          if (replaced !== undefined) return replaced;
+          if (path === '/auth/v1/user' && init.method === 'GET' && tokenB)
+            return userResponse(SUBJECT);
+          if (path.startsWith('/auth/')) return new Response(REST_DENY, { status: 401 });
+          if (path === '/rest/v1/ari_probe_marker') {
+            if (kind === 'publishable') return new Response('[]', { status: 200 });
+            if (kind === 'token_b') return new Response(REST_OK, { status: 200 });
+            return new Response(REST_DENY, { status: 401 });
+          }
+          if (path === '/graphql/v1') {
+            if (kind === 'publishable')
+              return new Response('{"data":{"ariProbeMarkerCollection":{"edges":[]}}}', {
+                status: 200,
+              });
+            if (kind === 'token_b') return new Response(GRAPHQL_OK, { status: 200 });
+            return new Response(GRAPHQL_DENY, { status: 200 });
+          }
+          if (init.method === 'POST') return new Response('', { status: 200 });
+          if (kind === 'token_b') return new Response(MARKER, { status: 200 });
+          return new Response('missing', { status: 404 });
+        },
+      }),
+    );
+  }
+
+  const cases = [
+    {
+      reason: 'ingress_role_missing',
+      id: 'L5-graphql-token_a',
+      override: (path, _method, kind) =>
+        path === '/graphql/v1' && kind === 'token_a'
+          ? new Response(roleQuoted, { status: 400 })
+          : undefined,
+    },
+    {
+      reason: 'inconclusive',
+      id: 'L5-graphql-token_a',
+      override: (path, _method, kind) =>
+        path === '/graphql/v1' && kind === 'token_a'
+          ? new Response(badRequest, { status: 401 })
+          : undefined,
+    },
+    {
+      reason: 'ingress_role_missing',
+      id: 'L5-storage-token_a',
+      override: (path, method, kind) =>
+        path.startsWith('/storage/') && method === 'GET' && kind === 'token_a'
+          ? new Response(roleEllipsis, { status: 400 })
+          : undefined,
+    },
+    {
+      reason: 'inconclusive',
+      id: 'L5-storage-token_a',
+      override: (path, method, kind) =>
+        path.startsWith('/storage/') && method === 'GET' && kind === 'token_a'
+          ? new Response(badRequest, { status: 400 })
+          : undefined,
+    },
+    {
+      reason: 'inconclusive',
+      id: 'L5-rest-token_a',
+      override: (path, _method, kind) =>
+        path === '/rest/v1/ari_probe_marker' && kind === 'token_a'
+          ? new Response(roleQuoted, { status: 400 })
+          : undefined,
+    },
+    {
+      reason: 'inconclusive',
+      id: 'L5-storage-token-b-seed-NOT-MCP',
+      override: (path, method) =>
+        path.startsWith('/storage/') && method === 'POST'
+          ? new Response(badRequest, { status: 400 })
+          : undefined,
+    },
+  ];
+  for (const item of cases) {
+    const result = await runCase(item.override);
+    assert.notEqual(result.exitCode, 0);
+    assert.notEqual(result.reason, 'matrix_held');
+    assert.equal(result.reason, item.reason);
+    assert.equal(
+      result.rows.find((row) => row.id === item.id)?.verdict,
+      item.reason === 'ingress_role_missing' ? 'ingress_role_missing' : 'inconclusive',
+    );
+    assert.notEqual(result.rows.find((row) => row.id === item.id)?.verdict, 'deny');
+    assert.notEqual(result.rows.find((row) => row.id === item.id)?.verdict, 'seeded');
+  }
 });
 
 test('this head MCP edge does not accept mcp_ingress Token A', async () => {

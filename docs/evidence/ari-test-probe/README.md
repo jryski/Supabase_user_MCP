@@ -21,10 +21,18 @@ Token B positive controls require the expected status and the expected body.
 A success-looking status with the wrong body is not a positive control.
 Token B `GET /auth/v1/user` must be `200` with the same `id` as Token A before
 any Token A Auth denial counts. Token A Auth denial is `401` or `403`. REST
-denial is `401` or `403` with Postgres `42501`. GraphQL denial is an `errors`
-array or an absent collection. Storage denial is `400`, `403`, or `404`.
-Realtime counts as denial only for an explicit unauthorized reply. A generic
-or transport error is inconclusive.
+denial is `401` or `403` with Postgres `42501`. GraphQL denial is HTTP `200`
+with `data` present and `ariProbeMarkerCollection` absent, or HTTP `200`
+whose `errors` name that collection or an unknown field. Any other GraphQL
+status is inconclusive unless it is `401` or `403` with Postgres `42501`.
+Storage denial is `404`, or `400`/`403` whose body names `not_found`,
+`Object not found`, or `unauthorized`. A `DatabaseError` or any other `400`
+is inconclusive. Realtime counts as denial only for an explicit unauthorized
+reply. A generic or transport error is inconclusive.
+
+A body with Postgres `22023`, or `role "…" does not exist`, is
+`ingress_role_missing` on Auth, GraphQL, and Storage. That is a named
+nonzero failure, not a denial. REST `400` with that body stays inconclusive.
 
 Before those rows, Token A must verify: signature, expiry, expected client
 `ari-probe-synthetic-client`, and the MCP-edge acceptance path (`403`
@@ -121,8 +129,8 @@ node docs/evidence/ari-test-probe/probe.mjs run
 | `POST /auth/v1/factors` | Token A | `401` or `403` | `2xx` is NO-GO; other statuses are inconclusive |
 | `POST /auth/v1/logout` | Token A | `401` or `403` | `2xx` is NO-GO; other statuses are inconclusive |
 | REST `/rest/v1/ari_probe_marker` | publishable, Token A, Token B | Token A is `401` or `403` with `42501`; Token B is `200` and a row `marker` | Token A contains the marker, or the status is not that denial |
-| GraphQL `/graphql/v1` | same pair | Token A has `errors` or no collection; Token B is `200` and the marker node | Token A contains the marker |
-| Storage `ari-probe-synthetic/marker.txt` | Token B seeds, then the same pair | Token A is `400`, `403`, or `404`; Token B GET is `200` and the marker bytes | Token A contains the marker |
+| GraphQL `/graphql/v1` | same pair | Token A is HTTP `200` with `data` and no collection, or `errors` that name the collection; Token B is `200` and the marker node | Any other Token A GraphQL result, including a bare JSON object |
+| Storage `ari-probe-synthetic/marker.txt` | Token B seed is `2xx` or `409`, then the same pair | Token A is `404`, or `400`/`403` naming not found or unauthorized; Token B GET is `200` and the marker bytes | Token A `400` `DatabaseError`, or any other `400` |
 | Realtime private topic `ari-probe-synthetic` | Token A, Token B | Token A reply is explicit unauthorized; Token B join is `ok` | Token A join is `ok`, or the error is only transport |
 
 Exit `0` means this matrix held. It does not mean acceptance or Token A

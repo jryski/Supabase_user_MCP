@@ -195,7 +195,25 @@ export function postgres42501(body) {
   return parsed.code === '42501' || parsed.code === 42501;
 }
 
-export function authRowVerdict(status, mutation) {
+const ROLE_DOES_NOT_EXIST = /role\s+(?:"[^"]+"|'[^']+'|…|\.{3})\s+does not exist/i;
+
+/** Named failure: Postgres 22023 or `role "…" does not exist`. Not a permission denial. */
+export function ingressRoleMissing(body) {
+  if (typeof body !== 'string' || body.length === 0) return false;
+  const parsed = parseJson(body);
+  if (parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed)) {
+    if (parsed.code === '22023' || parsed.code === 22023) return true;
+  }
+  return ROLE_DOES_NOT_EXIST.test(body);
+}
+
+function ingressRoleVerdict(surface) {
+  if (surface === 'rest') return inconclusive();
+  return { verdict: 'ingress_role_missing', stop: true };
+}
+
+export function authRowVerdict(status, mutation, body = '') {
+  if (ingressRoleMissing(body)) return ingressRoleVerdict('auth');
   if (httpOutcome(status) !== 'http') return inconclusive();
   if (status >= 200 && status < 300) {
     return stopNoGo(mutation ? 'NO_GO_TOKEN_A_MUTATION' : 'NO_GO_TOKEN_A_AUTH_READ');
@@ -205,6 +223,7 @@ export function authRowVerdict(status, mutation) {
 }
 
 export function tokenBAuthUserVerdict(status, body, expectedSub) {
+  if (ingressRoleMissing(body)) return ingressRoleVerdict('auth');
   if (httpOutcome(status) !== 'http') return inconclusive();
   if (status !== 200) return stopNoGo('positive_control_missed');
   const parsed = parseJson(body);
@@ -261,6 +280,7 @@ function graphqlCollection(body) {
 }
 
 export function dataRowVerdict(surface, kind, status, body) {
+  if (ingressRoleMissing(body)) return ingressRoleVerdict(surface);
   if (httpOutcome(status) !== 'http') return inconclusive();
   if (kind === 'publishable') {
     return containsMarker(body)
@@ -280,19 +300,54 @@ function tokenADataVerdict(surface, status, body) {
     }
     return inconclusive();
   }
-  if (surface === 'graphql') {
-    const graph = graphqlCollection(body);
-    if (!graph.parse) return inconclusive();
-    if (graph.errors.length > 0 || !graph.collectionPresent) {
+  if (surface === 'graphql') return tokenAGraphqlVerdict(status, body);
+  if (surface === 'storage') return tokenAStorageVerdict(status, body);
+  return inconclusive();
+}
+
+function tokenAGraphqlVerdict(status, body) {
+  if (status !== 200) {
+    if ((status === 401 || status === 403) && postgres42501(body)) {
       return { verdict: 'deny', stop: false };
     }
     return inconclusive();
   }
-  if (surface === 'storage') {
-    if (status === 400 || status === 403 || status === 404) {
+  const parsed = parseJson(body);
+  if (
+    parsed === undefined ||
+    parsed === null ||
+    typeof parsed !== 'object' ||
+    Array.isArray(parsed)
+  ) {
+    return inconclusive();
+  }
+  const errors = parsed.errors;
+  if (Array.isArray(errors) && graphqlErrorsNameCollection(errors)) {
+    return { verdict: 'deny', stop: false };
+  }
+  const data = parsed.data;
+  if (data !== null && typeof data === 'object' && !Array.isArray(data)) {
+    if (data.ariProbeMarkerCollection == null) return { verdict: 'deny', stop: false };
+  }
+  return inconclusive();
+}
+
+function graphqlErrorsNameCollection(errors) {
+  const text = JSON.stringify(errors).toLowerCase();
+  return text.includes('ariprobemarkercollection') || text.includes('unknown field');
+}
+
+function tokenAStorageVerdict(status, body) {
+  if (status === 404) return { verdict: 'deny', stop: false };
+  if (status === 400 || status === 403) {
+    const text = typeof body === 'string' ? body.toLowerCase() : '';
+    if (
+      text.includes('not_found') ||
+      text.includes('object not found') ||
+      text.includes('unauthorized')
+    ) {
       return { verdict: 'deny', stop: false };
     }
-    return inconclusive();
   }
   return inconclusive();
 }
@@ -321,9 +376,10 @@ function tokenBDataVerdict(surface, status, body) {
   return stopNoGo('unknown_kind');
 }
 
-export function storageSeedVerdict(status) {
+export function storageSeedVerdict(status, body = '') {
+  if (ingressRoleMissing(body)) return ingressRoleVerdict('storage');
   if (httpOutcome(status) !== 'http') return inconclusive();
-  if ((status >= 200 && status < 300) || status === 400 || status === 409) {
+  if ((status >= 200 && status < 300) || status === 409) {
     return { verdict: 'seeded', stop: false };
   }
   return inconclusive();

@@ -270,7 +270,7 @@ export async function runProbe(options) {
 
   for (const row of AUTH_ROWS) {
     const result = await call(row.path, row.method, options.tokenA, row.body);
-    const verdict = authRowVerdict(result.status, row.mutation);
+    const verdict = authRowVerdict(result.status, row.mutation, result.body);
     rows.push({
       id: row.id,
       credential: 'token_a',
@@ -303,6 +303,7 @@ export async function runProbe(options) {
 
   requests += 1;
   let seededStatus = 0;
+  let seededBody = '';
   try {
     const seededResponse = await fetchImpl(
       `${origin}/storage/v1/object/ari-probe-synthetic/marker.txt`,
@@ -320,11 +321,11 @@ export async function runProbe(options) {
       },
     );
     seededStatus = seededResponse.status;
-    await readBody(seededResponse);
+    seededBody = await readBody(seededResponse);
   } catch {
     seededStatus = 0;
   }
-  const seeded = storageSeedVerdict(seededStatus);
+  const seeded = storageSeedVerdict(seededStatus, seededBody);
   rows.push({
     id: 'L5-storage-token-b-seed-NOT-MCP',
     credential: 'token_b',
