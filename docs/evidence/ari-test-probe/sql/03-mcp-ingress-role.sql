@@ -68,7 +68,17 @@ begin
 end;
 $user$;
 
+-- Isolation attributes are set on CREATE ROLE. A non-superuser CREATEROLE
+-- session is denied ALTER ROLE clauses that name SUPERUSER, and is denied
+-- CREATEDB, REPLICATION, and BYPASSRLS unless it already holds that
+-- attribute. Naming them on ALTER raises 42501 and rolls this batch back.
+-- When the role already exists and is already isolated, this block does not
+-- ALTER it. LOGIN, INHERIT, and CREATEROLE are the only attributes altered,
+-- and only when they are not already the isolated values. SUPERUSER or
+-- BYPASSRLS on an existing role fails closed. This block does not clear them.
 do $create$
+declare
+  role_row record;
 begin
   if not exists (select 1 from pg_roles where rolname = 'mcp_ingress') then
     create role mcp_ingress
@@ -77,18 +87,43 @@ begin
       nosuperuser
       nocreatedb
       nocreaterole
-      noreplication;
+      noreplication
+      nobypassrls;
+    return;
+  end if;
+
+  select
+    rolcanlogin,
+    rolinherit,
+    rolsuper,
+    rolcreaterole,
+    rolcreatedb,
+    rolreplication,
+    rolbypassrls
+  into role_row
+  from pg_roles
+  where rolname = 'mcp_ingress';
+
+  if role_row.rolsuper then
+    raise exception
+      'mcp_ingress has SUPERUSER; refusing to alter superuser attributes';
+  end if;
+
+  if role_row.rolbypassrls then
+    raise exception
+      'mcp_ingress has BYPASSRLS; refusing to alter bypassrls attributes';
+  end if;
+
+  if role_row.rolcreatedb or role_row.rolreplication then
+    raise exception
+      'mcp_ingress has CREATEDB or REPLICATION; refusing to alter those attributes';
+  end if;
+
+  if role_row.rolcanlogin or role_row.rolinherit or role_row.rolcreaterole then
+    alter role mcp_ingress nologin noinherit nocreaterole;
   end if;
 end;
 $create$;
-
-alter role mcp_ingress
-  nologin
-  noinherit
-  nosuperuser
-  nocreatedb
-  nocreaterole
-  noreplication;
 
 revoke authenticated, anon, service_role from mcp_ingress;
 revoke mcp_ingress from authenticated, anon, service_role;
@@ -140,7 +175,8 @@ begin
     rolsuper,
     rolcreaterole,
     rolcreatedb,
-    rolreplication
+    rolreplication,
+    rolbypassrls
   into role_row
   from pg_roles
   where rolname = 'mcp_ingress';
@@ -152,6 +188,7 @@ begin
     or role_row.rolcreaterole
     or role_row.rolcreatedb
     or role_row.rolreplication
+    or role_row.rolbypassrls
   then
     raise exception 'mcp_ingress is not an isolated nologin noinherit role';
   end if;

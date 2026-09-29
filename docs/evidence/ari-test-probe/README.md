@@ -128,6 +128,10 @@ SQL apply order. This agent does not run it.
    `ari_probe` to Exposed schemas.
 5. In one SQL-editor batch, paste the setting and then the body of
    `sql/03-mcp-ingress-role.sql`. A second run will not see the setting.
+   The applier is a non-superuser with `CREATEROLE`. Isolation attributes
+   are set on `CREATE ROLE`. The batch does not `ALTER` `SUPERUSER` or
+   `BYPASSRLS`. An existing role that already has either attribute fails
+   closed.
 
    ```sql
    select set_config('ari.project_ref', 'odbcejsuuqdzhabjmozi', false);
