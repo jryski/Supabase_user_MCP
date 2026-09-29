@@ -1,7 +1,11 @@
 /**
  * Pure decision oracle for the uninstalled hook v2 packet.
  * No network, no database, and no credential values.
- * A failed liveness check is a per-call denial. It is not a revocation receipt.
+ * Liveness is each hook call (token issuance or refresh) only.
+ * It is not an MCP-call check. The adapter has no liveness check.
+ * A failed check is not a revocation receipt.
+ * Keep this module only while hook-v2.pglite.test.mjs asserts the same results
+ * as sql/04 loaded verbatim.
  */
 
 const NIL_UUID = '00000000-0000-0000-0000-000000000000';
@@ -37,7 +41,7 @@ function raise(reason) {
     action: 'raise',
     reason,
     revocationClaimed: false,
-    liveCheck: 'per_call_source_session',
+    liveCheck: 'hook_issuance_or_refresh',
   };
 }
 
@@ -62,7 +66,7 @@ export function decideHookV2(input) {
       reason: 'absent_client_id',
       claims,
       revocationClaimed: false,
-      liveCheck: 'not_applicable',
+      liveCheck: 'not_applicable_absent_client_id',
     };
   }
   if (scopeHasOpenId(eventScope(event, claims))) return raise('openid_scope_refused');
@@ -81,7 +85,7 @@ export function decideHookV2(input) {
     action: 'map',
     reason: 'mapped_client',
     revocationClaimed: false,
-    liveCheck: 'per_call_source_session',
+    liveCheck: 'hook_issuance_or_refresh',
     claims: {
       ...claims,
       aud: mapped.mcpResource,

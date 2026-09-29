@@ -46,7 +46,8 @@ accepts it and fail-closes. That acceptance is not Data API separation.
 ## L2 — ingress role check, landed in the adapter
 
 The native-user adapter requires `role=mcp_ingress` and rejects
-`role=authenticated`. It also rejects a nil or empty `session_id`.
+`role=authenticated`. It also rejects a nil or empty `session_id`. That
+check is the claim shape only. The adapter has no liveness check.
 `sql/03-mcp-ingress-role.sql` is the matching isolated role for the
 controller. This agent does not apply it. Hook v2 is
 `sql/04-hook-v2-for-ariadne.sql` and is not installed. Do not run the probe
@@ -75,8 +76,9 @@ for the same `sub`. No `service_role` key is accepted in the probe shell.
 | `sql/03-mcp-ingress-role.sql` | Ariadne, on TEST only, one batch with `set_config`. Not this agent. |
 | `sql/04-hook-v2-for-ariadne.sql` | Ariadne, only after Warden reviews v2. Not this agent. |
 | `sql/02-hook-for-ariadne.sql` | Do not apply. Superseded by `sql/04`. |
-| `hook-v2.mjs` | Local decision oracle. No network. |
-| `consent-harness.mjs` | Loopback checklist. `plan` and `redact` only. |
+| `hook-v2.mjs` | Local decision oracle. Kept only where the PGlite test asserts the same results as `sql/04`. |
+| `hook-v2.pglite.test.mjs` | Loads `sql/04` verbatim in `@electric-sql/pglite`. No Docker and no hosted project. |
+| `consent-harness.mjs` | Consent GET/POST, code exchange, and the labelled `openid_negative` path. Receipts are redacted. |
 | `probe.mjs` | Not against hosted TEST in this slice. |
 
 Local decision tests, with no network:
@@ -85,6 +87,7 @@ Local decision tests, with no network:
 npm run build
 node --test docs/evidence/ari-test-probe/decisions.test.mjs
 node --test docs/evidence/ari-test-probe/hook-v2.test.mjs
+node --test docs/evidence/ari-test-probe/hook-v2.pglite.test.mjs
 node --test docs/evidence/ari-test-probe/consent-harness.test.mjs
 node docs/evidence/ari-test-probe/probe.mjs plan
 node docs/evidence/ari-test-probe/consent-harness.mjs plan
@@ -142,9 +145,9 @@ raises for every OAuth client. An unmapped `client_id` raises. The mapped
 client sets `aud` to the configured MCP resource, `role` to `mcp_ingress`,
 `session_id` to `gen_random_uuid()` after it is checked non-nil and absent
 from `auth.sessions`, `source_session_id` to the original session id, and
-`agent_id` from `ari_probe.mcp_client`. Each call checks that
-`source_session_id` is still a live `auth.sessions` row. That check is not
-a revocation receipt.
+`agent_id` from `ari_probe.mcp_client`. Liveness runs on each hook call
+only, for token issuance and refresh. It does not run on each MCP call.
+The adapter has no liveness check. That check is not a revocation receipt.
 
 Rollback, on the TEST ref only, after the dashboard hook is disabled:
 
@@ -160,10 +163,26 @@ that rollback.
 
 The redirect is `http://127.0.0.1:<port>/callback`. The controller sets the
 registered client's redirect and an explicit scope list that does not include
-`openid`. `consent-harness.mjs plan` prints the checklist and does not dial
-out. `consent-harness.mjs redact` reads a token response on stdin and prints
-key names only. Do not paste a verifier, authorization code, access token,
-or refresh token into chat, git, or an artifact.
+`openid` on the mapped mint. `consent-harness.mjs plan` prints the checklist
+and does not dial out. `listenOnce` only records a redacted loopback receipt.
+Those two commands do not consent and do not exchange a code.
+
+`performConsent` performs consent: `GET /auth/v1/oauth/authorizations/{id}`
+and `POST /auth/v1/oauth/authorizations/{id}/consent` with the synthetic
+user's own session. `exchangeAuthorizationCode` and `runConsentExchange`
+then `POST /auth/v1/oauth/token` with `grant_type=authorization_code`, the
+code, and the S256 verifier. Receipts keep key names and drop token values,
+codes, and verifiers. This agent does not run these calls against hosted
+TEST.
+
+`buildAuthorizeUrl` still refuses `openid`. The labelled path
+`openid_negative` (`buildOpenIdNegativeAuthorizeUrl` and `runOpenIdNegative`)
+sends `openid` on purpose. It expects failure and no `id_token`. The receipt
+records `rejectionStage` as `authorize` or `exchange`.
+
+`consent-harness.mjs redact` reads a response on stdin and prints key names
+only. Do not paste a verifier, authorization code, access token, refresh
+token, or `id_token` into chat, git, or an artifact.
 
 Discovery coverage, not fetched by this packet:
 
@@ -180,7 +199,8 @@ Controls for a later controller run, after hook review:
 - Token A on Auth routes is HTTP `403` with `error` `session_not_found`.
   That is the fresh session id missing from `auth.sessions`, not a
   revocation proof.
-- An `openid` exchange is refused. The receipt has no `id_token`.
+- Label `openid_negative` sends `openid` on purpose. Failure is recorded at
+  authorize or at exchange. The receipt has no `id_token`.
 - An unmapped `client_id` fails before a token is minted.
 - Password login, with no `client_id`, is unchanged.
 - Data API: Token A denied, Token B positive, labeled
@@ -195,6 +215,48 @@ curl -sS -X POST "$ARI_TEST_SUPABASE_URL/auth/v1/token?grant_type=password" \
   -H "apikey: $ARI_TEST_PUBLISHABLE_KEY" \
   -H "content-type: application/json" \
   -d "{\"email\":\"ari-probe-synthetic@odbcejsuuqdzhabjmozi.invalid\",\"password\":\"$ARI_TEST_SYNTHETIC_PASSWORD\"}" \
+  | node docs/evidence/ari-test-probe/consent-harness.mjs redact
+```
+
+Consent uses the synthetic user's session. Exchange uses the code from that
+consent response and the S256 verifier from the authorize step. Pipe every
+body through redact.
+
+```bash
+curl -sS \
+  -H "Authorization: Bearer $ARI_TEST_SYNTHETIC_SESSION" \
+  -H "apikey: $ARI_TEST_PUBLISHABLE_KEY" \
+  "$ARI_TEST_SUPABASE_URL/auth/v1/oauth/authorizations/$ARI_TEST_AUTHORIZATION_ID" \
+  | node docs/evidence/ari-test-probe/consent-harness.mjs redact
+curl -sS -X POST \
+  -H "Authorization: Bearer $ARI_TEST_SYNTHETIC_SESSION" \
+  -H "apikey: $ARI_TEST_PUBLISHABLE_KEY" \
+  -H "content-type: application/json" \
+  -d '{"action":"approve"}' \
+  "$ARI_TEST_SUPABASE_URL/auth/v1/oauth/authorizations/$ARI_TEST_AUTHORIZATION_ID/consent" \
+  | node docs/evidence/ari-test-probe/consent-harness.mjs redact
+curl -sS -X POST \
+  -H "apikey: $ARI_TEST_PUBLISHABLE_KEY" \
+  -H "content-type: application/x-www-form-urlencoded" \
+  --data-urlencode "grant_type=authorization_code" \
+  --data-urlencode "client_id=$ARI_TEST_EXPECTED_CLIENT_ID" \
+  --data-urlencode "redirect_uri=http://127.0.0.1:8787/callback" \
+  --data-urlencode "code=$ARI_TEST_AUTH_CODE" \
+  --data-urlencode "code_verifier=$ARI_TEST_CODE_VERIFIER" \
+  --data-urlencode "resource=https://odbcejsuuqdzhabjmozi.supabase.co/mcp" \
+  "$ARI_TEST_SUPABASE_URL/auth/v1/oauth/token" \
+  | node docs/evidence/ari-test-probe/consent-harness.mjs redact
+```
+
+Label `openid_negative`. This authorize URL sends `scope=openid` on purpose.
+If this response is an error, record rejection at authorize and stop. If a
+code is issued, run the consent commands above and then the token command.
+A failed token response is rejection at exchange. A body that contains
+`id_token` fails the receipt.
+
+```bash
+curl -sS \
+  "$ARI_TEST_SUPABASE_URL/auth/v1/oauth/authorize?response_type=code&client_id=$ARI_TEST_EXPECTED_CLIENT_ID&redirect_uri=http%3A%2F%2F127.0.0.1%3A8787%2Fcallback&scope=openid%20email&code_challenge=$ARI_TEST_CODE_CHALLENGE&code_challenge_method=S256&resource=https%3A%2F%2Fodbcejsuuqdzhabjmozi.supabase.co%2Fmcp&state=openid-negative" \
   | node docs/evidence/ari-test-probe/consent-harness.mjs redact
 ```
 

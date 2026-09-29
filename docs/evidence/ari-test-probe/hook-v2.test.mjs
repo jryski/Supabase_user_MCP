@@ -87,7 +87,7 @@ test('the mapped client rewrites aud, role, and session ids', () => {
   const result = decideHookV2(mappedInput());
   assert.equal(result.action, 'map');
   assert.equal(result.revocationClaimed, false);
-  assert.equal(result.liveCheck, 'per_call_source_session');
+  assert.equal(result.liveCheck, 'hook_issuance_or_refresh');
   assert.equal(result.claims.aud, RESOURCE);
   assert.equal(result.claims.role, 'mcp_ingress');
   assert.equal(result.claims.session_id, FRESH);
@@ -133,6 +133,16 @@ test('hook v2 SQL matches the decision text and takes client ids as parameters',
   assert.match(sql, /current_setting\('ari\.agent_id', true\)/);
   assert.match(sql, /one SQL-editor batch/);
   assert.match(sql, /not a revocation receipt/);
+  assert.match(sql, /each hook call only: token issuance and refresh/);
+  assert.match(sql, /does not run on each MCP call/);
+  assert.match(sql, /adapter has no liveness check/);
+  assert.match(sql, /v_client_id text :=/);
+  assert.equal(sql.match(/v_client_id text :=/g)?.length, 2);
+  assert.match(sql, /v_mcp_resource text :=/);
+  assert.match(sql, /v_agent_id text :=/);
+  assert.match(sql, /mapping\.client_id = v_client_id/);
+  assert.equal(sql.includes('values (client_id,'), false);
+  assert.equal(sql.includes('where mapping.client_id = client_id'), false);
   assert.match(sql, /lygftpbjgqgvuunkwnxf/);
   assert.equal(sql.includes('ari-probe-synthetic-client'), false);
   assert.match(sql, /does not apply it/);

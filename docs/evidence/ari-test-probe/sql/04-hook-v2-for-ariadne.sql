@@ -26,8 +26,9 @@
 --   role mcp_ingress, session_id to a fresh uuid, source_session_id to the
 --   original session id, and agent_id from the hook-only mapping
 -- The fresh session_id must be non-nil and absent from auth.sessions.
--- Each call checks that source_session_id is a live auth.sessions row for
--- the user. That check is not a revocation receipt.
+-- Liveness runs on each hook call only: token issuance and refresh.
+-- It does not run on each MCP call. The adapter has no liveness check.
+-- That check is not a revocation receipt.
 --
 -- Rollback, controller only, on this TEST ref, after the hook is disabled:
 --   drop function if exists ari_probe.custom_access_token_hook(jsonb);
@@ -41,9 +42,9 @@ declare
   project_ref text := current_setting('ari.project_ref', true);
   allowed_ref constant text := 'odbcejsuuqdzhabjmozi';
   forbidden_ref constant text := 'lygftpbjgqgvuunkwnxf';
-  client_id text := current_setting('ari.oauth_client_id', true);
-  mcp_resource text := current_setting('ari.mcp_resource', true);
-  agent_id text := current_setting('ari.agent_id', true);
+  v_client_id text := current_setting('ari.oauth_client_id', true);
+  v_mcp_resource text := current_setting('ari.mcp_resource', true);
+  v_agent_id text := current_setting('ari.agent_id', true);
   expected_resource text;
   synthetic_email constant text := 'ari-probe-synthetic@odbcejsuuqdzhabjmozi.invalid';
   user_count integer;
@@ -69,13 +70,13 @@ begin
   end if;
 
   expected_resource := 'https://' || allowed_ref || '.supabase.co/mcp';
-  if coalesce(client_id, '') = '' or client_id ~ '\s' then
+  if coalesce(v_client_id, '') = '' or v_client_id ~ '\s' then
     raise exception 'ari.oauth_client_id must be the exact registered client id';
   end if;
-  if mcp_resource is distinct from expected_resource then
+  if v_mcp_resource is distinct from expected_resource then
     raise exception 'ari.mcp_resource is not the TEST MCP resource';
   end if;
-  if coalesce(agent_id, '') = '' or agent_id ~ '\s' then
+  if coalesce(v_agent_id, '') = '' or v_agent_id ~ '\s' then
     raise exception 'ari.agent_id is required';
   end if;
 
@@ -109,7 +110,7 @@ begin
   end if;
 
   insert into ari_probe.mcp_client (client_id, mcp_resource, agent_id, probe_label)
-  values (client_id, mcp_resource, agent_id, 'ari-test-synthetic')
+  values (v_client_id, v_mcp_resource, v_agent_id, 'ari-test-synthetic')
   on conflict (client_id) do update
     set mcp_resource = excluded.mcp_resource,
         agent_id = excluded.agent_id,
@@ -130,7 +131,7 @@ set search_path = pg_catalog, ari_probe
 as $hook$
 declare
   claims jsonb := event -> 'claims';
-  client_id text := coalesce(claims ->> 'client_id', '');
+  v_client_id text := coalesce(claims ->> 'client_id', '');
   scope_text text := '';
   uid uuid;
   original_session text;
@@ -143,7 +144,7 @@ begin
     raise exception 'hook event is unreadable';
   end if;
 
-  if client_id = '' then
+  if v_client_id = '' then
     return jsonb_build_object('claims', claims);
   end if;
 
@@ -170,7 +171,7 @@ begin
   select mapping.mcp_resource, mapping.agent_id
   into mapped_resource, mapped_agent
   from ari_probe.mcp_client as mapping
-  where mapping.client_id = client_id
+  where mapping.client_id = v_client_id
     and mapping.probe_label = 'ari-test-synthetic';
 
   if mapped_resource is null or mapped_agent is null then

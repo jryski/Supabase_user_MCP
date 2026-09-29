@@ -56,8 +56,10 @@ for project `odbcejsuuqdzhabjmozi` only. This branch does not apply it.
 `sql/04-hook-v2-for-ariadne.sql` is the uninstalled hook v2 packet: absent
 `client_id` stays unchanged, `openid` raises for every OAuth client, an
 unmapped `client_id` raises, and the mapped client rewrites `aud`, `role`,
-and `session_id` while checking the original session on each call. That
-liveness check is not a revocation receipt. `sql/02` must not be applied.
+and `session_id`. The original-session liveness check runs on each hook call
+(token issuance or refresh) only. It does not run on each MCP call. The
+adapter has no liveness check. That check is not a revocation receipt.
+`sql/02` must not be applied.
 The live probe was not run. Token B is not wired into the MCP tool path.
 This is not acceptance.
 
