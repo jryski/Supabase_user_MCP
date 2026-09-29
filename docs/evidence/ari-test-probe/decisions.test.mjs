@@ -23,6 +23,7 @@ import {
   plan,
   realtimeDiagnostic,
   realtimeVerdict,
+  scrubRealtimeReason,
   storageSeedVerdict,
 } from './decisions.mjs';
 import { readJoinReply, runProbe } from './probe.mjs';
@@ -865,6 +866,39 @@ test('realtime keeps the join reply and treats other frames as transport', async
   assert.equal(timeoutResult.timeout, true);
   assert.equal(realtimeDiagnostic(timeoutResult).timeoutClass, 'realtime_timeout');
   assert.equal(realtimeDiagnostic({ closed: true, code: 1006 }).socketClose, true);
+});
+
+test('realtime reason keeps the denial sentence and drops secrets', () => {
+  const sentence =
+    'Unauthorized: You do not have permissions to read from this Channel topic: ari-probe-synthetic';
+  const plantedJwt =
+    'eyJhbGciOiJFUzI1NiJ9.eyJzdWIiOiJwbGFudGVkLXJlYWx0aW1lIn0.c2lnbmF0dXJlLXBsYW50ZWQtc2VjcmV0';
+  const longRun = 'abcdefghijklmnopqrstuvwxyz012345';
+  const message = {
+    event: 'phx_reply',
+    ref: '1',
+    topic: 'realtime:ari-probe-synthetic',
+    payload: {
+      status: 'error',
+      response: {
+        reason: `  ${sentence}   ${plantedJwt}\n${longRun}\u0001  `,
+      },
+    },
+  };
+  assert.equal(classifyRealtimeReply(message), 'denied');
+  const diagnostic = realtimeDiagnostic(message);
+  assert.equal(diagnostic.reason, sentence);
+  assert.equal(diagnostic.payloadStatus, 'error');
+  assert.equal(diagnostic.event, 'phx_reply');
+  assert.equal(JSON.stringify(diagnostic).includes(plantedJwt), false);
+  assert.equal(diagnostic.reason.includes(longRun), false);
+  assert.equal(scrubRealtimeReason(plantedJwt), null);
+  assert.equal(scrubRealtimeReason(longRun), null);
+  assert.equal(scrubRealtimeReason(12), null);
+  const capped = scrubRealtimeReason(`${'denied '.repeat(40)}\u00e9`);
+  assert.equal(capped.length, 200);
+  assert.equal(capped.startsWith('denied '), true);
+  assert.equal(capped.includes('\u00e9'), false);
 });
 
 test('refuses a service-role shell and a service-role publishable key', async () => {

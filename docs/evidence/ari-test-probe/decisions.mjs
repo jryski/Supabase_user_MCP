@@ -430,12 +430,25 @@ export function storageSeedVerdict(status, body = '') {
 }
 
 const SAFE_DIAGNOSTIC = /^[a-z0-9_.:-]{1,64}$/iu;
+const REALTIME_REASON_LIMIT = 200;
 
 function safeDiagnosticToken(value) {
   if (typeof value === 'number' && Number.isInteger(value)) return String(value);
   if (typeof value !== 'string') return null;
   if (!SAFE_DIAGNOSTIC.test(value)) return null;
   return value;
+}
+
+/** Keep a Realtime reply sentence. Drop JWT-shaped text and long base64url runs. */
+export function scrubRealtimeReason(value) {
+  if (typeof value !== 'string') return null;
+  let text = value.replace(/\s+/gu, ' ').trim();
+  text = text.replace(/eyJ[A-Za-z0-9_-]*\.[A-Za-z0-9_-]*\.[A-Za-z0-9_-]*/gu, ' ');
+  text = text.replace(/[A-Za-z0-9_-]{32,}/gu, ' ');
+  text = text.replace(/[^\x20-\x7E]/gu, '');
+  text = text.replace(/\s+/gu, ' ').trim();
+  if (text.length > REALTIME_REASON_LIMIT) text = text.slice(0, REALTIME_REASON_LIMIT).trim();
+  return text.length === 0 ? null : text;
 }
 
 function realtimeAuthCode(value) {
@@ -508,7 +521,7 @@ export function realtimeDiagnostic(source) {
       payload !== null && typeof payload === 'object' && !Array.isArray(payload)
         ? safeDiagnosticToken(payload.status)
         : null,
-    reason: safeDiagnosticToken(typeof reason === 'string' ? reason.toLowerCase() : reason),
+    reason: scrubRealtimeReason(reason),
     code: realtimeAuthCode(code) ?? safeDiagnosticToken(code),
     socketClose: false,
     timeoutClass: null,

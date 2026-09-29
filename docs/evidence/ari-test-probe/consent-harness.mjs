@@ -15,6 +15,7 @@ import {
   ALLOWED_PROJECT_REF,
   EXPECTED_ORIGIN,
   MCP_RESOURCE,
+  scrubRealtimeReason,
   SERVICE_ROLE_ENV_NAMES,
   SYNTHETIC_EMAIL,
 } from './decisions.mjs';
@@ -1117,7 +1118,7 @@ function scrubbedRealtimeDiagnostic(row) {
   if (!hasDiagnostic) return undefined;
   const replyStatus = diagnostic.payloadStatus ?? diagnostic.status;
   return {
-    reason: safeRealtimeToken(diagnostic.reason),
+    reason: scrubRealtimeReason(diagnostic.reason),
     status: safeRealtimeToken(replyStatus),
     closeCodeClass: closeCodeClass(diagnostic),
   };

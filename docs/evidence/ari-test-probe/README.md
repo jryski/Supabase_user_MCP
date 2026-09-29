@@ -238,7 +238,10 @@ access token. Both stay in memory. The command does not export them and
 does not write them to a file. Stdout is only the redacted receipt.
 Primary Users can read Auth `error_code`, a scrubbed Realtime diagnostic
 (`reason`, `status`, `closeCodeClass`), and the openid facts `policyMarker`,
-`accessTokenPresent`, and `idTokenPresent` in that JSON. Token values stay out.
+`accessTokenPresent`, and `idTokenPresent` in that JSON. `reason` keeps the
+reply sentence after whitespace is collapsed, JWT-shaped text and long
+base64url runs are removed, non-printable characters are dropped, and the
+text is capped at 200 characters. Token values stay out.
 
 `node docs/evidence/ari-test-probe/consent-harness.mjs openid-negative`
 sends `openid` on purpose. It expects no `id_token`. It does not call

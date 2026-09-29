@@ -956,6 +956,8 @@ describe('process stream sentinels', { concurrency: false }, () => {
     const code = 'auth-code-must-not-leak-cccc';
     const password = 'synthetic-password-must-not-leak';
     const planted = 'planted/diagnostic-token-must-not-leak-zzzz';
+    const closedJwt =
+      'eyJhbGciOiJFUzI1NiJ9.eyJzdWIiOiJjbG9zZWQtcm93In0.c2lnLWNsb3NlZC1yb3ctc2VjcmV0';
     const env = {
       ARI_TEST_PROJECT_REF: 'odbcejsuuqdzhabjmozi',
       ARI_TEST_SUPABASE_URL: 'https://odbcejsuuqdzhabjmozi.supabase.co',
@@ -1041,7 +1043,7 @@ describe('process stream sentinels', { concurrency: false }, () => {
               status: 'transport',
               verdict: 'inconclusive',
               diagnostic: {
-                reason: planted,
+                reason: closedJwt,
                 payloadStatus: 'closed',
                 socketClose: true,
                 code: 1006,
@@ -1089,7 +1091,16 @@ describe('process stream sentinels', { concurrency: false }, () => {
     assert.equal(timedOut.diagnostic.closeCodeClass, 'realtime_timeout');
     assert.equal(timedOut.diagnostic.reason, null);
     assert.equal(JSON.stringify(probeReceipt).includes('access_token'), false);
-    assertStreamsClean(probeRun, [tokenA, tokenB, refreshA, refreshB, code, password, planted]);
+    assertStreamsClean(probeRun, [
+      tokenA,
+      tokenB,
+      refreshA,
+      refreshB,
+      code,
+      password,
+      planted,
+      closedJwt,
+    ]);
 
     const openidHeld = await captureProcessStreams(() =>
       runCli(['node', 'consent-harness.mjs', 'openid-negative'], {
@@ -1148,6 +1159,98 @@ describe('process stream sentinels', { concurrency: false }, () => {
     assert.equal(generic.idTokenPresent, false);
     assert.notEqual(generic.reason, 'openid_rejected');
     assertStreamsClean(openidGeneric, [tokenB, refreshB, code, password, planted]);
+  });
+
+  test('runCli keeps a scrubbed realtime denial sentence and drops a planted jwt', async () => {
+    const tokenA = 'token-a-value-must-not-leak-aaaa';
+    const tokenB = 'token-b-value-must-not-leak-bbbb';
+    const refreshA = 'refresh-a-must-not-leak-aaaa';
+    const refreshB = 'refresh-b-must-not-leak-bbbb';
+    const code = 'auth-code-must-not-leak-cccc';
+    const password = 'synthetic-password-must-not-leak';
+    const sentence =
+      'Unauthorized: You do not have permissions to read from this Channel topic: ari-probe-synthetic';
+    const plantedJwt =
+      'eyJhbGciOiJFUzI1NiJ9.eyJzdWIiOiJwbGFudGVkLXJlYWx0aW1lIn0.c2lnbmF0dXJlLXBsYW50ZWQtc2VjcmV0';
+    const longRun = 'abcdefghijklmnopqrstuvwxyz012345';
+    const env = {
+      ARI_TEST_PROJECT_REF: 'odbcejsuuqdzhabjmozi',
+      ARI_TEST_SUPABASE_URL: 'https://odbcejsuuqdzhabjmozi.supabase.co',
+      ARI_TEST_PUBLISHABLE_KEY: 'publishable-key',
+      ARI_TEST_EXPECTED_CLIENT_ID: CLIENT,
+      ARI_TEST_JWKS_JSON: '{"keys":[]}',
+      ARI_TEST_SYNTHETIC_PASSWORD: password,
+      ARI_TEST_REDIRECT_URI: REDIRECT,
+    };
+    const captured = await captureProcessStreams(() =>
+      runCli(['node', 'consent-harness.mjs', 'run'], {
+        env,
+        fetch: async (url, init) => {
+          const href = `${url}`;
+          if (href.includes('grant_type=password')) {
+            return jsonResponse(200, {
+              access_token: tokenB,
+              refresh_token: refreshB,
+              token_type: 'bearer',
+            });
+          }
+          if (href.includes('/oauth/authorize?')) {
+            return jsonResponse(302, '', {
+              location: '/oauth/consent?authorization_id=authz-run',
+            });
+          }
+          if (init?.method === 'GET' && href.includes('/oauth/authorizations/')) {
+            return jsonResponse(200, { authorization_id: 'authz-run' });
+          }
+          if (href.endsWith('/consent')) {
+            return jsonResponse(200, { redirect_url: `${REDIRECT}?code=${code}` });
+          }
+          return jsonResponse(200, {
+            access_token: tokenA,
+            refresh_token: refreshA,
+            token_type: 'bearer',
+          });
+        },
+        runProbe: async () => ({
+          ok: false,
+          exitCode: 4,
+          reason: 'inconclusive',
+          requests: 1,
+          rows: [
+            {
+              id: 'L5-realtime-token-a',
+              credential: 'token_a',
+              status: 'denied',
+              verdict: 'deny',
+              diagnostic: {
+                event: 'phx_reply',
+                topic: 'realtime:ari-probe-synthetic',
+                ref: '1',
+                payloadStatus: 'error',
+                reason: `  ${sentence}   ${plantedJwt}\n${longRun}\u0001  `,
+                code: null,
+                socketClose: false,
+                timeoutClass: null,
+                access_token: tokenA,
+              },
+            },
+          ],
+        }),
+      }),
+    );
+    const receipt = jsonLine(captured.stdout, '"packet":"ari-test-consent-probe"');
+    const denied = receipt.probe.rows.find((row) => row.id === 'L5-realtime-token-a');
+    assert.deepEqual(denied.diagnostic, {
+      reason: sentence,
+      status: 'error',
+      closeCodeClass: null,
+    });
+    assert.equal(captured.stdout.includes(sentence), true);
+    assert.equal(captured.stdout.includes(plantedJwt), false);
+    assert.equal(captured.stderr.includes(plantedJwt), false);
+    assert.equal(captured.stdout.includes(longRun), false);
+    assert.equal(captured.stderr.includes(longRun), false);
+    assertStreamsClean(captured, [tokenA, tokenB, refreshA, refreshB, code, password, plantedJwt]);
   });
 
   test('redacted Token A summary keeps session claims and drops the jwt, code, and verifier', async () => {
