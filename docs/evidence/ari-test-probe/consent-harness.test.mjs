@@ -721,7 +721,11 @@ describe('process stream sentinels', { concurrency: false }, () => {
   test('redacted Token A summary keeps session claims and drops the jwt, code, and verifier', async () => {
     const sourceSessionId = '22222222-2222-4222-8222-222222222222';
     const sessionId = '33333333-3333-4333-8333-333333333333';
-    const agentId = 'ari-probe-agent';
+    const agentId = 'hook-only-agent-parameter';
+    const decoyClientId = 'decoy-client-must-not-bind';
+    const decoyAgentId = 'decoy-agent-must-not-bind';
+    const decoySourceSessionId = '55555555-5555-4555-8555-555555555555';
+    const refreshA = 'refresh-a-must-not-leak-aaaa';
     const code = 'auth-code-must-not-leak-cccc';
     const password = 'synthetic-password-must-not-leak';
     const subject = '11111111-1111-4111-8111-111111111111';
@@ -739,6 +743,12 @@ describe('process stream sentinels', { concurrency: false }, () => {
       source_session_id: sourceSessionId,
       agent_id: agentId,
       client_id: CLIENT,
+      user_metadata: {
+        client_id: decoyClientId,
+        agent_id: decoyAgentId,
+        session_id: sessionId,
+        source_session_id: decoySourceSessionId,
+      },
     });
     const tokenB = unsignedJwt({
       iss: issuer,
@@ -775,7 +785,11 @@ describe('process stream sentinels', { concurrency: false }, () => {
           }
           if (href.endsWith('/oauth/token')) {
             verifier = new URLSearchParams(init.body).get('code_verifier') ?? '';
-            return jsonResponse(200, { access_token: tokenA, token_type: 'bearer' });
+            return jsonResponse(200, {
+              access_token: tokenA,
+              refresh_token: refreshA,
+              token_type: 'bearer',
+            });
           }
           throw new Error('unexpected request');
         },
@@ -783,21 +797,113 @@ describe('process stream sentinels', { concurrency: false }, () => {
     );
     assert.equal(verifier.length > 0, true);
     const receipt = jsonLine(captured.stdout, '"packet":"ari-test-consent-probe"');
-    assert.equal(receipt.probe.tokenA.session_id, sessionId);
-    assert.equal(receipt.probe.tokenA.source_session_id, sourceSessionId);
-    assert.equal(receipt.probe.tokenA.agent_id, agentId);
-    assert.equal(receipt.probe.tokenA.client_id, CLIENT);
-    assertStreamsClean(captured, [tokenA, tokenB, code, verifier, password]);
+    const summary = receipt.probe.tokenA;
+    assert.equal(summary.role, 'mcp_ingress');
+    assert.equal(summary.aud, RESOURCE);
+    assert.equal(summary.iss, issuer);
+    assert.equal(summary.sub, subject);
+    assert.equal(summary.session_id, sessionId);
+    assert.equal(summary.source_session_id, sourceSessionId);
+    assert.notEqual(summary.source_session_id, summary.session_id);
+    const cleanupSessionId = summary.source_session_id;
+    assert.equal(cleanupSessionId, sourceSessionId);
+    assert.notEqual(cleanupSessionId, summary.session_id);
+    assert.notEqual(cleanupSessionId, decoySourceSessionId);
+    assert.deepEqual(
+      { client_id: summary.client_id, agent_id: summary.agent_id },
+      { client_id: CLIENT, agent_id: agentId },
+    );
+    const receiptText = JSON.stringify(receipt);
+    assert.equal(receiptText.includes(decoyClientId), false);
+    assert.equal(receiptText.includes(decoyAgentId), false);
+    assert.equal(receiptText.includes(decoySourceSessionId), false);
+    assertStreamsClean(captured, [tokenA, tokenB, refreshA, code, verifier, password]);
   });
 
   test('Warden mutation: setTimeout console.log of token A before runProbe fails the sentinel scan', async () => {
     const tokenA = 'token-a-value-must-not-leak-aaaa';
+    const tokenB = 'token-b-value-must-not-leak-bbbb';
+    const refreshA = 'refresh-a-must-not-leak-aaaa';
+    const refreshB = 'refresh-b-must-not-leak-bbbb';
+    const code = 'auth-code-must-not-leak-cccc';
+    const password = 'synthetic-password-must-not-leak';
+    const env = {
+      ARI_TEST_PROJECT_REF: 'odbcejsuuqdzhabjmozi',
+      ARI_TEST_SUPABASE_URL: 'https://odbcejsuuqdzhabjmozi.supabase.co',
+      ARI_TEST_PUBLISHABLE_KEY: 'publishable-key',
+      ARI_TEST_EXPECTED_CLIENT_ID: CLIENT,
+      ARI_TEST_JWKS_JSON: '{"keys":[]}',
+      ARI_TEST_SYNTHETIC_PASSWORD: password,
+      ARI_TEST_REDIRECT_URI: REDIRECT,
+    };
+    const captured = await captureProcessStreams(() =>
+      runCli(['node', 'consent-harness.mjs', 'run'], {
+        env,
+        fetch: async (url, init) => {
+          const href = `${url}`;
+          if (href.includes('grant_type=password')) {
+            return jsonResponse(200, {
+              access_token: tokenB,
+              refresh_token: refreshB,
+              token_type: 'bearer',
+            });
+          }
+          if (href.includes('/oauth/authorize?')) {
+            return jsonResponse(302, '', { location: '/oauth/consent?authorization_id=authz-run' });
+          }
+          if (init?.method === 'GET' && href.includes('/oauth/authorizations/')) {
+            return jsonResponse(200, { authorization_id: 'authz-run' });
+          }
+          if (href.endsWith('/consent')) {
+            return jsonResponse(200, { redirect_url: `${REDIRECT}?code=${code}` });
+          }
+          if (href.endsWith('/oauth/token')) {
+            return jsonResponse(200, {
+              access_token: tokenA,
+              refresh_token: refreshA,
+              token_type: 'bearer',
+            });
+          }
+          throw new Error('unexpected request');
+        },
+        runProbe: async () => ({
+          ok: false,
+          exitCode: 3,
+          reason: 'jwt_malformed',
+          rows: [],
+          requests: 0,
+        }),
+      }),
+    );
+    assert.equal(captured.result, 3);
+    assertStreamsClean(captured, [tokenA, tokenB, refreshA, refreshB, code, password]);
+  });
+
+  test('capture drains a deferred console.log before restoring streams', async () => {
+    const marker = 'deferred-console-marker';
     const captured = await captureProcessStreams(async () => {
-      setTimeout(() => console.log(tokenA), 0);
-      return 0;
+      setTimeout(() => console.log(marker), 0);
+      return 'done';
     });
-    assert.throws(() => assertStreamsClean(captured, [tokenA]), { name: 'AssertionError' });
-    assert.equal(captured.console.includes(tokenA), true);
+    assert.equal(captured.result, 'done');
+    assert.equal(captured.console.includes(marker), true);
+  });
+
+  test('capture restores stdout, stderr, and console after rejection', async () => {
+    const stdoutWrite = process.stdout.write;
+    const stderrWrite = process.stderr.write;
+    const savedConsole = Object.fromEntries(
+      CONSOLE_METHODS.map((method) => [method, console[method]]),
+    );
+    await assert.rejects(
+      captureProcessStreams(async () => {
+        throw new Error('probe_rejected');
+      }),
+      /probe_rejected/,
+    );
+    assert.equal(process.stdout.write, stdoutWrite);
+    assert.equal(process.stderr.write, stderrWrite);
+    for (const method of CONSOLE_METHODS) assert.equal(console[method], savedConsole[method]);
   });
 });
 
