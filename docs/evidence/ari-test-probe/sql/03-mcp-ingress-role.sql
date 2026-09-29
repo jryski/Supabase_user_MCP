@@ -1,0 +1,201 @@
+-- R1 isolated ingress role. Controller SQL for Ari TEST only.
+-- This file is not a supabase/migration. This agent does not apply it,
+-- does not install the Auth hook, and does not write credentials.
+--
+-- The controller owns the TEST write. Confirm the dashboard project ref is
+-- odbcejsuuqdzhabjmozi (org pvooiyttujynxquxkqcr, us-east-1) before running.
+-- Forbidden targets: lygftpbjgqgvuunkwnxf and any HOUSE, VAULT, or production
+-- project. Do not point this script at those.
+--
+-- Same session, after that dashboard check and before this script:
+--   select set_config('ari.project_ref', 'odbcejsuuqdzhabjmozi', false);
+-- An unset ref, or any other ref, aborts. The allowlist is the TEST ref.
+--
+-- OAuth client id and MCP resource are not literals in this file. The
+-- controller passes the exact registered client id out of band
+-- (ARI_TEST_EXPECTED_CLIENT_ID). The MCP resource is the TEST project's
+-- /mcp URL. Do not invent a stand-in client id here.
+--
+-- Apply after sql/00 and sql/01 when those are not already on the project.
+-- Do not recreate the synthetic user or fixture. Do not apply
+-- sql/02-hook-for-ariadne.sql in this slice. R3 and R4 are still open.
+--
+-- The role is NOLOGIN NOINHERIT. Membership is granted to authenticator
+-- only, so PostgREST can set the role. mcp_ingress is not a member of
+-- authenticated, anon, or service_role, and it receives no table grants.
+
+begin;
+
+do $target$
+declare
+  project_ref text := current_setting('ari.project_ref', true);
+  allowed_ref constant text := 'odbcejsuuqdzhabjmozi';
+  forbidden_ref constant text := 'lygftpbjgqgvuunkwnxf';
+begin
+  if project_ref is not distinct from forbidden_ref
+    or coalesce(project_ref, '') = ''
+    or project_ref is distinct from allowed_ref
+  then
+    raise exception
+      'refusing mcp_ingress role SQL for project ref %; production, HOUSE, and VAULT are forbidden',
+      coalesce(project_ref, '<unset>');
+  end if;
+
+  if not exists (select 1 from pg_roles where rolname = 'authenticator') then
+    raise exception 'authenticator is missing; refusing to create mcp_ingress';
+  end if;
+end;
+$target$;
+
+do $create$
+begin
+  if not exists (select 1 from pg_roles where rolname = 'mcp_ingress') then
+    create role mcp_ingress
+      nologin
+      noinherit
+      nosuperuser
+      nocreatedb
+      nocreaterole
+      noreplication;
+  end if;
+end;
+$create$;
+
+alter role mcp_ingress
+  nologin
+  noinherit
+  nosuperuser
+  nocreatedb
+  nocreaterole
+  noreplication;
+
+revoke authenticated, anon, service_role from mcp_ingress;
+revoke mcp_ingress from authenticated, anon, service_role;
+grant mcp_ingress to authenticator;
+
+do $members$
+declare
+  member_name text;
+begin
+  for member_name in
+    select member_role.rolname
+    from pg_auth_members as membership
+    join pg_roles as granted_role on granted_role.oid = membership.roleid
+    join pg_roles as member_role on member_role.oid = membership.member
+    where granted_role.rolname = 'mcp_ingress'
+      and member_role.rolname <> 'authenticator'
+  loop
+    execute format('revoke mcp_ingress from %I', member_name);
+  end loop;
+end;
+$members$;
+
+do $tables$
+declare
+  schema_name text;
+begin
+  for schema_name in
+    select namespace.nspname
+    from pg_namespace as namespace
+    where namespace.nspname <> 'information_schema'
+      and namespace.nspname not like 'pg\_%' escape '\'
+  loop
+    execute format(
+      'revoke all privileges on all tables in schema %I from mcp_ingress',
+      schema_name
+    );
+  end loop;
+end;
+$tables$;
+
+do $assert$
+declare
+  role_row record;
+  table_grant_count integer;
+begin
+  select
+    rolcanlogin,
+    rolinherit,
+    rolsuper,
+    rolcreaterole,
+    rolcreatedb,
+    rolreplication
+  into role_row
+  from pg_roles
+  where rolname = 'mcp_ingress';
+
+  if role_row is null
+    or role_row.rolcanlogin
+    or role_row.rolinherit
+    or role_row.rolsuper
+    or role_row.rolcreaterole
+    or role_row.rolcreatedb
+    or role_row.rolreplication
+  then
+    raise exception 'mcp_ingress is not an isolated nologin noinherit role';
+  end if;
+
+  if not exists (
+    select 1
+    from pg_auth_members as membership
+    join pg_roles as granted_role on granted_role.oid = membership.roleid
+    join pg_roles as member_role on member_role.oid = membership.member
+    where granted_role.rolname = 'mcp_ingress'
+      and member_role.rolname = 'authenticator'
+      and not membership.admin_option
+  ) then
+    raise exception 'mcp_ingress is not granted to authenticator only';
+  end if;
+
+  if exists (
+    select 1
+    from pg_auth_members as membership
+    join pg_roles as granted_role on granted_role.oid = membership.roleid
+    join pg_roles as member_role on member_role.oid = membership.member
+    where granted_role.rolname = 'mcp_ingress'
+      and member_role.rolname <> 'authenticator'
+  ) then
+    raise exception 'mcp_ingress has a member other than authenticator';
+  end if;
+
+  if pg_has_role('mcp_ingress', 'authenticated', 'member')
+    or pg_has_role('mcp_ingress', 'anon', 'member')
+    or pg_has_role('mcp_ingress', 'service_role', 'member')
+  then
+    raise exception
+      'mcp_ingress is a member of authenticated, anon, or service_role';
+  end if;
+
+  select count(*) into table_grant_count
+  from information_schema.role_table_grants
+  where grantee = 'mcp_ingress';
+
+  if table_grant_count <> 0 then
+    raise exception 'mcp_ingress has table grants';
+  end if;
+
+  if exists (
+    select 1
+    from pg_class as relation
+    cross join lateral aclexplode(relation.relacl) as acl
+    join pg_roles as grantee on grantee.oid = acl.grantee
+    where grantee.rolname = 'mcp_ingress'
+      and relation.relkind in ('r', 'p', 'v', 'm', 'f')
+  ) then
+    raise exception 'mcp_ingress has table grants';
+  end if;
+
+  if exists (
+    select 1
+    from pg_attribute as attribute
+    cross join lateral aclexplode(attribute.attacl) as acl
+    join pg_roles as grantee on grantee.oid = acl.grantee
+    where grantee.rolname = 'mcp_ingress'
+      and not attribute.attisdropped
+  ) then
+    raise exception 'mcp_ingress has table grants';
+  end if;
+end;
+$assert$;
+
+commit;

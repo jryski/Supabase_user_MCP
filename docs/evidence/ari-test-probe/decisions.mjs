@@ -8,6 +8,11 @@ export const FORBIDDEN_PROJECT_REFS = Object.freeze(['lygftpbjgqgvuunkwnxf']);
 export const INGRESS_ROLE = 'mcp_ingress';
 export const MCP_RESOURCE = 'https://odbcejsuuqdzhabjmozi.supabase.co/mcp';
 export const MARKER = 'ari-probe-marker-odbcejsuuqdzhabjmozi';
+/**
+ * Local decision-test stand-in. Not a registered OAuth client.
+ * A live probe must pass the exact registered client id and must not fall
+ * back to this value.
+ */
 export const EXPECTED_CLIENT_ID = 'ari-probe-synthetic-client';
 export const MCP_EDGE_ACCEPTANCE = 'downstream_credential_unresolved';
 export const SYNTHETIC_EMAIL = 'ari-probe-synthetic@odbcejsuuqdzhabjmozi.invalid';
@@ -115,6 +120,8 @@ export function classifyTokenA(claims) {
   if (typeof claims.sub !== 'string' || claims.sub.length === 0) {
     return { ok: false, reason: 'token_a_sub' };
   }
+  // The adapter requires mcp_ingress. A Data API authenticated bearer stays
+  // ineligible as Token A and is not sent.
   if (claims.role === 'authenticated') {
     return { ok: false, reason: 'role_flip_prerequisite_missing' };
   }
@@ -497,7 +504,7 @@ export function plan() {
     forbiddenProjectRefs: FORBIDDEN_PROJECT_REFS,
     mcpResource: MCP_RESOURCE,
     ingressRole: INGRESS_ROLE,
-    roleFlipShipped: false,
+    roleFlipShipped: true,
     hookInstalledByThisPacket: false,
     tokenBLabel: 'POSITIVE_CONTROL_NOT_MCP',
     wiredIntoMcp: false,

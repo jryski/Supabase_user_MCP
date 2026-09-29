@@ -32,9 +32,13 @@ import {
  *
  * MCP-side check: `aud` must be one value, and that value must canonicalize
  * to the MCP resource. Jose matches any array entry, so extra audiences are
- * rejected here. Upstream Data API denial and Token B remain open.
+ * rejected here. Token A `role` must be the configured ingress role
+ * `mcp_ingress`. `role=authenticated` is rejected. Upstream Data API denial
+ * and Token B remain open. This module does not create the Postgres role
+ * and does not install an Auth hook.
  */
 export const SUPABASE_SERVER_PIN = '1.7.2' as const;
+export const MCP_INGRESS_ROLE = 'mcp_ingress' as const;
 export const SUPABASE_JS_PIN = '2.117.2' as const;
 export const NATIVE_USER_MCP_CONFIG_ERROR = 'NATIVE_USER_MCP_INVALID_CONFIGURATION' as const;
 
@@ -71,6 +75,11 @@ export interface NativeUserMcpConfig {
   /** Server-controlled OAuth client id required on Token A. */
   readonly expectedClientId: string;
   /**
+   * Postgres role claim required on Token A. Only `mcp_ingress` is accepted.
+   * `authenticated` is rejected as configuration and as a token role.
+   */
+  readonly ingressRole: string;
+  /**
    * Publishable key used only so `@supabase/server` can construct its unused
    * user client. The handler does not send it.
    */
@@ -83,6 +92,7 @@ interface ResolvedNativeUserMcpConfig {
   readonly resourceServer: string;
   readonly issuer: string;
   readonly expectedClientId: string;
+  readonly ingressRole: typeof MCP_INGRESS_ROLE;
   readonly env: SupabaseEnv;
 }
 
@@ -143,6 +153,11 @@ function isLoopbackHttp(url: URL): boolean {
   return url.hostname === 'localhost' || url.hostname === '::1' || url.hostname.startsWith('127.');
 }
 
+function assertIngressRole(value: string): typeof MCP_INGRESS_ROLE {
+  if (value !== MCP_INGRESS_ROLE) invalidConfig();
+  return MCP_INGRESS_ROLE;
+}
+
 function assertPublishableKey(value: string): string {
   const key = value.trim();
   if (key.length === 0 || key.length > 256 || key !== value || isJwtShaped(key)) invalidConfig();
@@ -185,6 +200,7 @@ function resolveNativeUserMcpConfig(config: NativeUserMcpConfig): ResolvedNative
   }
   const expectedClientId = RemoteOAuthClientIdSchema.safeParse(config.expectedClientId);
   if (!expectedClientId.success) invalidConfig();
+  const ingressRole = assertIngressRole(config.ingressRole);
   const issuer = fromSupabaseUrl(supabaseUrl.origin + supabaseUrl.pathname.replace(/\/$/u, ''));
   const env: SupabaseEnv = {
     url: supabaseUrl.origin + supabaseUrl.pathname.replace(/\/$/u, ''),
@@ -196,6 +212,7 @@ function resolveNativeUserMcpConfig(config: NativeUserMcpConfig): ResolvedNative
     resourceServer,
     issuer,
     expectedClientId: expectedClientId.data,
+    ingressRole,
     env,
   };
 }
@@ -215,7 +232,10 @@ function explicitResourceMismatch(claims: JWTClaims, resourceServer: string): bo
 
 function mcpClaimsRejected(claims: JWTClaims, expected: ResolvedNativeUserMcpConfig): boolean {
   if (!RemotePrincipalIdSchema.safeParse(claims.sub).success) return true;
-  if (claims.role !== 'authenticated') return true;
+  // Require the configured isolated ingress role. A Data API `authenticated`
+  // bearer is rejected here and cannot pass this check.
+  if (claims.role === 'authenticated') return true;
+  if (claims.role !== expected.ingressRole) return true;
   if (typeof claims.exp !== 'number' || !Number.isSafeInteger(claims.exp)) return true;
   if (claims.iss !== expected.issuer) return true;
   const audiences = audienceValues(claims.aud);

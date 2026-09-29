@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { readFile } from 'node:fs/promises';
 import { test } from 'node:test';
 import { exportJWK, generateKeyPair, SignJWT } from 'jose';
 import {
@@ -310,7 +311,9 @@ test('holds only explicit denials plus status-and-body positive controls', async
   assert.equal(result.exitCode, 0);
   assert.equal(result.reason, 'matrix_held');
   assert.equal(result.wiredIntoMcp, false);
-  assert.equal(result.roleFlipShipped, false);
+  assert.equal(result.roleFlipShipped, true);
+  assert.equal(result.hookInstalledByThisPacket, false);
+  assert.equal(result.acceptance, false);
   const encoded = JSON.stringify(result);
   assert.equal(encoded.includes(probe.tokenA), false);
   assert.equal(encoded.includes(probe.tokenB), false);
@@ -462,7 +465,7 @@ test('Warden falsifiers never produce matrix_held', async () => {
   }
 });
 
-test('this head MCP edge does not accept mcp_ingress Token A', async () => {
+test('built MCP edge accepts mcp_ingress Token A and does not use the network', async () => {
   const probe = await readyProbe();
   const calls = [];
   const original = globalThis.fetch;
@@ -474,21 +477,82 @@ test('this head MCP edge does not accept mcp_ingress Token A', async () => {
     const result = await runProbe(
       await readyProbe({
         tokenA: probe.tokenA,
+        tokenB: probe.tokenB,
         jwks: probe.jwks,
         mcpEdge: undefined,
-        fetch: async () => {
-          throw new Error('data_api_must_not_run');
+        fetch: async (url, init) => {
+          const path = new URL(url).pathname;
+          const token = init.headers.authorization ?? '';
+          const tokenB = token.includes(probe.tokenB);
+          if (path === '/auth/v1/user' && init.method === 'GET' && tokenB)
+            return userResponse(SUBJECT);
+          if (path.startsWith('/auth/')) return new Response(REST_DENY, { status: 401 });
+          if (path === '/rest/v1/ari_probe_marker') {
+            if (!token) return new Response('[]', { status: 200 });
+            if (tokenB) return new Response(REST_OK, { status: 200 });
+            return new Response(REST_DENY, { status: 401 });
+          }
+          if (path === '/graphql/v1') {
+            if (!token) return new Response('{"data":{}}', { status: 200 });
+            if (tokenB) return new Response(GRAPHQL_OK, { status: 200 });
+            return new Response(GRAPHQL_DENY, { status: 200 });
+          }
+          if (init.method === 'POST') return new Response('', { status: 200 });
+          if (tokenB) return new Response(MARKER, { status: 200 });
+          return new Response('missing', { status: 404 });
         },
+        joinRealtime: async ({ token }) => (token === probe.tokenB ? 'ok' : 'denied'),
       }),
     );
-    assert.notEqual(result.exitCode, 0);
-    assert.notEqual(result.reason, 'matrix_held');
-    assert.equal(result.reason, 'token_a_mcp_edge_not_accepted');
-    assert.equal(result.requests, 0);
+    assert.equal(result.exitCode, 0);
+    assert.equal(result.reason, 'matrix_held');
+    assert.equal(result.roleFlipShipped, true);
+    assert.equal(result.hookInstalledByThisPacket, false);
+    assert.equal(result.acceptance, false);
+    const edge = result.rows.find((row) => row.id === 'L0-token-a-mcp-edge');
+    assert.equal(edge.status, 403);
+    assert.equal(edge.verdict, 'mcp_edge_accepted_fail_closed');
     assert.equal(calls.length, 0);
   } finally {
     globalThis.fetch = original;
   }
+});
+
+test('does not substitute a client id when the registered id is omitted', async () => {
+  let calls = 0;
+  const probe = await readyProbe();
+  const result = await runProbe(
+    await readyProbe({
+      tokenA: probe.tokenA,
+      jwks: probe.jwks,
+      expectedClientId: undefined,
+      fetch: async () => {
+        calls += 1;
+        return new Response('', { status: 401 });
+      },
+    }),
+  );
+  assert.equal(result.exitCode, 3);
+  assert.equal(result.reason, 'oauth_client_id_required');
+  assert.equal(calls, 0);
+  assert.equal(JSON.stringify(result).includes(EXPECTED_CLIENT_ID), false);
+});
+
+test('mcp_ingress role SQL stays isolated and forbids production targets', async () => {
+  const sql = await readFile(new URL('./sql/03-mcp-ingress-role.sql', import.meta.url), 'utf8');
+  assert.match(sql, /create role mcp_ingress/);
+  assert.match(sql, /nologin/);
+  assert.match(sql, /noinherit/);
+  assert.match(sql, /grant mcp_ingress to authenticator/);
+  assert.match(sql, /revoke authenticated, anon, service_role from mcp_ingress/);
+  assert.match(sql, /mcp_ingress is a member of authenticated, anon, or service_role/);
+  assert.match(sql, /mcp_ingress has table grants/);
+  assert.match(sql, /lygftpbjgqgvuunkwnxf/);
+  assert.match(sql, /HOUSE, VAULT, or production/);
+  assert.match(sql, /ari\.project_ref/);
+  assert.equal(sql.includes('ari-probe-synthetic-client'), false);
+  assert.match(sql, /do not apply/i);
+  assert.match(sql, /sql\/02-hook-for-ariadne\.sql/);
 });
 
 test('refuses a service-role shell and a service-role publishable key', async () => {

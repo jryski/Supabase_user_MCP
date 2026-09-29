@@ -13,7 +13,6 @@ import {
   classifyTokenB,
   dataRowVerdict,
   decodeJwtClaims,
-  EXPECTED_CLIENT_ID,
   EXPECTED_ORIGIN,
   INGRESS_ROLE,
   MARKER,
@@ -67,7 +66,7 @@ function receiptBase() {
     projectRef: ALLOWED_PROJECT_REF,
     ingressRole: INGRESS_ROLE,
     mcpResource: MCP_RESOURCE,
-    roleFlipShipped: false,
+    roleFlipShipped: true,
     hookInstalledByThisPacket: false,
     tokenBLabel: 'POSITIVE_CONTROL_NOT_MCP',
     wiredIntoMcp: false,
@@ -160,7 +159,16 @@ export async function runProbe(options) {
     };
   }
 
-  const expectedClientId = options.expectedClientId ?? EXPECTED_CLIENT_ID;
+  const expectedClientId = options.expectedClientId;
+  if (typeof expectedClientId !== 'string' || expectedClientId.length === 0) {
+    return {
+      ...receiptBase(),
+      ok: false,
+      exitCode: 3,
+      reason: 'oauth_client_id_required',
+      requests: 0,
+    };
+  }
   const verified = await verifyTokenA(options.tokenA, options.jwks, expectedClientId);
   if (!verified.ok) {
     return {
@@ -385,6 +393,7 @@ async function defaultMcpEdge({ token, jwks, expectedClientId, publishableKey, s
     resourceServer: MCP_RESOURCE,
     supabaseUrl,
     expectedClientId,
+    ingressRole: INGRESS_ROLE,
     publishableKey,
     jwks: loaded.jwks,
   });

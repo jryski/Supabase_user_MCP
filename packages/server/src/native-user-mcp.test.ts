@@ -10,6 +10,7 @@ import { describe, expect, it } from 'vitest';
 
 import {
   createNativeUserMcpHandler,
+  MCP_INGRESS_ROLE,
   NATIVE_USER_MCP_CREDENTIAL_SPLIT,
   type NativeUserMcpConfig,
   NativeUserMcpConfigError,
@@ -53,7 +54,7 @@ async function signToken(
   } = {},
 ): Promise<string> {
   const payload: Record<string, unknown> = {
-    role: claims.role ?? 'authenticated',
+    role: claims.role ?? MCP_INGRESS_ROLE,
     client_id: claims.clientId ?? CLIENT,
   };
   if (claims.omitSessionId !== true) payload.session_id = claims.sessionId ?? SESSION;
@@ -86,6 +87,7 @@ function handlerFor(jwks: NativeUserMcpConfig['jwks']): (request: Request) => Pr
     resourceServer: RESOURCE,
     supabaseUrl: SUPABASE_URL,
     expectedClientId: CLIENT,
+    ingressRole: MCP_INGRESS_ROLE,
     publishableKey: PUBLISHABLE_KEY,
     jwks,
   });
@@ -223,6 +225,35 @@ describe('native user MCP adapter', () => {
     }
   });
 
+  it('accepts role mcp_ingress and rejects role authenticated', async () => {
+    const { privateKey, jwks } = await es256Jwks();
+    const handler = handlerFor(jwks);
+    const accepted = await signToken(privateKey, { role: MCP_INGRESS_ROLE });
+    const acceptedResponse = await handler(mcpPost(accepted));
+    expect(acceptedResponse.status).toBe(403);
+    const acceptedBody = await acceptedResponse.text();
+    expect(JSON.parse(acceptedBody)).toEqual({ error: DOWNSTREAM_CREDENTIAL_UNRESOLVED });
+    expect(acceptedBody).not.toContain(accepted);
+
+    const rejected = await signToken(privateKey, { role: 'authenticated' });
+    await expectInvalidToken(await handler(mcpPost(rejected)), rejected);
+
+    const source = await readFile(new URL('./native-user-mcp.ts', import.meta.url), 'utf8');
+    expect(source).toContain("if (claims.role === 'authenticated') return true;");
+    expect(source).not.toContain("if (claims.role !== 'authenticated') return true;");
+
+    expect(() =>
+      createNativeUserMcpHandler({
+        resourceServer: RESOURCE,
+        supabaseUrl: SUPABASE_URL,
+        expectedClientId: CLIENT,
+        ingressRole: 'authenticated',
+        publishableKey: PUBLISHABLE_KEY,
+        jwks,
+      }),
+    ).toThrow(NativeUserMcpConfigError);
+  });
+
   it('rejects wrong issuer, wrong signing key, service_role, and missing session_id', async () => {
     const { privateKey, jwks } = await es256Jwks();
     const otherKey = await generateKeyPair('ES256', { extractable: true });
@@ -268,6 +299,7 @@ describe('native user MCP adapter', () => {
         resourceServer: RESOURCE,
         supabaseUrl: SUPABASE_URL,
         expectedClientId: CLIENT,
+        ingressRole: MCP_INGRESS_ROLE,
         publishableKey: PUBLISHABLE_KEY,
         jwks: { keys: [{ kty: 'oct', alg: 'HS256', kid: 'hmac', k: 'c2VjcmV0' }] },
       }),
@@ -277,6 +309,7 @@ describe('native user MCP adapter', () => {
         resourceServer: RESOURCE,
         supabaseUrl: SUPABASE_URL,
         expectedClientId: CLIENT,
+        ingressRole: MCP_INGRESS_ROLE,
         publishableKey: 'eyJhbGciOiJIUzI1NiJ9.eyJyb2xlIjoic2VydmljZV9yb2xlIn0.sig',
         jwks: { keys: [{ kty: 'EC', alg: 'ES256', kid: 'g2', crv: 'P-256' }] },
       }),

@@ -25,7 +25,7 @@ routes, or a lab dual-grant broker.
 
 | Credential | Role on this branch |
 | --- | --- |
-| Token A | Inbound `Authorization: Bearer` JWT. `withSupabase({ auth: 'user' })` verifies signature, `kid`, expiry, configured issuer (`{supabaseUrl}/auth/v1`), and MCP resource audience against the supplied asymmetric JWKS or JWKS URL. The handler then requires `role=authenticated`, server-controlled `client_id`, a UUID `sub` and `session_id`, and a resource-only `aud`: exactly one value, as a string or a true singleton array, that canonicalizes to the MCP resource. Any other `aud` length or value is `401` `{ "error": "invalid_token" }`. The handler rejects `user_metadata` authority fields. |
+| Token A | Inbound `Authorization: Bearer` JWT. `withSupabase({ auth: 'user' })` verifies signature, `kid`, expiry, configured issuer (`{supabaseUrl}/auth/v1`), and MCP resource audience against the supplied asymmetric JWKS or JWKS URL. The handler then requires configured `role=mcp_ingress` and rejects `role=authenticated`, plus server-controlled `client_id`, a UUID `sub` and `session_id`, and a resource-only `aud`: exactly one value, as a string or a true singleton array, that canonicalizes to the MCP resource. Any other `aud` length or value, or any other role, is `401` `{ "error": "invalid_token" }`. The handler rejects `user_metadata` authority fields. Configuring an ingress role other than `mcp_ingress` is a config error. |
 | Token B | Unresolved. No second Data API client is created. A resource-only Token A returns `403` `{ "error": "downstream_credential_unresolved" }`. |
 
 ## Fixed in this slice: MCP-side intended-recipient check
@@ -42,14 +42,20 @@ or singleton `[resource]` passes auth and then hits the existing fail-closed
 signature, and expiry checks stay in place. The handler rejects `user_metadata`
 authority fields. This is not acceptance and not direct-API separation.
 
-## Not shipped: ingress role flip and TEST probe
+## Ingress role check (L2)
 
-This head still requires `role=authenticated` and rejects every other role. The
-ingress role flip — require configured `mcp_ingress`, reject `role=authenticated`
-— is a pre-live prerequisite and is not in this commit. Do not install the Auth
-hook until that flip is reviewed. `docs/evidence/ari-test-probe/` is a
-controller packet for project `odbcejsuuqdzhabjmozi` only. It does not wire
-Token B into the MCP tool path. This is not acceptance.
+Token A `role` must be the configured ingress role `mcp_ingress`.
+`role=authenticated` is `401` `{ "error": "invalid_token" }`. Any other role
+is the same denial. This is the MCP-edge check only. It does not create the
+Postgres role, install the Auth hook, or prove upstream Data API denial.
+
+## Not shipped
+
+`docs/evidence/ari-test-probe/sql/03-mcp-ingress-role.sql` is controller SQL
+for project `odbcejsuuqdzhabjmozi` only. This branch does not apply it.
+`sql/02-hook-for-ariadne.sql` stays uninstalled. R3 (exact registered client
+id) and R4 (`session_id`) are open. The live probe was not run. Token B is
+not wired into the MCP tool path. This is not acceptance.
 
 ## Still open
 

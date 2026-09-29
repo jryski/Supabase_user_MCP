@@ -134,6 +134,7 @@ export {
 } from './remote-token-verifier.js';
 export {
   createNativeUserMcpHandler,
+  MCP_INGRESS_ROLE,
   NATIVE_USER_MCP_CONFIG_ERROR,
   NATIVE_USER_MCP_CREDENTIAL_SPLIT,
   NativeUserMcpConfigError,

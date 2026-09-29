@@ -30,6 +30,10 @@ the first public package is released.
 
 ### Fixed
 
+- Native-user Token A must use configured `role=mcp_ingress`. `role=authenticated`
+  is rejected. Controller SQL for an isolated `mcp_ingress` role is in the Ari
+  TEST evidence packet and is not applied by this change. Hook install, the
+  live probe, R3/R4, and Token B remain open.
 - Read-only stdio factory returns the SDK server required for modern negotiation,
   while preserving bounded transport checks. The former connect/close-only wrapper
   prevented discovery before tool calls. This correction is unreleased.

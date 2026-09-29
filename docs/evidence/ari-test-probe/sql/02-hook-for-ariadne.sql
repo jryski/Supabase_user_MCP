@@ -1,11 +1,16 @@
 -- L3 hook SQL for Ariadne. This file is not a supabase/migration.
--- Do not apply it, and do not enable it in Authentication → Hooks, until all
--- of the following are true:
---   1. Warden has reviewed this packet.
---   2. A reviewed adapter commit requires role mcp_ingress and rejects
---      role=authenticated. Head 1f021bcc still requires role=authenticated.
---      That flip is not in this packet.
---   3. The dashboard project ref is odbcejsuuqdzhabjmozi.
+-- Do not apply it, and do not enable it in Authentication → Hooks.
+-- The adapter now requires role mcp_ingress and rejects role=authenticated
+-- (L2). That is not permission to install this hook.
+-- Still required before any install:
+--   1. Warden has reviewed R3 and R4. They are not in this file.
+--   2. R3: the hook keys on the exact registered Token A client id, and a
+--      present but unmapped client id raises. This function does not do that.
+--   3. R4: the Atlas session_id transform, or the run is labelled
+--      "confirm Auth hole".
+--   4. sql/03-mcp-ingress-role.sql has been applied by the controller on
+--      project ref odbcejsuuqdzhabjmozi only.
+--   5. The dashboard project ref is odbcejsuuqdzhabjmozi.
 --
 -- Forbidden targets: lygftpbjgqgvuunkwnxf and any HOUSE, VAULT, or production
 -- project.
@@ -104,7 +109,7 @@ $guard$;
 
 commit;
 
--- Dashboard step, still only after the reviewed role-flip commit:
+-- Dashboard step, still blocked on R3/R4 review. Do not enable it in this slice:
 --   Authentication → Hooks → Custom Access Token
 --   Postgres function: ari_probe.custom_access_token_hook
 -- Do not point that hook at any other project.
