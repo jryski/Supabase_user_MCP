@@ -255,6 +255,39 @@ function toolNames(listed) {
     .filter((name) => typeof name === 'string' && /^[a-z0-9_-]{1,80}$/u.test(name));
 }
 
+function errorBlob(error) {
+  const seen = new Set();
+  const parts = [];
+  let current = error;
+  while (current !== undefined && current !== null && !seen.has(current)) {
+    seen.add(current);
+    if (typeof current.message === 'string') parts.push(current.message);
+    if (typeof current.text === 'string') parts.push(current.text);
+    current = current.cause;
+  }
+  return parts.join('\n');
+}
+
+function failClosedText(text) {
+  return (
+    typeof text === 'string' &&
+    text.includes('downstream_credential_unresolved') &&
+    !JWT_SHAPE.test(text)
+  );
+}
+
+async function markerFailClosed(client) {
+  try {
+    const marker = await client.callTool({ name: MARKER_TOOL_NAME, arguments: {} });
+    const text = Array.isArray(marker?.content)
+      ? marker.content.find((block) => block?.type === 'text')?.text
+      : undefined;
+    return marker?.isError === true && failClosedText(text);
+  } catch (error) {
+    return failClosedText(errorBlob(error));
+  }
+}
+
 export async function runExternalClientSession(options) {
   const connected = await connectExternalClient(options);
   try {
@@ -271,6 +304,21 @@ export async function runExternalClientSession(options) {
       text.length <= 256 &&
       !JWT_SHAPE.test(text);
     if (!names.includes(MARKER_TOOL_NAME) || !markerCalled) throw coded('marker_call_failed');
+    options.writeIpc(assertIpcHasNoSecrets({ type: 'checkpoint', id: 'P5' }));
+    const revocation = {};
+    for (const id of ['N4', 'N5']) {
+      const reply = JSON.parse(await options.readIpc());
+      assertIpcHasNoSecrets(reply);
+      if (reply.type !== 'retry_tool' || reply.id !== id) throw coded('revocation_retry_refused');
+      revocation[id] = await markerFailClosed(connected.client);
+      options.writeIpc(
+        assertIpcHasNoSecrets({
+          type: 'checkpoint_result',
+          id,
+          failClosed: revocation[id] === true,
+        }),
+      );
+    }
     return assertIpcHasNoSecrets({
       type: 'receipt',
       initialized: true,
@@ -280,6 +328,8 @@ export async function runExternalClientSession(options) {
       externalAuthorizationCompleted: true,
       toolNames: names,
       childEnvNames: credentialEnvNames(options.env ?? {}),
+      n4FailClosed: revocation.N4 === true,
+      n5FailClosed: revocation.N5 === true,
     });
   } finally {
     await connected.client.close().catch(() => undefined);

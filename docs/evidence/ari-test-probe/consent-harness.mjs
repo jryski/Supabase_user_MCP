@@ -15,9 +15,9 @@ import {
   ALLOWED_PROJECT_REF,
   EXPECTED_ORIGIN,
   MCP_RESOURCE,
-  scrubRealtimeReason,
   SERVICE_ROLE_ENV_NAMES,
   SYNTHETIC_EMAIL,
+  scrubRealtimeReason,
 } from './decisions.mjs';
 import { runProbe } from './probe.mjs';
 
@@ -396,6 +396,24 @@ function codeFrom(response, text) {
   return null;
 }
 
+function redirectUrlFrom(response, text) {
+  const location = headerValue(response, 'location');
+  if (typeof location === 'string' && location.length > 0 && queryParam(location, 'code')) {
+    return location;
+  }
+  const parsed = parseJson(text);
+  if (
+    parsed !== null &&
+    typeof parsed === 'object' &&
+    !Array.isArray(parsed) &&
+    typeof parsed.redirect_url === 'string' &&
+    parsed.redirect_url.length > 0
+  ) {
+    return parsed.redirect_url;
+  }
+  return null;
+}
+
 function authorizationIdFrom(response, text) {
   const located = queryParam(headerValue(response, 'location'), 'authorization_id');
   if (located) return located;
@@ -485,6 +503,7 @@ async function consentWithCode(input) {
     const postedText = await readBody(posted);
     const idTokenPresent = idTokenIn(gotText) || idTokenIn(postedText);
     const code = codeFrom(posted, postedText) ?? codeFrom(got, gotText);
+    const redirectUrl = redirectUrlFrom(posted, postedText) ?? redirectUrlFrom(got, gotText);
     return baseReceipt({
       ok: !idTokenPresent,
       reason: idTokenPresent ? 'id_token_present' : 'consent_performed',
@@ -498,6 +517,7 @@ async function consentWithCode(input) {
       idTokenPresent,
       oauthError: oauthErrorName(parseJson(postedText)) ?? oauthErrorName(parseJson(gotText)),
       code,
+      redirectUrl,
     });
   } catch {
     return baseReceipt({
@@ -516,7 +536,108 @@ export async function performConsent(input) {
   const consent = await consentWithCode(input);
   const receipt = { ...consent };
   delete receipt.code;
+  delete receipt.redirectUrl;
   return receipt;
+}
+
+function consentFailure(reason, passwordSessionIdValue = null) {
+  return {
+    ok: false,
+    reason,
+    authorizationId: null,
+    passwordSessionId: passwordSessionIdValue,
+    redirectUrl: null,
+    sessionAccessToken: null,
+  };
+}
+
+/**
+ * Parent consent for one authorization URL.
+ * GET the URL with redirect manual, take authorization_id, password-login
+ * when this call does not already hold the synthetic session, then GET and
+ * POST consent with that first-party bearer. The redirect URL is returned
+ * so the caller can land the code on loopback. Callers must not log
+ * redirectUrl or sessionAccessToken.
+ */
+export async function performPasswordAuthorizationConsent(input) {
+  const guard = guardTarget(input);
+  if (guard) return consentFailure(guard);
+  if (typeof input.authorizationUrl !== 'string' || input.authorizationUrl.length === 0) {
+    return consentFailure('authorization_url_required');
+  }
+  if (typeof input.publishableKey !== 'string' || input.publishableKey.length === 0) {
+    return consentFailure('publishable_key_required');
+  }
+  let origin;
+  try {
+    origin = new URL(input.authOrigin);
+  } catch {
+    return consentFailure('auth_origin_unreadable');
+  }
+  let authorizeResponse;
+  try {
+    authorizeResponse = await input.fetch(input.authorizationUrl, {
+      method: 'GET',
+      redirect: 'manual',
+      headers: { apikey: input.publishableKey },
+    });
+  } catch {
+    return consentFailure('authorize_transport_failed');
+  }
+  const authorizeText = await readBody(authorizeResponse);
+  if (idTokenIn(authorizeText)) return consentFailure('id_token_present');
+  const authorizationId = authorizationIdFrom(authorizeResponse, authorizeText);
+  if (typeof authorizationId !== 'string' || authorizationId.length === 0) {
+    return consentFailure('authorization_id_missing');
+  }
+  let sessionAccessToken = input.sessionAccessToken;
+  let sessionId = input.passwordSessionId ?? null;
+  if (typeof sessionAccessToken !== 'string' || sessionAccessToken.length === 0) {
+    if (typeof input.password !== 'string' || input.password.length === 0) {
+      return consentFailure('synthetic_password_required', sessionId);
+    }
+    let login;
+    try {
+      login = await passwordLogin({
+        fetch: input.fetch,
+        authOrigin: origin.origin,
+        publishableKey: input.publishableKey,
+        password: input.password,
+      });
+    } catch {
+      return consentFailure('password_login_failed');
+    }
+    if (login.receipt.ok !== true || typeof login.accessToken !== 'string') {
+      return consentFailure(
+        login.receipt.reason === 'id_token_present' ? 'id_token_present' : 'password_login_failed',
+      );
+    }
+    sessionAccessToken = login.accessToken;
+    sessionId = passwordSessionId(sessionAccessToken);
+    if (sessionId === null) return consentFailure('password_session_id_missing');
+  }
+  const consent = await consentWithCode({
+    fetch: input.fetch,
+    authOrigin: origin.origin,
+    publishableKey: input.publishableKey,
+    authorizationId,
+    userAccessToken: sessionAccessToken,
+  });
+  const redirectUrl = consent.redirectUrl ?? null;
+  if (consent.ok !== true || typeof redirectUrl !== 'string' || redirectUrl.length === 0) {
+    return consentFailure(
+      consent.reason === 'id_token_present' ? 'id_token_present' : 'consent_failed',
+      sessionId,
+    );
+  }
+  return {
+    ok: true,
+    reason: 'consent_performed',
+    authorizationId,
+    passwordSessionId: sessionId,
+    redirectUrl,
+    sessionAccessToken,
+  };
 }
 
 function secretResult(receipt) {
@@ -681,7 +802,8 @@ export async function exchangeAuthorizationCode(input) {
 
 export async function runConsentExchange(input) {
   const consent = await consentWithCode(input);
-  const { code, ...consentReceipt } = consent;
+  const { code, redirectUrl: _redirectUrl, ...consentReceipt } = consent;
+  void _redirectUrl;
   if (consent.ok !== true || typeof code !== 'string' || code.length === 0) {
     return {
       ...consentReceipt,

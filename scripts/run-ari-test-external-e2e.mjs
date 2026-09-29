@@ -3,7 +3,8 @@
  * Default command is `plan`. It does not open a socket and does not contact
  * hosted TEST. `run` stays closed unless the controller sets the G5 gates
  * and ARI_LANE_B_EXECUTE=1. The child receives no bearer, refresh token,
- * password, or admin credential. First-party consent stays in the browser.
+ * password, or admin credential. The parent performs consent for external A
+ * and downstream B with the synthetic password session.
  */
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
@@ -11,6 +12,10 @@ import { createServer } from 'node:http';
 import { createInterface } from 'node:readline';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
+import {
+  createPkce,
+  performPasswordAuthorizationConsent,
+} from '../docs/evidence/ari-test-probe/consent-harness.mjs';
 import { assertIpcHasNoSecrets } from './ari-test-external-client.mjs';
 
 const FORBIDDEN = [
@@ -54,11 +59,12 @@ export function controllerPlan() {
       'Apply sql/07, then sql/05, then sql/06 on odbcejsuuqdzhabjmozi only.',
       'If sql/05 raises STOP AND REPORT because auth.sessions is not readable, stop. Do not grant schema auth.',
       'Register external A and TEST-only public PKCE B out of band. No client secret. No openid. No DCR.',
-      'N4 is A-session revocation. B-session revocation is a separate case and uses a first-party session.',
+      'N4 is A source-session revocation. N5 is B-session revocation and uses a first-party session.',
       'F1 in sql/06 covers public.ari_probe_marker only.',
       'node scripts/run-ari-test-external-e2e.mjs plan',
-      'After G5, set ARI_LANE_B_EXECUTE=1 and run node scripts/run-ari-test-external-e2e.mjs run.',
-      'Open each controller_action authorizationUrl in a browser. Do not paste a bearer into the child.',
+      'After G5, set ARI_LANE_B_EXECUTE=1 and ARI_TEST_SYNTHETIC_PASSWORD, then run node scripts/run-ari-test-external-e2e.mjs run.',
+      'The parent performs consent for external A and downstream B. Do not open authorizationUrl in a browser. Do not paste a bearer into the child.',
+      'After P5, type continue on stdin for N4 and again for N5. Stdin carries no credentials.',
     ],
     rollback: [
       'drop function if exists public.ari_probe_source_session_live_v1(uuid, text)',
@@ -149,6 +155,9 @@ export function childEnvironment(env) {
   next.ARI_LANE_B_LIVE = 'controller-g5';
   next.ARI_LANE_B_EXECUTE = '1';
   for (const name of FORBIDDEN) delete next[name];
+  delete next.ARI_TEST_SYNTHETIC_PASSWORD;
+  delete next.ARI_USER_PASSWORD;
+  delete next.ARI_FIRST_PARTY_ACCESS_TOKEN;
   return next;
 }
 
@@ -216,7 +225,39 @@ function loopbackSupabase(supabaseUrl) {
   }
 }
 
-function parentReceipt(message, env) {
+const SESSION_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;
+
+function sessionIdFromAccessToken(accessToken) {
+  const claims = claimsFromAccessToken(accessToken);
+  const sessionId = claims?.session_id;
+  if (typeof sessionId !== 'string' || !SESSION_ID.test(sessionId)) return null;
+  return sessionId;
+}
+
+function claimsFromAccessToken(accessToken) {
+  if (typeof accessToken !== 'string') return null;
+  const parts = accessToken.split('.');
+  if (parts.length < 2) return null;
+  try {
+    const claims = JSON.parse(Buffer.from(parts[1], 'base64url').toString('utf8'));
+    if (claims === null || typeof claims !== 'object' || Array.isArray(claims)) return null;
+    return claims;
+  } catch {
+    return null;
+  }
+}
+
+function caseRow(id, label, executed, passed) {
+  return {
+    id,
+    label,
+    executed: executed === true,
+    passed: executed === true && passed === true,
+    ...(executed === true ? {} : { note: 'not_executed_by_this_run' }),
+  };
+}
+
+function parentReceipt(message, env, facts) {
   const toolNames = Array.isArray(message.toolNames)
     ? message.toolNames.filter(
         (name) => typeof name === 'string' && /^[a-z0-9_-]{1,80}$/u.test(name),
@@ -225,6 +266,9 @@ function parentReceipt(message, env) {
   const childEnvNames = Array.isArray(message.childEnvNames)
     ? message.childEnvNames.filter((name) => typeof name === 'string' && /^[A-Z0-9_]+$/u.test(name))
     : [];
+  const passwordSessionId = SESSION_ID.test(facts.passwordSessionId ?? '')
+    ? facts.passwordSessionId
+    : null;
   return {
     type: 'receipt',
     packet: 'lane-b-external-client',
@@ -236,6 +280,7 @@ function parentReceipt(message, env) {
     syntheticLoopback: loopbackSupabase(env.ARI_TEST_SUPABASE_URL),
     g5Head: env.ARI_LANE_B_G5_HEAD,
     projectRef: env.ARI_TEST_PROJECT_REF,
+    passwordSessionId,
     initialized: message.initialized === true,
     toolsListed: message.toolsListed === true,
     markerCalled: message.markerCalled === true,
@@ -243,6 +288,31 @@ function parentReceipt(message, env) {
     externalAuthorizationCompleted: message.externalAuthorizationCompleted === true,
     toolNames,
     childEnvNames,
+    cases: [
+      caseRow(
+        'P1',
+        'canary_shape',
+        true,
+        message.externalAuthorizationCompleted === true && facts.consentA === true,
+      ),
+      caseRow(
+        'P2',
+        'b_via_second_consent',
+        true,
+        message.downstreamBound === true && facts.consentB === true,
+      ),
+      caseRow('P3', 'discovery_initialize', true, message.initialized === true),
+      caseRow('P4', 'list_tools', true, message.toolsListed === true),
+      caseRow('P5', 'marker_read', true, message.markerCalled === true && facts.markerReads === 1),
+      caseRow('N1', 'a_as_b', true, facts.n1Rejected === true && facts.n1Retained !== true),
+      caseRow('N2', 'wrong_user', false, false),
+      caseRow('N3', 'wrong_agent_client_resource', false, false),
+      caseRow('N4', 'a_source_session_revocation', true, facts.n4Passed === true),
+      caseRow('N5', 'b_session_revocation', true, facts.n5Passed === true),
+      caseRow('N6', 'hook_bypass_f1', false, false),
+      caseRow('N7', 'openid', false, false),
+      caseRow('N8', 'unbound_mismatched_b', false, false),
+    ],
   };
 }
 
@@ -289,11 +359,47 @@ export async function startExternalRuntime(env) {
   } catch {
     throw coded('live_configuration_incomplete');
   }
+  const syntheticPassword = required(env, 'ARI_TEST_SYNTHETIC_PASSWORD');
+  if (
+    JWT_SHAPE.test(syntheticPassword) ||
+    /\s/u.test(syntheticPassword) ||
+    syntheticPassword.length > 256
+  ) {
+    throw coded('live_configuration_incomplete');
+  }
   const childEnv = childEnvironment({
     ...env,
     ARI_EXTERNAL_A_REDIRECT_URI: aRedirect.toString(),
     ARI_LANE_B_TIMEOUT_MS: String(timeoutMs),
   });
+  const observed = { marker: 0, liveness: 0, sourceSessionId: undefined, bSessionId: undefined };
+  const downstreamClientId = required(env, 'ARI_DOWNSTREAM_CLIENT_ID');
+  const observedFetch = async (input, init) => {
+    const response = await fetch(input, init);
+    try {
+      const url = requestUrlOf(input);
+      const body = bodyText(init?.body);
+      if (url.includes('/rest/v1/ari_probe_marker')) observed.marker += 1;
+      if (url.includes('/rpc/ari_probe_source_session_live_v1')) {
+        observed.liveness += 1;
+        const parsed = JSON.parse(body);
+        if (SESSION_ID.test(parsed?.source_session_id ?? '')) {
+          observed.sourceSessionId = parsed.source_session_id;
+        }
+      }
+      if (url.includes('/auth/v1/oauth/token') && body.length > 0) {
+        const clientId = new URLSearchParams(body).get('client_id');
+        if (clientId === downstreamClientId) {
+          const parsed = await response.clone().json();
+          const sessionId = sessionIdFromAccessToken(parsed?.access_token);
+          if (sessionId !== null) observed.bSessionId = sessionId;
+        }
+      }
+    } catch {
+      // Counting must not change the handler response.
+    }
+    return response;
+  };
   const { createNativeUserMcpReadHandler } = await import(
     '../packages/server/dist/native-user-mcp-read-handler.js'
   );
@@ -307,9 +413,10 @@ export async function startExternalRuntime(env) {
       ingressRole: 'mcp_ingress',
       publishableKey: required(env, 'ARI_TEST_PUBLISHABLE_KEY'),
       jwks,
-      downstreamClientId: required(env, 'ARI_DOWNSTREAM_CLIENT_ID'),
+      downstreamClientId,
       downstreamRedirectUri: bRedirect.toString(),
       enableAriTestMarker: true,
+      fetch: observedFetch,
     });
   } catch {
     throw coded('live_configuration_incomplete');
@@ -412,59 +519,309 @@ export async function startExternalRuntime(env) {
     session.stderr = `${session.stderr}${chunk.toString('utf8')}`.slice(-4000);
   });
   session.child = child;
-  return { server, child, session, timeoutMs, childEnv };
+  return {
+    server,
+    child,
+    session,
+    timeoutMs,
+    childEnv,
+    observed,
+    syntheticPassword,
+    authOrigin: supabase.origin,
+    mcpResource: mcpUrl.origin + mcpUrl.pathname,
+    aRedirect: aRedirect.toString(),
+    bRedirect: bRedirect.toString(),
+    consentA: false,
+    consentB: false,
+    passwordSessionId: null,
+    sessionAccessToken: undefined,
+    markerReads: 0,
+    n1Rejected: false,
+    n1Retained: true,
+    n4Passed: false,
+    n5Passed: false,
+  };
+}
+
+function requestUrlOf(input) {
+  if (typeof input === 'string') return input;
+  if (input instanceof URL) return input.href;
+  if (input !== null && typeof input === 'object' && typeof input.url === 'string')
+    return input.url;
+  return '';
+}
+
+function bodyText(body) {
+  if (typeof body === 'string') return body;
+  if (body instanceof URLSearchParams) return body.toString();
+  return '';
+}
+
+function remainingMs(deadline) {
+  const remaining = deadline - Date.now();
+  if (remaining <= 0) throw coded('orchestration_timeout');
+  return remaining;
+}
+
+async function readChildMessage(reader, deadline) {
+  const line = await withTimeout(reader.next(), remainingMs(deadline));
+  if (line === null) throw coded('child_failed');
+  let message;
+  try {
+    message = JSON.parse(line);
+  } catch {
+    throw coded('child_failed');
+  }
+  assertIpcHasNoSecrets(message);
+  return message;
+}
+
+async function readContinue(stdinReader, deadline) {
+  const line = await withTimeout(stdinReader.next(), remainingMs(deadline));
+  if (line === null) throw coded('controller_continue_required');
+  if (
+    JWT_SHAPE.test(line) ||
+    /bearer|password|access_token|refresh_token|authorization:/iu.test(line)
+  ) {
+    throw coded('ipc_refused_secret');
+  }
+  if (line.trim() !== 'continue') throw coded('controller_continue_required');
+}
+
+async function consentAndDeliver(runtime, env, authorizationUrl, flow) {
+  const consent = await performPasswordAuthorizationConsent({
+    fetch,
+    authOrigin: runtime.authOrigin,
+    authorizationUrl,
+    publishableKey: required(env, 'ARI_TEST_PUBLISHABLE_KEY'),
+    password: runtime.sessionAccessToken === undefined ? runtime.syntheticPassword : undefined,
+    sessionAccessToken: runtime.sessionAccessToken,
+    passwordSessionId: runtime.passwordSessionId,
+  });
+  if (consent.ok !== true) throw coded(safeCode(consent.reason));
+  runtime.sessionAccessToken = consent.sessionAccessToken;
+  runtime.passwordSessionId = consent.passwordSessionId;
+  if (flow === 'external_a') runtime.consentA = true;
+  if (flow === 'downstream_b') runtime.consentB = true;
+  const delivered = await fetch(consent.redirectUrl, {
+    redirect: 'manual',
+    headers: { connection: 'close' },
+  });
+  await delivered.arrayBuffer().catch(() => undefined);
+  consent.redirectUrl = '';
+  consent.sessionAccessToken = '';
+  if (delivered.status !== 200) throw coded('consent_callback_failed');
+}
+
+async function offerTokenA(accessToken, env, runtime) {
+  const { DownstreamOAuthGrantStore } = await import(
+    '../packages/server/dist/downstream-oauth-grant.js'
+  );
+  const { nativeUserMcpIssuer } = await import('../packages/server/dist/native-user-mcp.js');
+  const refresh = 'n1-refresh-not-retained';
+  const claims = claimsFromAccessToken(accessToken);
+  const store = new DownstreamOAuthGrantStore({
+    issuer: nativeUserMcpIssuer(env.ARI_TEST_SUPABASE_URL),
+    authOrigin: runtime.authOrigin,
+    expectedBClientId: required(env, 'ARI_DOWNSTREAM_CLIENT_ID'),
+    expectedAgentId: required(env, 'ARI_AGENT_ID'),
+    redirectUri: runtime.bRedirect,
+    jwks: JSON.parse(required(env, 'ARI_TEST_JWKS_JSON')),
+    fetch: async () =>
+      new Response(
+        JSON.stringify({
+          access_token: accessToken,
+          refresh_token: refresh,
+          token_type: 'Bearer',
+        }),
+        { status: 200, headers: { 'content-type': 'application/json' } },
+      ),
+  });
+  const handshake = store.beginHandshake({
+    sourceSessionId: claims?.source_session_id,
+    sub: claims?.sub,
+    agentId: claims?.agent_id,
+    aClientId: claims?.client_id,
+  });
+  const accepted = await store.completeCallback({
+    code: 'n1-offer',
+    state: handshake.id,
+    redirectUri: runtime.bRedirect,
+  });
+  return {
+    rejected: accepted === false,
+    retained:
+      store.containsRetainedMaterial(accessToken) || store.containsRetainedMaterial(refresh),
+  };
+}
+
+function authorizationUrlFor(authOrigin, fields) {
+  const authorize = new URL('/auth/v1/oauth/authorize', authOrigin);
+  authorize.searchParams.set('response_type', 'code');
+  authorize.searchParams.set('client_id', fields.clientId);
+  authorize.searchParams.set('redirect_uri', fields.redirectUri);
+  authorize.searchParams.set('scope', 'email');
+  authorize.searchParams.set('state', fields.state);
+  authorize.searchParams.set('code_challenge', fields.codeChallenge);
+  authorize.searchParams.set('code_challenge_method', 'S256');
+  authorize.searchParams.set('resource', fields.resource);
+  return authorize.toString();
+}
+
+async function runInProcessN1(runtime, env) {
+  const pkce = createPkce();
+  const authorizationUrl = authorizationUrlFor(runtime.authOrigin, {
+    clientId: required(env, 'ARI_EXTERNAL_A_CLIENT_ID'),
+    redirectUri: runtime.aRedirect,
+    codeChallenge: pkce.codeChallenge,
+    state: crypto.randomUUID(),
+    resource: runtime.mcpResource,
+  });
+  const consent = await performPasswordAuthorizationConsent({
+    fetch,
+    authOrigin: runtime.authOrigin,
+    authorizationUrl,
+    publishableKey: required(env, 'ARI_TEST_PUBLISHABLE_KEY'),
+    sessionAccessToken: runtime.sessionAccessToken,
+    passwordSessionId: runtime.passwordSessionId,
+  });
+  if (consent.ok !== true) throw coded(safeCode(consent.reason));
+  let code = '';
+  try {
+    code = new URL(consent.redirectUrl).searchParams.get('code') ?? '';
+  } catch {
+    code = '';
+  }
+  consent.redirectUrl = '';
+  if (code.length < 1 || code.length > 512 || /\s/u.test(code) || JWT_SHAPE.test(code)) {
+    throw coded('authorization_code_refused');
+  }
+  const tokenResponse = await fetch(new URL('/auth/v1/oauth/token', runtime.authOrigin), {
+    method: 'POST',
+    headers: {
+      'content-type': 'application/x-www-form-urlencoded',
+      apikey: required(env, 'ARI_TEST_PUBLISHABLE_KEY'),
+    },
+    body: new URLSearchParams({
+      grant_type: 'authorization_code',
+      client_id: required(env, 'ARI_EXTERNAL_A_CLIENT_ID'),
+      redirect_uri: runtime.aRedirect,
+      code,
+      code_verifier: pkce.codeVerifier,
+    }),
+  });
+  const tokenText = await tokenResponse.text();
+  code = '';
+  if (!tokenResponse.ok || tokenText.includes('"id_token"')) throw coded('n1_exchange_failed');
+  let accessToken = '';
+  try {
+    const parsed = JSON.parse(tokenText);
+    if (typeof parsed?.access_token === 'string') accessToken = parsed.access_token;
+  } catch {
+    accessToken = '';
+  }
+  if (accessToken.length === 0) throw coded('n1_exchange_failed');
+  const claims = claimsFromAccessToken(accessToken);
+  if (claims?.role !== 'mcp_ingress') {
+    accessToken = '';
+    throw coded('n1_not_token_a');
+  }
+  let offer = { rejected: false, retained: true };
+  try {
+    offer = await offerTokenA(accessToken, env, runtime);
+  } catch {
+    offer = { rejected: false, retained: true };
+  }
+  accessToken = '';
+  runtime.n1Rejected = offer.rejected === true;
+  runtime.n1Retained = offer.retained === true;
+  if (!runtime.n1Rejected || runtime.n1Retained) throw coded('n1_not_rejected');
+}
+
+async function runRevocation(runtime, env, reader, stdinReader, deadline, id) {
+  void env;
+  const writeChild = (value) => {
+    if (runtime.session.child === undefined || runtime.session.child.stdin.destroyed) return;
+    writeJson(runtime.session.child.stdin, value);
+  };
+  if (id === 'N4') {
+    if (!SESSION_ID.test(runtime.observed.sourceSessionId ?? '')) {
+      throw coded('source_session_id_missing');
+    }
+    writeJson(process.stdout, {
+      type: 'controller_action',
+      action: 'revoke_a_source_session',
+      source_session_id: runtime.observed.sourceSessionId,
+    });
+  } else {
+    if (!SESSION_ID.test(runtime.observed.bSessionId ?? '')) throw coded('b_session_id_missing');
+    writeJson(process.stdout, {
+      type: 'controller_action',
+      action: 'revoke_b_session',
+      b_session_id: runtime.observed.bSessionId,
+    });
+  }
+  await readContinue(stdinReader, deadline);
+  const markerBefore = runtime.observed.marker;
+  const livenessBefore = runtime.observed.liveness;
+  writeChild({ type: 'retry_tool', id });
+  const result = await readChildMessage(reader, deadline);
+  if (result.type === 'error') throw coded(safeCode(result.code));
+  if (result.type !== 'checkpoint_result' || result.id !== id) throw coded('child_failed');
+  const passed =
+    result.failClosed === true &&
+    runtime.observed.marker === markerBefore &&
+    runtime.observed.liveness > livenessBefore;
+  if (id === 'N4') runtime.n4Passed = passed;
+  else runtime.n5Passed = passed;
+  if (!passed) throw coded(id === 'N4' ? 'n4_not_fail_closed' : 'n5_not_fail_closed');
 }
 
 async function driveExternalSession(runtime, env) {
   const deadline = Date.now() + runtime.timeoutMs;
   const reader = lineReader(runtime.child.stdout);
+  const stdinReader = lineReader(process.stdin);
   let receipt;
   while (receipt === undefined) {
-    const remaining = deadline - Date.now();
-    if (remaining <= 0) throw coded('orchestration_timeout');
-    const line = await withTimeout(reader.next(), remaining);
-    if (line === null) throw coded('child_failed');
-    let message;
-    try {
-      message = JSON.parse(line);
-    } catch {
-      throw coded('child_failed');
-    }
-    assertIpcHasNoSecrets(message);
+    const message = await readChildMessage(reader, deadline);
     if (message.type === 'authorization_request') {
       runtime.session.expectedAState = message.state;
-      writeJson(process.stdout, {
-        type: 'controller_action',
-        action: 'open_authorization',
-        flow: 'external_a',
-        authorizationUrl: message.authorizationUrl,
-        state: message.state,
-      });
+      await consentAndDeliver(runtime, env, message.authorizationUrl, 'external_a');
     } else if (message.type === 'downstream_authorization_required') {
       runtime.session.expectedBState = message.state;
-      writeJson(process.stdout, {
-        type: 'controller_action',
-        action: 'open_authorization',
-        flow: 'downstream_b',
-        authorizationUrl: message.authorizationUrl,
-        state: message.state,
-        handshakeId: message.handshakeId,
-      });
+      await consentAndDeliver(runtime, env, message.authorizationUrl, 'downstream_b');
+    } else if (message.type === 'checkpoint' && message.id === 'P5') {
+      runtime.markerReads = runtime.observed.marker;
+      if (runtime.markerReads !== 1) throw coded('marker_call_failed');
+      await runInProcessN1(runtime, env);
+      await runRevocation(runtime, env, reader, stdinReader, deadline, 'N4');
+      await runRevocation(runtime, env, reader, stdinReader, deadline, 'N5');
     } else if (message.type === 'receipt') {
-      receipt = parentReceipt(message, env);
+      receipt = parentReceipt(message, env, runtime);
     } else if (message.type === 'error') {
       throw coded(safeCode(message.code));
+    } else {
+      throw coded('child_failed');
     }
   }
-  if (JWT_SHAPE.test(runtime.session.stderr) || /refresh_token/i.test(runtime.session.stderr)) {
+  const stderr = runtime.session.stderr;
+  if (
+    JWT_SHAPE.test(stderr) ||
+    /refresh_token/i.test(stderr) ||
+    (runtime.syntheticPassword.length > 0 && stderr.includes(runtime.syntheticPassword))
+  ) {
     throw coded('ipc_refused_secret');
   }
+  runtime.syntheticPassword = '';
+  runtime.sessionAccessToken = '';
   assertIpcHasNoSecrets(receipt);
   return receipt;
 }
 
 export async function stopExternalRuntime(runtime) {
   if (runtime === undefined) return;
+  runtime.syntheticPassword = '';
+  runtime.sessionAccessToken = '';
   const { child, server } = runtime;
   if (child !== undefined && child.exitCode === null && child.signalCode === null) {
     child.kill('SIGTERM');
@@ -476,7 +833,12 @@ export async function stopExternalRuntime(runtime) {
   }
   if (server !== undefined) {
     server.closeAllConnections?.();
-    if (server.listening) await new Promise((resolve) => server.close(() => resolve()));
+    if (server.listening) {
+      await Promise.race([
+        new Promise((resolve) => server.close(() => resolve())),
+        new Promise((resolve) => setTimeout(resolve, 500)),
+      ]);
+    }
   }
 }
 
@@ -502,6 +864,7 @@ async function main() {
     process.exitCode = 2;
     return;
   }
+  process.stdin.unref();
   let runtime;
   try {
     runtime = await startExternalRuntime(process.env);

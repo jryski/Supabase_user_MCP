@@ -1,15 +1,16 @@
 import assert from 'node:assert/strict';
-import { spawn, execFileSync } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
 import { createHash, randomBytes } from 'node:crypto';
 import { once } from 'node:events';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { createServer as createHttpServer, request as httpRequest } from 'node:http';
 import { createServer as createHttpsServer, request as httpsRequest } from 'node:https';
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { createInterface } from 'node:readline';
 import test from 'node:test';
 import { exportJWK, generateKeyPair, SignJWT } from 'jose';
 
+import { SYNTHETIC_EMAIL } from '../docs/evidence/ari-test-probe/decisions.mjs';
 import {
   assertIpcHasNoSecrets,
   createExternalPublicPkceProvider,
@@ -123,6 +124,7 @@ test('child environment drops bearers and execute stays closed without the opt-i
     ARI_LANE_B_EXECUTE: '0',
     ARI_FIRST_PARTY_ACCESS_TOKEN: 'eyJhbGciOiJFUzI1NiJ9.eyJzdWIiOiJ4In0.sig',
     ARI_USER_PASSWORD: 'synthetic-password-sentinel',
+    ARI_TEST_SYNTHETIC_PASSWORD: 'synthetic-password-parent-only',
     ARI_TEST_PUBLISHABLE_KEY: 'sb_publishable_parent_only_sentinel',
     ARI_TEST_JWKS_JSON: '{"keys":[]}',
     SUPABASE_SERVICE_ROLE_KEY: 'nope',
@@ -132,6 +134,7 @@ test('child environment drops bearers and execute stays closed without the opt-i
   assert.equal(filtered.ARI_EXTERNAL_MCP_URL, 'http://127.0.0.1:9/mcp');
   assert.equal(filtered.ARI_FIRST_PARTY_ACCESS_TOKEN, undefined);
   assert.equal(filtered.ARI_USER_PASSWORD, undefined);
+  assert.equal(filtered.ARI_TEST_SYNTHETIC_PASSWORD, undefined);
   assert.equal(filtered.ARI_TEST_PUBLISHABLE_KEY, undefined);
   assert.equal(filtered.ARI_TEST_JWKS_JSON, undefined);
   assert.equal(filtered.SUPABASE_SERVICE_ROLE_KEY, undefined);
@@ -200,22 +203,32 @@ function stdoutLines(stream) {
   };
 }
 
-function requestText(target, ca) {
+function requestText(target, ca, init = {}) {
   const lib = target.protocol === 'https:' ? httpsRequest : httpRequest;
   return new Promise((resolve, reject) => {
-    const req = lib(target, { ca, rejectUnauthorized: true }, (res) => {
-      const chunks = [];
-      res.on('data', (chunk) => chunks.push(chunk));
-      res.on('end', () => {
-        const location = res.headers.location;
-        resolve({
-          status: res.statusCode ?? 0,
-          location: Array.isArray(location) ? location[0] : location,
-          body: Buffer.concat(chunks).toString('utf8'),
+    const req = lib(
+      target,
+      {
+        ca,
+        method: init.method ?? 'GET',
+        headers: init.headers,
+        rejectUnauthorized: true,
+      },
+      (res) => {
+        const chunks = [];
+        res.on('data', (chunk) => chunks.push(chunk));
+        res.on('end', () => {
+          const location = res.headers.location;
+          resolve({
+            status: res.statusCode ?? 0,
+            location: Array.isArray(location) ? location[0] : location,
+            body: Buffer.concat(chunks).toString('utf8'),
+          });
         });
-      });
-    });
+      },
+    );
     req.on('error', reject);
+    if (init.body !== undefined) req.write(init.body);
     req.end();
   });
 }
@@ -229,9 +242,11 @@ async function freePort() {
   return port;
 }
 
-test('CLI run completes SDK OAuth, B bind, and the marker call', { timeout: 40_000 }, async () => {
+test('CLI run completes SDK OAuth, B bind, and the marker call', { timeout: 60_000 }, async () => {
   const plantedToken = 'eyJhbGciOiJFUzI1NiJ9.eyJzdWIiOiJ4In0.sig';
   const plantedPassword = 'synthetic-password-sentinel';
+  const unusedPassword = 'different-password-must-not-be-used';
+  const passwordSession = '55555555-5555-4555-8555-555555555555';
   const refreshSentinel = 'refresh-sentinel-must-not-leak';
   const publishable = 'sb_publishable_parent_only_sentinel';
   const aClient = 'external-a-client';
@@ -269,8 +284,23 @@ test('CLI run completes SDK OAuth, B bind, and the marker call', { timeout: 40_0
     { stdio: 'ignore' },
   );
   const ca = readFileSync(certPath);
-  const counts = { aExchange: 0, bExchange: 0, liveness: 0, marker: 0, markerUsedA: false };
-  const pending = new Map();
+  const counts = {
+    authorize: 0,
+    authorizeWithCode: 0,
+    consentPost: 0,
+    consentRejected: 0,
+    codeIssued: 0,
+    aExchange: 0,
+    bExchange: 0,
+    liveness: 0,
+    marker: 0,
+    markerUsedA: false,
+    passwordLogin: 0,
+  };
+  let aLive = true;
+  let bLive = true;
+  const authorizations = new Map();
+  const codes = new Map();
   const mcpPort = await freePort();
   const mcpResource = `http://127.0.0.1:${mcpPort}/mcp`;
   const https = createHttpsServer({ cert: ca, key: readFileSync(keyPath) }, (req, res) => {
@@ -300,6 +330,23 @@ test('CLI run completes SDK OAuth, B bind, and the marker call', { timeout: 40_0
       );
       return;
     }
+    const readChunks = () =>
+      new Promise((resolve) => {
+        const chunks = [];
+        req.on('data', (chunk) => chunks.push(chunk));
+        req.on('end', () => resolve(Buffer.concat(chunks).toString('utf8')));
+      });
+    const bearerSession = () => {
+      const header = req.headers.authorization ?? '';
+      if (!header.startsWith('Bearer ')) return '';
+      const payload = header.slice('Bearer '.length).split('.')[1];
+      if (payload === undefined) return '';
+      try {
+        return JSON.parse(Buffer.from(payload, 'base64url').toString('utf8')).session_id ?? '';
+      } catch {
+        return '';
+      }
+    };
     if (req.method === 'GET' && url.pathname === '/auth/v1/oauth/authorize') {
       let redirectUrl;
       try {
@@ -317,15 +364,98 @@ test('CLI run completes SDK OAuth, B bind, and the marker call', { timeout: 40_0
         send(400, JSON.stringify({ error: 'invalid_request' }));
         return;
       }
-      const code = randomBytes(16).toString('base64url');
-      pending.set(code, {
+      const authorizationId = randomBytes(16).toString('base64url');
+      authorizations.set(authorizationId, {
         clientId: url.searchParams.get('client_id') ?? '',
         challenge,
+        redirect: redirectUrl.toString(),
+        state: url.searchParams.get('state') ?? '',
       });
-      redirectUrl.searchParams.set('code', code);
-      redirectUrl.searchParams.set('state', url.searchParams.get('state') ?? '');
-      res.writeHead(302, { location: redirectUrl.toString(), 'cache-control': 'no-store' });
+      const consentUrl = new URL('/oauth/consent', origin);
+      consentUrl.searchParams.set('authorization_id', authorizationId);
+      counts.authorize += 1;
+      if (consentUrl.searchParams.has('code')) counts.authorizeWithCode += 1;
+      res.writeHead(302, { location: consentUrl.toString(), 'cache-control': 'no-store' });
       res.end();
+      return;
+    }
+    if (req.method === 'GET' && url.pathname === '/oauth/consent') {
+      send(200, 'consent_ui_not_deployed', 'text/plain');
+      return;
+    }
+    if (req.method === 'POST' && url.pathname === '/auth/v1/token') {
+      void readChunks().then(async (raw) => {
+        let parsed = {};
+        try {
+          parsed = JSON.parse(raw);
+        } catch {
+          parsed = {};
+        }
+        if (parsed.email !== SYNTHETIC_EMAIL || parsed.password !== plantedPassword) {
+          send(400, JSON.stringify({ error: 'invalid_grant' }));
+          return;
+        }
+        counts.passwordLogin += 1;
+        const access = await new SignJWT({
+          role: 'authenticated',
+          session_id: passwordSession,
+        })
+          .setProtectedHeader({ alg: 'ES256', kid: 'g2-test', typ: 'JWT' })
+          .setSubject(sub)
+          .setIssuer(issuer)
+          .setAudience('authenticated')
+          .setIssuedAt()
+          .setExpirationTime('5m')
+          .sign(privateKey);
+        send(200, JSON.stringify({ access_token: access, token_type: 'bearer', expires_in: 300 }));
+      });
+      return;
+    }
+    const authorizationMatch = url.pathname.match(/^\/auth\/v1\/oauth\/authorizations\/([^/]+)$/u);
+    if (req.method === 'GET' && authorizationMatch) {
+      if (bearerSession() !== passwordSession) {
+        send(401, JSON.stringify({ error: 'unauthorized' }));
+        return;
+      }
+      const authorizationId = decodeURIComponent(authorizationMatch[1] ?? '');
+      if (!authorizations.has(authorizationId)) {
+        send(404, JSON.stringify({ error: 'not_found' }));
+        return;
+      }
+      send(200, JSON.stringify({ authorization_id: authorizationId }));
+      return;
+    }
+    const consentMatch = url.pathname.match(
+      /^\/auth\/v1\/oauth\/authorizations\/([^/]+)\/consent$/u,
+    );
+    if (req.method === 'POST' && consentMatch) {
+      void readChunks().then((raw) => {
+        if (bearerSession() !== passwordSession) {
+          counts.consentRejected += 1;
+          send(401, JSON.stringify({ error: 'unauthorized' }));
+          return;
+        }
+        const authorizationId = decodeURIComponent(consentMatch[1] ?? '');
+        const record = authorizations.get(authorizationId);
+        let action = '';
+        try {
+          action = JSON.parse(raw).action ?? '';
+        } catch {
+          action = '';
+        }
+        if (record === undefined || action !== 'approve') {
+          send(400, JSON.stringify({ error: 'invalid_request' }));
+          return;
+        }
+        const code = randomBytes(16).toString('base64url');
+        codes.set(code, { clientId: record.clientId, challenge: record.challenge });
+        const redirect = new URL(record.redirect);
+        redirect.searchParams.set('code', code);
+        redirect.searchParams.set('state', record.state);
+        counts.consentPost += 1;
+        counts.codeIssued += 1;
+        send(200, JSON.stringify({ redirect_url: redirect.toString() }));
+      });
       return;
     }
     if (req.method === 'POST' && url.pathname === '/auth/v1/oauth/token') {
@@ -335,8 +465,8 @@ test('CLI run completes SDK OAuth, B bind, and the marker call', { timeout: 40_0
         void (async () => {
           const form = new URLSearchParams(Buffer.concat(chunks).toString('utf8'));
           const code = form.get('code') ?? '';
-          const record = pending.get(code);
-          pending.delete(code);
+          const record = codes.get(code);
+          codes.delete(code);
           const digest = createHash('sha256')
             .update(form.get('code_verifier') ?? '')
             .digest('base64url');
@@ -400,7 +530,11 @@ test('CLI run completes SDK OAuth, B bind, and the marker call', { timeout: 40_0
     if (req.method === 'POST' && url.pathname === '/rest/v1/rpc/ari_probe_source_session_live_v1') {
       counts.liveness += 1;
       if (clientId === aClient) counts.markerUsedA = true;
-      send(200, 'true');
+      if (!bLive) {
+        send(401, JSON.stringify({ error: 'session_not_found' }));
+        return;
+      }
+      send(200, aLive ? 'true' : 'false');
       return;
     }
     if (req.method === 'GET' && url.pathname === '/auth/v1/user') {
@@ -418,8 +552,42 @@ test('CLI run completes SDK OAuth, B bind, and the marker call', { timeout: 40_0
   await new Promise((resolve) => https.listen(0, '127.0.0.1', () => resolve()));
   const httpsPort = https.address().port;
   const head = execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
+  const preflightChallenge = createHash('sha256')
+    .update('preflight-verifier-preflight-verifier')
+    .digest('base64url');
+  const preflight = new URL(`https://127.0.0.1:${httpsPort}/auth/v1/oauth/authorize`);
+  preflight.searchParams.set('response_type', 'code');
+  preflight.searchParams.set('client_id', aClient);
+  preflight.searchParams.set('redirect_uri', `http://127.0.0.1:${mcpPort}/oauth/callback`);
+  preflight.searchParams.set('code_challenge', preflightChallenge);
+  preflight.searchParams.set('code_challenge_method', 'S256');
+  preflight.searchParams.set('state', 'preflight');
+  const preAuthorize = await requestText(preflight, ca);
+  assert.equal(preAuthorize.status, 302);
+  const preLocation = new URL(preAuthorize.location ?? 'http://127.0.0.1/');
+  assert.equal(preLocation.searchParams.get('code'), null);
+  assert.equal(typeof preLocation.searchParams.get('authorization_id'), 'string');
+  const prePage = await requestText(preLocation, ca);
+  assert.equal(prePage.status, 200);
+  assert.equal(prePage.body.includes('code='), false);
+  const preConsent = await requestText(
+    new URL(
+      `/auth/v1/oauth/authorizations/${preLocation.searchParams.get('authorization_id')}/consent`,
+      `https://127.0.0.1:${httpsPort}`,
+    ),
+    ca,
+    {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ action: 'approve' }),
+    },
+  );
+  assert.equal(preConsent.status, 401);
+  assert.equal(counts.codeIssued, 0);
+  assert.equal(counts.consentRejected, 1);
+
   const proc = spawn(process.execPath, ['scripts/run-ari-test-external-e2e.mjs', 'run'], {
-    stdio: ['ignore', 'pipe', 'pipe'],
+    stdio: ['pipe', 'pipe', 'pipe'],
     env: {
       PATH: process.env.PATH,
       HOME: process.env.HOME ?? '/tmp',
@@ -427,7 +595,7 @@ test('CLI run completes SDK OAuth, B bind, and the marker call', { timeout: 40_0
       ARI_LANE_B_LIVE: 'controller-g5',
       ARI_LANE_B_EXECUTE: '1',
       ARI_LANE_B_G5_HEAD: head,
-      ARI_LANE_B_TIMEOUT_MS: '20000',
+      ARI_LANE_B_TIMEOUT_MS: '25000',
       ARI_TEST_PROJECT_REF: 'odbcejsuuqdzhabjmozi',
       ARI_TEST_SUPABASE_URL: `https://127.0.0.1:${httpsPort}`,
       ARI_TEST_PUBLISHABLE_KEY: publishable,
@@ -439,9 +607,11 @@ test('CLI run completes SDK OAuth, B bind, and the marker call', { timeout: 40_0
       ARI_DOWNSTREAM_REDIRECT_URI: `http://127.0.0.1:${mcpPort}/oauth/downstream/callback`,
       ARI_AGENT_ID: agent,
       ARI_FIRST_PARTY_ACCESS_TOKEN: plantedToken,
-      ARI_USER_PASSWORD: plantedPassword,
+      ARI_USER_PASSWORD: unusedPassword,
+      ARI_TEST_SYNTHETIC_PASSWORD: plantedPassword,
     },
   });
+  proc.stdin.on('error', () => undefined);
   const stderr = [];
   proc.stderr.on('data', (chunk) => stderr.push(chunk));
   const exited = once(proc, 'exit');
@@ -449,29 +619,43 @@ test('CLI run completes SDK OAuth, B bind, and the marker call', { timeout: 40_0
   let receipt;
   try {
     while (receipt === undefined) {
+      let timer;
       const line = await Promise.race([
         reader.next(),
-        new Promise((resolve) => setTimeout(() => resolve(null), 20_000)),
-      ]);
-      assert.notEqual(line, null);
+        new Promise((resolve) => {
+          timer = setTimeout(() => resolve(null), 25_000);
+        }),
+      ]).finally(() => clearTimeout(timer));
+      assert.notEqual(
+        line,
+        null,
+        `${Buffer.concat(stderr).toString('utf8')} counts=${JSON.stringify(counts)}`,
+      );
       const message = JSON.parse(line);
-      if (message.type === 'controller_action') {
-        assert.equal(typeof message.authorizationUrl, 'string');
+      if (message.type === 'controller_action' && message.action === 'revoke_a_source_session') {
+        assert.equal(message.source_session_id, source);
+        assert.equal(message.authorizationUrl, undefined);
         assert.equal(message.code, undefined);
-        const authorize = await requestText(new URL(message.authorizationUrl), ca);
-        assert.equal(authorize.status, 302);
-        assert.equal(typeof authorize.location, 'string');
-        const callback = await requestText(new URL(authorize.location), ca);
-        assert.equal(callback.status, 200);
-        assert.equal(callback.body.includes(refreshSentinel), false);
-        assert.equal(callback.body.includes(plantedToken), false);
+        aLive = false;
+        proc.stdin.write('continue\n');
+      } else if (message.type === 'controller_action' && message.action === 'revoke_b_session') {
+        assert.equal(message.b_session_id, bSession);
+        assert.equal(message.authorizationUrl, undefined);
+        bLive = false;
+        proc.stdin.write('continue\n');
       } else if (message.type === 'receipt') {
         receipt = message;
       } else {
-        assert.fail(`unexpected stdout line ${message.type}`);
+        assert.fail(`unexpected stdout line ${message.type ?? message.action}`);
       }
     }
-    const [code] = await exited;
+    let exitTimer;
+    const [code] = await Promise.race([
+      exited,
+      new Promise((resolve) => {
+        exitTimer = setTimeout(() => resolve([-1]), 5_000);
+      }),
+    ]).finally(() => clearTimeout(exitTimer));
     const errText = Buffer.concat(stderr).toString('utf8');
     const outText = JSON.stringify(receipt);
     assert.equal(code, 0, errText);
@@ -489,6 +673,7 @@ test('CLI run completes SDK OAuth, B bind, and the marker call', { timeout: 40_0
     for (const name of [
       'ARI_FIRST_PARTY_ACCESS_TOKEN',
       'ARI_USER_PASSWORD',
+      'ARI_TEST_SYNTHETIC_PASSWORD',
       'ARI_TEST_PUBLISHABLE_KEY',
       'ARI_TEST_JWKS_JSON',
       'SUPABASE_SERVICE_ROLE_KEY',
@@ -497,20 +682,48 @@ test('CLI run completes SDK OAuth, B bind, and the marker call', { timeout: 40_0
     }
     assert.equal(outText.includes(plantedToken), false);
     assert.equal(outText.includes(plantedPassword), false);
+    assert.equal(outText.includes(unusedPassword), false);
     assert.equal(outText.includes(refreshSentinel), false);
     assert.equal(outText.includes(publishable), false);
     assert.equal(errText.includes(plantedToken), false);
+    assert.equal(errText.includes(plantedPassword), false);
     assert.equal(errText.includes(refreshSentinel), false);
-    assert.equal(counts.aExchange, 1);
+    assert.equal(receipt.passwordSessionId, passwordSession);
+    assert.equal(counts.authorizeWithCode, 0);
+    assert.equal(counts.passwordLogin, 1);
+    assert.equal(counts.consentPost, 3);
+    assert.equal(counts.codeIssued, 3);
+    assert.equal(counts.consentRejected, 1);
+    assert.equal(counts.aExchange, 2);
     assert.equal(counts.bExchange, 1);
-    assert.equal(counts.liveness > 0, true);
+    assert.equal(counts.liveness >= 3, true);
     assert.equal(counts.marker, 1);
     assert.equal(counts.markerUsedA, false);
+    const byId = Object.fromEntries(receipt.cases.map((row) => [row.id, row]));
+    for (const id of ['P1', 'P2', 'P3', 'P4', 'P5', 'N1', 'N4', 'N5']) {
+      assert.equal(byId[id].executed, true, id);
+      assert.equal(byId[id].passed, true, id);
+    }
+    assert.equal(byId.P1.label, 'canary_shape');
+    assert.equal(byId.P2.label, 'b_via_second_consent');
+    assert.equal(byId.P5.label, 'marker_read');
+    assert.equal(byId.N1.label, 'a_as_b');
+    assert.equal(byId.N4.label, 'a_source_session_revocation');
+    assert.equal(byId.N5.label, 'b_session_revocation');
+    assert.equal(byId.N6.label, 'hook_bypass_f1');
+    assert.equal(byId.N7.label, 'openid');
+    assert.equal(byId.N8.label, 'unbound_mismatched_b');
+    for (const id of ['N2', 'N3', 'N6', 'N7', 'N8']) {
+      assert.equal(byId[id].executed, false, id);
+      assert.equal(byId[id].passed, false, id);
+      assert.equal(byId[id].note, 'not_executed_by_this_run', id);
+    }
   } finally {
     if (proc.exitCode === null && proc.signalCode === null) proc.kill('SIGKILL');
     await exited.catch(() => undefined);
     https.closeAllConnections?.();
-    await new Promise((resolve) => https.close(() => resolve()));
+    https.unref();
+    https.close();
     rmSync(dir, { recursive: true, force: true });
   }
 });
