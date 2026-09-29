@@ -948,6 +948,208 @@ describe('process stream sentinels', { concurrency: false }, () => {
     assert.equal(captured.stderr.includes(access), false);
   });
 
+  test('runCli retains safe auth, realtime, and openid receipt fields', async () => {
+    const tokenA = 'token-a-value-must-not-leak-aaaa';
+    const tokenB = 'token-b-value-must-not-leak-bbbb';
+    const refreshA = 'refresh-a-must-not-leak-aaaa';
+    const refreshB = 'refresh-b-must-not-leak-bbbb';
+    const code = 'auth-code-must-not-leak-cccc';
+    const password = 'synthetic-password-must-not-leak';
+    const planted = 'planted/diagnostic-token-must-not-leak-zzzz';
+    const env = {
+      ARI_TEST_PROJECT_REF: 'odbcejsuuqdzhabjmozi',
+      ARI_TEST_SUPABASE_URL: 'https://odbcejsuuqdzhabjmozi.supabase.co',
+      ARI_TEST_PUBLISHABLE_KEY: 'publishable-key',
+      ARI_TEST_EXPECTED_CLIENT_ID: CLIENT,
+      ARI_TEST_JWKS_JSON: '{"keys":[]}',
+      ARI_TEST_SYNTHETIC_PASSWORD: password,
+      ARI_TEST_REDIRECT_URI: REDIRECT,
+    };
+    const fetchUntilToken = (tokenResponse) => async (url, init) => {
+      const href = `${url}`;
+      if (href.includes('grant_type=password')) {
+        return jsonResponse(200, {
+          access_token: tokenB,
+          refresh_token: refreshB,
+          token_type: 'bearer',
+        });
+      }
+      if (href.includes('/oauth/authorize?')) {
+        return jsonResponse(302, '', { location: '/oauth/consent?authorization_id=authz-run' });
+      }
+      if (init?.method === 'GET' && href.includes('/oauth/authorizations/')) {
+        return jsonResponse(200, { authorization_id: 'authz-run' });
+      }
+      if (href.endsWith('/consent')) {
+        return jsonResponse(200, { redirect_url: `${REDIRECT}?code=${code}` });
+      }
+      return tokenResponse();
+    };
+    const probeRun = await captureProcessStreams(() =>
+      runCli(['node', 'consent-harness.mjs', 'run'], {
+        env,
+        fetch: fetchUntilToken(() =>
+          jsonResponse(200, {
+            access_token: tokenA,
+            refresh_token: refreshA,
+            token_type: 'bearer',
+          }),
+        ),
+        runProbe: async () => ({
+          ok: false,
+          exitCode: 4,
+          reason: 'inconclusive',
+          requests: 3,
+          rows: [
+            {
+              id: 'L6-auth-get-user',
+              credential: 'token_a',
+              status: 403,
+              error_code: 'session_not_found',
+              verdict: 'deny',
+              msg: planted,
+              access_token: tokenA,
+            },
+            {
+              id: 'L6-auth-put-user',
+              credential: 'token_a',
+              status: 403,
+              error_code: planted,
+              verdict: 'inconclusive',
+            },
+            {
+              id: 'L5-realtime-token-a',
+              credential: 'token_a',
+              status: 'denied',
+              verdict: 'deny',
+              diagnostic: {
+                event: 'phx_reply',
+                topic: 'realtime:ari-probe-synthetic',
+                ref: '1',
+                payloadStatus: 'error',
+                reason: 'unauthorized',
+                code: 403,
+                socketClose: false,
+                timeoutClass: null,
+                access_token: tokenA,
+                response: planted,
+              },
+            },
+            {
+              id: 'L5-realtime-token-b',
+              credential: 'token_b',
+              status: 'transport',
+              verdict: 'inconclusive',
+              diagnostic: {
+                reason: planted,
+                payloadStatus: 'closed',
+                socketClose: true,
+                code: 1006,
+                access_token: tokenB,
+              },
+            },
+            {
+              id: 'L5-realtime-token-a-timeout',
+              credential: 'token_a',
+              status: 'transport',
+              verdict: 'realtime_transport',
+              diagnostic: {
+                reason: null,
+                payloadStatus: null,
+                socketClose: false,
+                timeoutClass: 'realtime_timeout',
+                access_token: tokenA,
+              },
+            },
+          ],
+        }),
+      }),
+    );
+    const probeReceipt = jsonLine(probeRun.stdout, '"packet":"ari-test-consent-probe"');
+    const authRow = probeReceipt.probe.rows.find((row) => row.id === 'L6-auth-get-user');
+    const unsafeAuth = probeReceipt.probe.rows.find((row) => row.id === 'L6-auth-put-user');
+    const denied = probeReceipt.probe.rows.find((row) => row.id === 'L5-realtime-token-a');
+    const closed = probeReceipt.probe.rows.find((row) => row.id === 'L5-realtime-token-b');
+    assert.equal(authRow.error_code, 'session_not_found');
+    assert.equal(authRow.verdict, 'deny');
+    assert.equal(unsafeAuth.error_code, null);
+    assert.deepEqual(denied.diagnostic, {
+      reason: 'unauthorized',
+      status: 'error',
+      closeCodeClass: null,
+    });
+    assert.deepEqual(closed.diagnostic, {
+      reason: null,
+      status: 'closed',
+      closeCodeClass: 'socket_close_1006',
+    });
+    const timedOut = probeReceipt.probe.rows.find(
+      (row) => row.id === 'L5-realtime-token-a-timeout',
+    );
+    assert.equal(timedOut.diagnostic.closeCodeClass, 'realtime_timeout');
+    assert.equal(timedOut.diagnostic.reason, null);
+    assert.equal(JSON.stringify(probeReceipt).includes('access_token'), false);
+    assertStreamsClean(probeRun, [tokenA, tokenB, refreshA, refreshB, code, password, planted]);
+
+    const openidHeld = await captureProcessStreams(() =>
+      runCli(['node', 'consent-harness.mjs', 'openid-negative'], {
+        env,
+        fetch: fetchUntilToken(() =>
+          jsonResponse(403, {
+            error: 'invalid_request',
+            error_description: 'openid_scope_refused',
+          }),
+        ),
+      }),
+    );
+    const held = jsonLine(openidHeld.stdout, '"label":"openid_negative"');
+    assert.equal(held.reason, 'openid_rejected');
+    assert.equal(held.policyMarker, 'openid_scope_refused');
+    assert.equal(held.accessTokenPresent, false);
+    assert.equal(held.idTokenPresent, false);
+    assert.equal(held.hookInstalledByThisPacket, false);
+    assert.equal(held.acceptance, false);
+    assertStreamsClean(openidHeld, [tokenB, refreshB, code, password, planted]);
+
+    const openidToken = await captureProcessStreams(() =>
+      runCli(['node', 'consent-harness.mjs', 'openid-negative'], {
+        env,
+        fetch: fetchUntilToken(() =>
+          jsonResponse(403, {
+            error: 'invalid_request',
+            error_description: 'openid_scope_refused',
+            access_token: tokenA,
+          }),
+        ),
+      }),
+    );
+    const withToken = jsonLine(openidToken.stdout, '"label":"openid_negative"');
+    assert.equal(withToken.reason, 'access_token_present');
+    assert.equal(withToken.policyMarker, 'openid_scope_refused');
+    assert.equal(withToken.accessTokenPresent, true);
+    assert.equal(withToken.idTokenPresent, false);
+    assertStreamsClean(openidToken, [tokenA, tokenB, refreshB, code, password]);
+
+    const openidGeneric = await captureProcessStreams(() =>
+      runCli(['node', 'consent-harness.mjs', 'openid-negative'], {
+        env,
+        fetch: fetchUntilToken(() =>
+          jsonResponse(400, {
+            error: 'invalid_grant',
+            error_description: planted,
+          }),
+        ),
+      }),
+    );
+    const generic = jsonLine(openidGeneric.stdout, '"label":"openid_negative"');
+    assert.equal(generic.reason, 'exchange_inconclusive');
+    assert.equal(generic.policyMarker, null);
+    assert.equal(generic.accessTokenPresent, false);
+    assert.equal(generic.idTokenPresent, false);
+    assert.notEqual(generic.reason, 'openid_rejected');
+    assertStreamsClean(openidGeneric, [tokenB, refreshB, code, password, planted]);
+  });
+
   test('redacted Token A summary keeps session claims and drops the jwt, code, and verifier', async () => {
     const sourceSessionId = '22222222-2222-4222-8222-222222222222';
     const sessionId = '33333333-3333-4333-8333-333333333333';

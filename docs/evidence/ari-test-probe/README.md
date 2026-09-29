@@ -236,6 +236,9 @@ exported consent and exchange functions return redacted receipts only.
 Token A is the code-exchange access token. Token B is the password-login
 access token. Both stay in memory. The command does not export them and
 does not write them to a file. Stdout is only the redacted receipt.
+Primary Users can read Auth `error_code`, a scrubbed Realtime diagnostic
+(`reason`, `status`, `closeCodeClass`), and the openid facts `policyMarker`,
+`accessTokenPresent`, and `idTokenPresent` in that JSON. Token values stay out.
 
 `node docs/evidence/ari-test-probe/consent-harness.mjs openid-negative`
 sends `openid` on purpose. It expects no `id_token`. It does not call

@@ -715,9 +715,19 @@ function openIdReceipt(extra, sessionId = null) {
     openidSent: false,
     rejectionStage: null,
     idTokenPresent: false,
+    accessTokenPresent: false,
+    policyMarker: null,
     ...extra,
     ...(typeof sessionId === 'string' ? { passwordSessionId: sessionId } : {}),
   });
+}
+
+function exchangePolicyFacts(exchange) {
+  return {
+    idTokenPresent: exchange.idTokenPresent === true,
+    accessTokenPresent: exchange.accessTokenPresent === true,
+    policyMarker: exchange.hookMarker === true ? HOOK_OPENID_MARKER : null,
+  };
 }
 
 export async function runOpenIdNegative(input) {
@@ -861,14 +871,15 @@ export async function runOpenIdNegative(input) {
     codeChallenge: pkce.codeChallenge,
     redirectUri: redirect.redirectUri,
   });
+  const policyFacts = exchangePolicyFacts(exchange);
   if (exchange.idTokenPresent === true) {
     return receipt({
       ok: false,
       reason: 'id_token_present',
       openidSent: true,
       rejectionStage: 'exchange',
-      idTokenPresent: true,
       exchangeStatus: exchange.status,
+      ...policyFacts,
     });
   }
   if (exchange.reason === 'exchange_transport_failed' || exchange.exchanged !== true) {
@@ -882,6 +893,7 @@ export async function runOpenIdNegative(input) {
       rejectionStage: 'exchange',
       exchangeStatus: typeof exchange.status === 'number' ? exchange.status : null,
       codeChallengeMethod: 'S256',
+      ...policyFacts,
     });
   }
   if (typeof exchange.status === 'number' && exchange.status >= 500) {
@@ -892,6 +904,7 @@ export async function runOpenIdNegative(input) {
       rejectionStage: 'exchange',
       exchangeStatus: exchange.status,
       codeChallengeMethod: 'S256',
+      ...policyFacts,
     });
   }
   const httpOk =
@@ -902,6 +915,7 @@ export async function runOpenIdNegative(input) {
       reason: 'openid_exchange_succeeded',
       openidSent: true,
       exchangeStatus: exchange.status,
+      ...policyFacts,
     });
   }
   if (
@@ -916,6 +930,7 @@ export async function runOpenIdNegative(input) {
       rejectionStage: 'exchange',
       exchangeStatus: exchange.status,
       codeChallengeMethod: 'S256',
+      ...policyFacts,
     });
   }
   if (exchangeHookDenial(exchange)) {
@@ -926,6 +941,7 @@ export async function runOpenIdNegative(input) {
       rejectionStage: 'exchange',
       exchangeStatus: exchange.status,
       codeChallengeMethod: 'S256',
+      ...policyFacts,
     });
   }
   if (typeof exchange.oauthError === 'string' && OPENID_POLICY_ERRORS.has(exchange.oauthError)) {
@@ -936,6 +952,7 @@ export async function runOpenIdNegative(input) {
       rejectionStage: 'exchange',
       exchangeStatus: typeof exchange.status === 'number' ? exchange.status : null,
       codeChallengeMethod: 'S256',
+      ...policyFacts,
     });
   }
   return receipt({
@@ -945,6 +962,7 @@ export async function runOpenIdNegative(input) {
     rejectionStage: 'exchange',
     exchangeStatus: typeof exchange.status === 'number' ? exchange.status : null,
     codeChallengeMethod: 'S256',
+    ...policyFacts,
   });
 }
 
@@ -1066,6 +1084,64 @@ function claimSummary(value) {
   };
 }
 
+const SAFE_AUTH_ERROR_CODE = /^[a-z0-9_]{1,64}$/u;
+const SAFE_REALTIME_TOKEN = /^[a-z0-9_.:-]{1,64}$/iu;
+
+function safeAuthErrorCode(value) {
+  return typeof value === 'string' && SAFE_AUTH_ERROR_CODE.test(value) ? value : null;
+}
+
+function safeRealtimeToken(value) {
+  if (typeof value !== 'string' || !SAFE_REALTIME_TOKEN.test(value)) return null;
+  return value;
+}
+
+function closeCodeClass(diagnostic) {
+  if (diagnostic.socketClose === true) {
+    const code = diagnostic.code;
+    if (typeof code === 'number' && Number.isInteger(code) && code >= 1000 && code <= 4999) {
+      return `socket_close_${code}`;
+    }
+    return 'socket_close';
+  }
+  if (diagnostic.timeoutClass === 'realtime_timeout') return 'realtime_timeout';
+  return null;
+}
+
+function scrubbedRealtimeDiagnostic(row) {
+  const diagnostic = row.diagnostic;
+  const isRealtime = typeof row.id === 'string' && row.id.startsWith('L5-realtime-');
+  const hasDiagnostic =
+    diagnostic !== null && typeof diagnostic === 'object' && !Array.isArray(diagnostic);
+  if (!isRealtime && !hasDiagnostic) return undefined;
+  if (!hasDiagnostic) return undefined;
+  const replyStatus = diagnostic.payloadStatus ?? diagnostic.status;
+  return {
+    reason: safeRealtimeToken(diagnostic.reason),
+    status: safeRealtimeToken(replyStatus),
+    closeCodeClass: closeCodeClass(diagnostic),
+  };
+}
+
+function projectProbeRow(row) {
+  if (row === null || typeof row !== 'object') {
+    return { id: null, credential: null, status: null, verdict: null, label: null };
+  }
+  const projected = {
+    id: row.id ?? null,
+    credential: row.credential ?? null,
+    status: row.status ?? null,
+    verdict: row.verdict ?? null,
+    label: row.label ?? null,
+  };
+  if (typeof row.id === 'string' && row.id.startsWith('L6-auth')) {
+    projected.error_code = safeAuthErrorCode(row.error_code);
+  }
+  const diagnostic = scrubbedRealtimeDiagnostic(row);
+  if (diagnostic !== undefined) projected.diagnostic = diagnostic;
+  return projected;
+}
+
 function publicProbeSummary(probe) {
   if (probe === null || typeof probe !== 'object') {
     return { ok: false, reason: 'probe_unreadable' };
@@ -1075,15 +1151,7 @@ function publicProbeSummary(probe) {
     exitCode: typeof probe.exitCode === 'number' ? probe.exitCode : null,
     reason: typeof probe.reason === 'string' ? probe.reason : null,
     requests: typeof probe.requests === 'number' ? probe.requests : 0,
-    rows: Array.isArray(probe.rows)
-      ? probe.rows.map((row) => ({
-          id: row.id ?? null,
-          credential: row.credential ?? null,
-          status: row.status ?? null,
-          verdict: row.verdict ?? null,
-          label: row.label ?? null,
-        }))
-      : [],
+    rows: Array.isArray(probe.rows) ? probe.rows.map((row) => projectProbeRow(row)) : [],
     tokenA: claimSummary(probe.tokenA),
     tokenB: claimSummary(probe.tokenB),
   };
