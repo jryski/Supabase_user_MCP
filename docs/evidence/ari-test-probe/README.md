@@ -89,6 +89,7 @@ node --test docs/evidence/ari-test-probe/decisions.test.mjs
 node --test docs/evidence/ari-test-probe/hook-v2.test.mjs
 node --test docs/evidence/ari-test-probe/hook-v2.pglite.test.mjs
 node --test docs/evidence/ari-test-probe/consent-harness.test.mjs
+npm run test:ari-packet
 node docs/evidence/ari-test-probe/probe.mjs plan
 node docs/evidence/ari-test-probe/consent-harness.mjs plan
 ```
