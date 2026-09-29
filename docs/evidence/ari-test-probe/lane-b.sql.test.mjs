@@ -34,7 +34,7 @@ describe('lane B SQL packet', { concurrency: false }, () => {
     assert.match(sql, /values \(v_external, 'http:\/\/127\.0\.0\.1:8788\/mcp', v_agent_id/);
     assert.match(sql, /mapping\.mcp_resource = 'http:\/\/127\.0\.0\.1:8788\/mcp'/);
     assert.match(sql, /external A resource must differ from baseline A/);
-    assert.equal(sql.includes("values (v_external, v_mcp_resource"), false);
+    assert.equal(sql.includes('values (v_external, v_mcp_resource'), false);
   });
 
   test('sql/03 and sql/04 stay free of the B mapping', async () => {
