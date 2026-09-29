@@ -543,8 +543,12 @@ test('mcp_ingress role SQL stays isolated and forbids production targets', async
   assert.match(sql, /create role mcp_ingress/);
   assert.match(sql, /nologin/);
   assert.match(sql, /noinherit/);
+  assert.match(sql, /nosuperuser/);
+  assert.match(sql, /nobypassrls/);
   assert.match(sql, /grant mcp_ingress to authenticator/);
-  assert.match(sql, /revoke authenticated, anon, service_role from mcp_ingress/);
+  assert.equal(/^\s*revoke\b/imu.test(sql), false);
+  assert.equal(/^\s*alter\s+role\b/imu.test(sql), false);
+  assert.match(sql, /creator row lets it grant membership, not act as mcp_ingress/);
   assert.match(sql, /mcp_ingress is a member of authenticated, anon, or service_role/);
   assert.match(sql, /mcp_ingress has table grants/);
   assert.match(sql, /lygftpbjgqgvuunkwnxf/);

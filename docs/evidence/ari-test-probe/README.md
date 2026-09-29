@@ -129,9 +129,12 @@ SQL apply order. This agent does not run it.
 5. In one SQL-editor batch, paste the setting and then the body of
    `sql/03-mcp-ingress-role.sql`. A second run will not see the setting.
    The applier is a non-superuser with `CREATEROLE`. Isolation attributes
-   are set on `CREATE ROLE`. The batch does not `ALTER` `SUPERUSER` or
-   `BYPASSRLS`. An existing role that already has either attribute fails
-   closed.
+   are set on `CREATE ROLE` only. If `mcp_ingress` already exists, the batch
+   verifies it and fails closed. It does not repair the role. PostgreSQL 16+
+   keeps a creator ADMIN membership with inherit false and set false. That
+   row may grant membership. It does not let the creator act as
+   `mcp_ingress`. Hosted TEST is PostgreSQL 17.6. The in-repo check is
+   PGlite PostgreSQL 18.3.
 
    ```sql
    select set_config('ari.project_ref', 'odbcejsuuqdzhabjmozi', false);
