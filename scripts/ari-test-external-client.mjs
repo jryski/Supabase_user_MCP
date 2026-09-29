@@ -17,6 +17,7 @@ import {
 
 export const EXTERNAL_CLIENT_PROFILE = 'TEST_ONLY_PUBLIC_PKCE';
 export const MARKER_TOOL_NAME = 'ari_test_marker_get';
+const CANARY_SHAPE = /^ari-probe-marker-[a-z0-9]{20}$/u;
 
 const SECRET_KEY = /"(access_token|refresh_token|code_verifier|id_token|password)"/i;
 const JWT_SHAPE = /eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\./;
@@ -43,6 +44,7 @@ export function createExternalPublicPkceProvider(options) {
   let tokenIssuer;
   let codeVerifier;
   let pendingState = '';
+  let authorizationDiscovered = false;
   const oauthState = crypto.randomUUID();
   return {
     profile: EXTERNAL_CLIENT_PROFILE,
@@ -81,10 +83,14 @@ export function createExternalPublicPkceProvider(options) {
       tokenIssuer = typeof tokens.issuer === 'string' ? tokens.issuer : undefined;
       void tokens.refresh_token;
     },
+    authorizationDiscovered() {
+      return authorizationDiscovered;
+    },
     redirectToAuthorization(authorizationUrl) {
       const state = authorizationUrl.searchParams.get('state') ?? '';
       if (state !== oauthState) throw coded('authorization_code_refused');
       pendingState = state;
+      authorizationDiscovered = true;
       options.writeIpc(
         assertIpcHasNoSecrets({
           type: 'authorization_request',
@@ -255,34 +261,91 @@ function toolNames(listed) {
     .filter((name) => typeof name === 'string' && /^[a-z0-9_-]{1,80}$/u.test(name));
 }
 
+function markerText(marker) {
+  return Array.isArray(marker?.content)
+    ? marker.content.find((block) => block?.type === 'text')?.text
+    : undefined;
+}
+
+function markerAccepted(marker) {
+  const text = markerText(marker);
+  return (
+    marker?.isError !== true &&
+    typeof text === 'string' &&
+    text.length > 0 &&
+    text.length <= 256 &&
+    !JWT_SHAPE.test(text)
+  );
+}
+
 export async function runExternalClientSession(options) {
   const connected = await connectExternalClient(options);
+  let client = connected.client;
+  let clientAlive = true;
   try {
-    const listed = await connected.client.listTools();
+    const listed = await client.listTools();
     const names = toolNames(listed);
-    const marker = await connected.client.callTool({ name: MARKER_TOOL_NAME, arguments: {} });
-    const text = Array.isArray(marker?.content)
-      ? marker.content.find((block) => block?.type === 'text')?.text
-      : undefined;
-    const markerCalled =
-      marker?.isError !== true &&
-      typeof text === 'string' &&
-      text.length > 0 &&
-      text.length <= 256 &&
-      !JWT_SHAPE.test(text);
+    const marker = await client.callTool({ name: MARKER_TOOL_NAME, arguments: {} });
+    const text = markerText(marker);
+    const markerCalled = markerAccepted(marker);
+    const canaryShapeOk = markerCalled && typeof text === 'string' && CANARY_SHAPE.test(text);
     if (!names.includes(MARKER_TOOL_NAME) || !markerCalled) throw coded('marker_call_failed');
+    options.writeIpc(
+      assertIpcHasNoSecrets({
+        type: 'checkpoint',
+        id: 'P5',
+        initialized: true,
+        discovered: connected.provider.authorizationDiscovered() === true,
+        toolsListed: true,
+        markerCalled: true,
+        canaryShapeOk,
+        downstreamBound: true,
+        externalAuthorizationCompleted: true,
+        toolNames: names,
+      }),
+    );
+    for (;;) {
+      const message = JSON.parse(await options.readIpc());
+      assertIpcHasNoSecrets(message);
+      if (message.type === 'finish') break;
+      if (message.type !== 'call_tool_once' || (message.id !== 'N4' && message.id !== 'N5')) {
+        throw coded('probe_refused');
+      }
+      let failed = true;
+      if (!clientAlive) {
+        const opened = await openClient(options.mcpUrl, connected.provider);
+        if (opened.error !== undefined) {
+          await closeOpened(opened);
+          clientAlive = false;
+        } else {
+          client = opened.client;
+          clientAlive = true;
+        }
+      }
+      if (clientAlive && client !== undefined) {
+        try {
+          const probe = await client.callTool({ name: MARKER_TOOL_NAME, arguments: {} });
+          failed = !markerAccepted(probe);
+        } catch {
+          failed = true;
+          clientAlive = false;
+          await client.close().catch(() => undefined);
+        }
+      }
+      options.writeIpc(
+        assertIpcHasNoSecrets({
+          type: 'tool_call_result',
+          id: message.id,
+          failed,
+        }),
+      );
+    }
     return assertIpcHasNoSecrets({
       type: 'receipt',
-      initialized: true,
-      toolsListed: true,
-      markerCalled: true,
-      downstreamBound: true,
-      externalAuthorizationCompleted: true,
-      toolNames: names,
       childEnvNames: credentialEnvNames(options.env ?? {}),
     });
   } finally {
-    await connected.client.close().catch(() => undefined);
+    await client?.close().catch(() => undefined);
   }
 }
 

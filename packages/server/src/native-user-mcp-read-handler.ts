@@ -46,10 +46,29 @@ export interface NativeUserMcpReadHandlerConfig {
   readonly now?: () => number;
   readonly handshakeTtlMs?: number;
   readonly livenessTimeoutMs?: number;
+  /** In-process counters for the Lane B parent. Never store a bearer here. */
+  readonly observation?: LaneBRunObservation;
+}
+
+export interface LaneBRunObservation {
+  livenessChecks: number;
+  livenessDenials: number;
+  markerReads: number;
+  tokenAOfferedAsB: boolean;
+  tokenARejectedAsB: boolean;
+  sourceSessionId: string | null;
+  bSessionId: string | null;
 }
 
 function invalidConfig(): never {
   throw new NativeUserMcpConfigError();
+}
+
+function bearerToken(request: Request): string {
+  const header = request.headers.get('authorization');
+  if (header === null) return '';
+  const match = /^Bearer\s+(\S+)$/u.exec(header);
+  return match?.[1] ?? '';
 }
 
 function jsonResponse(status: number, body: Readonly<Record<string, unknown>>): Response {
@@ -142,14 +161,16 @@ export function createNativeUserMcpReadHandler(
         ...(enableMarker
           ? {
               ariTestMarker: {
-                readMarker: (signal) =>
-                  readAriTestMarker({
+                readMarker: (signal) => {
+                  if (config.observation !== undefined) config.observation.markerReads += 1;
+                  return readAriTestMarker({
                     origin: authOrigin,
                     accessToken,
                     publishableKey: config.publishableKey,
                     signal,
                     ...(fetchImpl === undefined ? {} : { fetch: fetchImpl }),
-                  }),
+                  });
+                },
               },
             }
           : {}),
@@ -167,6 +188,17 @@ export function createNativeUserMcpReadHandler(
     request: Request,
   ): Promise<Response> => {
     const binding = principalBinding(principal);
+    const observation = config.observation;
+    if (observation !== undefined) {
+      observation.sourceSessionId = principal.sourceSessionId;
+      if (!observation.tokenAOfferedAsB) {
+        const offered = bearerToken(request);
+        if (offered.length > 0) {
+          observation.tokenAOfferedAsB = true;
+          observation.tokenARejectedAsB = await store.rejectsOfferedAccessToken(offered, binding);
+        }
+      }
+    }
     const grant = store.resolve(binding);
     if (grant.status === 'missing') {
       const handshake = store.beginHandshake(binding);
@@ -182,6 +214,7 @@ export function createNativeUserMcpReadHandler(
     if (grant.status !== 'live') {
       return jsonResponse(403, { error: DOWNSTREAM_CREDENTIAL_UNRESOLVED });
     }
+    if (observation !== undefined) observation.bSessionId = store.boundSessionId(binding);
     const live = await probeSourceSessionLive(
       {
         supabaseUrl: config.supabaseUrl,
@@ -195,6 +228,10 @@ export function createNativeUserMcpReadHandler(
         aClientId: principal.clientId,
       },
     );
+    if (observation !== undefined) {
+      observation.livenessChecks += 1;
+      if (!live) observation.livenessDenials += 1;
+    }
     if (!live) return jsonResponse(403, { error: DOWNSTREAM_CREDENTIAL_UNRESOLVED });
     return dispatchWithTokenB(request, grant.accessToken);
   };

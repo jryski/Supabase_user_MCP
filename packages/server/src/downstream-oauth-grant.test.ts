@@ -70,6 +70,28 @@ function storeFor(
 }
 
 describe('downstream OAuth grant binding', () => {
+  it('rejects an offered Token A and does not retain it', async () => {
+    const material = await keys();
+    const tokenA = await sign(
+      material.privateKey,
+      {
+        role: 'mcp_ingress',
+        client_id: A_CLIENT,
+        agent_id: AGENT,
+        session_id: DECOY,
+        source_session_id: SOURCE,
+      },
+      'https://mcp.loopback.invalid/mcp',
+    );
+    const store = storeFor(material, async () => {
+      throw new Error('offer must not exchange');
+    });
+    expect(await store.rejectsOfferedAccessToken(tokenA, principal)).toBe(true);
+    expect(store.resolve(principal).status).toBe('missing');
+    expect(store.containsRetainedMaterial(tokenA)).toBe(false);
+    expect(store.boundSessionId(principal)).toBeNull();
+  });
+
   it('binds only a handshake whose every field matches and drops refresh_token', async () => {
     expect(DOWNSTREAM_B_GRANT_PROFILE).toBe('TEST_ONLY_PUBLIC_PKCE');
     const material = await keys();

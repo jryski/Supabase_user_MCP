@@ -3,7 +3,8 @@
  * Default command is `plan`. It does not open a socket and does not contact
  * hosted TEST. `run` stays closed unless the controller sets the G5 gates
  * and ARI_LANE_B_EXECUTE=1. The child receives no bearer, refresh token,
- * password, or admin credential. First-party consent stays in the browser.
+ * password, or admin credential. The parent performs first-party consent
+ * for external A and downstream B. Stdin accepts only the line `continue`.
  */
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
@@ -11,6 +12,7 @@ import { createServer } from 'node:http';
 import { createInterface } from 'node:readline';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
+import { performLoopbackConsent } from '../docs/evidence/ari-test-probe/consent-harness.mjs';
 import { assertIpcHasNoSecrets } from './ari-test-external-client.mjs';
 
 const FORBIDDEN = [
@@ -29,6 +31,15 @@ const CHILD_ARI = [
 ];
 const SAFE_CODE = /^[a-z0-9_]{1,64}$/;
 const JWT_SHAPE = /eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\./;
+const SESSION_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;
+const PARENT_SECRET_ENV = [
+  'ARI_TEST_SYNTHETIC_PASSWORD',
+  'ARI_USER_PASSWORD',
+  'ARI_FIRST_PARTY_ACCESS_TOKEN',
+  'ARI_TEST_PUBLISHABLE_KEY',
+  'ARI_TEST_JWKS_JSON',
+  'ARI_TEST_SUPABASE_URL',
+];
 const CLIENT_SCRIPT = fileURLToPath(new URL('./ari-test-external-client.mjs', import.meta.url));
 
 function coded(code) {
@@ -54,11 +65,13 @@ export function controllerPlan() {
       'Apply sql/07, then sql/05, then sql/06 on odbcejsuuqdzhabjmozi only.',
       'If sql/05 raises STOP AND REPORT because auth.sessions is not readable, stop. Do not grant schema auth.',
       'Register external A and TEST-only public PKCE B out of band. No client secret. No openid. No DCR.',
-      'N4 is A-session revocation. B-session revocation is a separate case and uses a first-party session.',
-      'F1 in sql/06 covers public.ari_probe_marker only.',
+      'N4 is A source-session revocation. N5 is B-session revocation and uses a first-party session.',
+      'N2, N3, N6, N7, and N8 are not executed by this run.',
+      'F1 in sql/06 covers public.ari_probe_marker only. That case is N6 and is not executed here.',
       'node scripts/run-ari-test-external-e2e.mjs plan',
       'After G5, set ARI_LANE_B_EXECUTE=1 and run node scripts/run-ari-test-external-e2e.mjs run.',
-      'Open each controller_action authorizationUrl in a browser. Do not paste a bearer into the child.',
+      'The parent consents for external_a and downstream_b. Do not paste a bearer into the child or stdin.',
+      'After P5, answer each revoke controller_action with a stdin line that is exactly continue.',
     ],
     rollback: [
       'drop function if exists public.ari_probe_source_session_live_v1(uuid, text)',
@@ -149,7 +162,12 @@ export function childEnvironment(env) {
   next.ARI_LANE_B_LIVE = 'controller-g5';
   next.ARI_LANE_B_EXECUTE = '1';
   for (const name of FORBIDDEN) delete next[name];
+  for (const name of PARENT_SECRET_ENV) delete next[name];
   return next;
+}
+
+export function isContinueLine(line) {
+  return line === 'continue';
 }
 
 function lineReader(stream) {
@@ -184,6 +202,9 @@ function lineReader(stream) {
         waiter = resolve;
       });
     },
+    close() {
+      rl.close();
+    },
   };
 }
 
@@ -216,15 +237,46 @@ function loopbackSupabase(supabaseUrl) {
   }
 }
 
-function parentReceipt(message, env) {
-  const toolNames = Array.isArray(message.toolNames)
-    ? message.toolNames.filter(
+function notExecuted(id, name) {
+  return { id, name, executed: false, pass: false, label: 'not_executed' };
+}
+
+function executedRow(id, name, pass) {
+  return { id, name, executed: true, pass: pass === true };
+}
+
+function acceptanceRows(input) {
+  return [
+    executedRow('P1', 'canary_shape', input.canaryShape),
+    executedRow('P2', 'b_via_second_consent', input.secondConsent),
+    executedRow('P3', 'discovery_initialize', input.discoveryInitialize),
+    executedRow('P4', 'list_tools', input.listTools),
+    executedRow('P5', 'marker_read', input.markerRead),
+    executedRow('N1', 'a_as_b', input.tokenARejectedAsB),
+    notExecuted('N2', 'wrong_user'),
+    notExecuted('N3', 'wrong_agent_client_resource'),
+    executedRow('N4', 'a_source_session_revocation', input.aSourceRevoked),
+    executedRow('N5', 'b_session_revocation', input.bSessionRevoked),
+    notExecuted('N6', 'hook_bypass_f1'),
+    notExecuted('N7', 'openid'),
+    notExecuted('N8', 'unbound_mismatched_b'),
+  ];
+}
+
+function rowsPass(rows) {
+  return rows.every((row) => (row.executed === true ? row.pass === true : row.pass === false));
+}
+
+function parentReceipt(env, details) {
+  const toolNames = Array.isArray(details.toolNames)
+    ? details.toolNames.filter(
         (name) => typeof name === 'string' && /^[a-z0-9_-]{1,80}$/u.test(name),
       )
     : [];
-  const childEnvNames = Array.isArray(message.childEnvNames)
-    ? message.childEnvNames.filter((name) => typeof name === 'string' && /^[A-Z0-9_]+$/u.test(name))
+  const childEnvNames = Array.isArray(details.childEnvNames)
+    ? details.childEnvNames.filter((name) => typeof name === 'string' && /^[A-Z0-9_]+$/u.test(name))
     : [];
+  const rows = acceptanceRows(details);
   return {
     type: 'receipt',
     packet: 'lane-b-external-client',
@@ -236,11 +288,15 @@ function parentReceipt(message, env) {
     syntheticLoopback: loopbackSupabase(env.ARI_TEST_SUPABASE_URL),
     g5Head: env.ARI_LANE_B_G5_HEAD,
     projectRef: env.ARI_TEST_PROJECT_REF,
-    initialized: message.initialized === true,
-    toolsListed: message.toolsListed === true,
-    markerCalled: message.markerCalled === true,
-    downstreamBound: message.downstreamBound === true,
-    externalAuthorizationCompleted: message.externalAuthorizationCompleted === true,
+    passwordSessionId: details.passwordSessionId,
+    markerReads: details.markerReads,
+    initialized: details.discoveryInitialize === true,
+    toolsListed: details.listTools === true,
+    markerCalled: details.markerRead === true,
+    downstreamBound: details.secondConsent === true,
+    externalAuthorizationCompleted: details.externalConsent === true,
+    rowsPass: rowsPass(rows),
+    rows,
     toolNames,
     childEnvNames,
   };
@@ -283,6 +339,12 @@ export async function startExternalRuntime(env) {
     'mcp_resource_not_loopback',
   );
   if (bRedirect.origin !== mcpUrl.origin) throw coded('live_configuration_incomplete');
+  if (
+    typeof env.ARI_TEST_SYNTHETIC_PASSWORD !== 'string' ||
+    env.ARI_TEST_SYNTHETIC_PASSWORD.length === 0
+  ) {
+    throw coded('synthetic_password_required');
+  }
   let jwks;
   try {
     jwks = JSON.parse(required(env, 'ARI_TEST_JWKS_JSON'));
@@ -297,6 +359,15 @@ export async function startExternalRuntime(env) {
   const { createNativeUserMcpReadHandler } = await import(
     '../packages/server/dist/native-user-mcp-read-handler.js'
   );
+  const observation = {
+    livenessChecks: 0,
+    livenessDenials: 0,
+    markerReads: 0,
+    tokenAOfferedAsB: false,
+    tokenARejectedAsB: false,
+    sourceSessionId: null,
+    bSessionId: null,
+  };
   let handler;
   try {
     handler = createNativeUserMcpReadHandler({
@@ -310,6 +381,7 @@ export async function startExternalRuntime(env) {
       downstreamClientId: required(env, 'ARI_DOWNSTREAM_CLIENT_ID'),
       downstreamRedirectUri: bRedirect.toString(),
       enableAriTestMarker: true,
+      observation,
     });
   } catch {
     throw coded('live_configuration_incomplete');
@@ -412,55 +484,167 @@ export async function startExternalRuntime(env) {
     session.stderr = `${session.stderr}${chunk.toString('utf8')}`.slice(-4000);
   });
   session.child = child;
-  return { server, child, session, timeoutMs, childEnv };
+  return {
+    server,
+    child,
+    session,
+    timeoutMs,
+    childEnv,
+    writeChild,
+    authOrigin: supabase.origin,
+    observation,
+    secrets: { syntheticAccessToken: undefined, passwordSessionId: undefined },
+    consentFlows: [],
+  };
 }
 
-async function driveExternalSession(runtime, env) {
+function sessionIdOrThrow(value, code) {
+  if (typeof value !== 'string' || !SESSION_ID.test(value)) throw coded(code);
+  return value;
+}
+
+async function performParentConsent(runtime, env, authorizationUrl) {
+  const retained = runtime.secrets.syntheticAccessToken;
+  const receipt = await performLoopbackConsent({
+    fetch: globalThis.fetch,
+    authOrigin: runtime.authOrigin,
+    authorizationUrl,
+    publishableKey: env.ARI_TEST_PUBLISHABLE_KEY,
+    password: typeof retained === 'string' ? undefined : env.ARI_TEST_SYNTHETIC_PASSWORD,
+    userAccessToken: retained,
+    retainSession(token) {
+      runtime.secrets.syntheticAccessToken = token;
+    },
+  });
+  if (typeof receipt.passwordSessionId === 'string') {
+    runtime.secrets.passwordSessionId = receipt.passwordSessionId;
+  }
+  if (receipt.ok !== true) throw coded(safeCode(receipt.reason));
+}
+
+function livenessFailClosed(before, after, childFailed) {
+  return (
+    childFailed === true &&
+    after.livenessChecks > before.livenessChecks &&
+    after.livenessDenials > before.livenessDenials &&
+    after.markerReads === before.markerReads
+  );
+}
+
+function observeCounts(observation) {
+  return {
+    livenessChecks: observation.livenessChecks,
+    livenessDenials: observation.livenessDenials,
+    markerReads: observation.markerReads,
+  };
+}
+
+async function driveExternalSession(runtime, env, stdin) {
   const deadline = Date.now() + runtime.timeoutMs;
   const reader = lineReader(runtime.child.stdout);
-  let receipt;
-  while (receipt === undefined) {
-    const remaining = deadline - Date.now();
-    if (remaining <= 0) throw coded('orchestration_timeout');
-    const line = await withTimeout(reader.next(), remaining);
-    if (line === null) throw coded('child_failed');
-    let message;
-    try {
-      message = JSON.parse(line);
-    } catch {
-      throw coded('child_failed');
+  const stdinReader = lineReader(stdin);
+  try {
+    const remaining = () => {
+      const left = deadline - Date.now();
+      if (left <= 0) throw coded('orchestration_timeout');
+      return left;
+    };
+    const readChild = async () => {
+      const line = await withTimeout(reader.next(), remaining());
+      if (line === null) throw coded('child_failed');
+      let message;
+      try {
+        message = JSON.parse(line);
+      } catch {
+        throw coded('child_failed');
+      }
+      assertIpcHasNoSecrets(message);
+      if (message.type === 'error') throw coded(safeCode(message.code));
+      return message;
+    };
+    let checkpoint;
+    while (checkpoint === undefined) {
+      const message = await readChild();
+      if (message.type === 'authorization_request') {
+        runtime.session.expectedAState = message.state;
+        await performParentConsent(runtime, env, message.authorizationUrl);
+        runtime.consentFlows.push('external_a');
+      } else if (message.type === 'downstream_authorization_required') {
+        runtime.session.expectedBState = message.state;
+        await performParentConsent(runtime, env, message.authorizationUrl);
+        runtime.consentFlows.push('downstream_b');
+      } else if (message.type === 'checkpoint' && message.id === 'P5') {
+        checkpoint = message;
+      } else {
+        throw coded('child_failed');
+      }
     }
-    assertIpcHasNoSecrets(message);
-    if (message.type === 'authorization_request') {
-      runtime.session.expectedAState = message.state;
+    const probeRevocation = async (id, action, field, value) => {
+      const sessionId = sessionIdOrThrow(value, 'session_id_unreadable');
       writeJson(process.stdout, {
         type: 'controller_action',
-        action: 'open_authorization',
-        flow: 'external_a',
-        authorizationUrl: message.authorizationUrl,
-        state: message.state,
+        action,
+        [field]: sessionId,
       });
-    } else if (message.type === 'downstream_authorization_required') {
-      runtime.session.expectedBState = message.state;
-      writeJson(process.stdout, {
-        type: 'controller_action',
-        action: 'open_authorization',
-        flow: 'downstream_b',
-        authorizationUrl: message.authorizationUrl,
-        state: message.state,
-        handshakeId: message.handshakeId,
-      });
-    } else if (message.type === 'receipt') {
-      receipt = parentReceipt(message, env);
-    } else if (message.type === 'error') {
-      throw coded(safeCode(message.code));
+      const line = await withTimeout(stdinReader.next(), remaining());
+      if (!isContinueLine(line)) throw coded('stdin_refused');
+      const before = observeCounts(runtime.observation);
+      runtime.writeChild({ type: 'call_tool_once', id });
+      const result = await readChild();
+      if (result.type !== 'tool_call_result' || result.id !== id) throw coded('child_failed');
+      const after = observeCounts(runtime.observation);
+      return livenessFailClosed(before, after, result.failed === true);
+    };
+    const aSourceRevoked = await probeRevocation(
+      'N4',
+      'revoke_a_source_session',
+      'source_session_id',
+      runtime.observation.sourceSessionId,
+    );
+    const bSessionRevoked = await probeRevocation(
+      'N5',
+      'revoke_b_session',
+      'b_session_id',
+      runtime.observation.bSessionId,
+    );
+    runtime.writeChild({ type: 'finish' });
+    const finalMessage = await readChild();
+    if (finalMessage.type !== 'receipt') throw coded('child_failed');
+    if (JWT_SHAPE.test(runtime.session.stderr) || /refresh_token/i.test(runtime.session.stderr)) {
+      throw coded('ipc_refused_secret');
     }
+    const toolNames = Array.isArray(checkpoint.toolNames) ? checkpoint.toolNames : [];
+    const passwordSessionId = sessionIdOrThrow(
+      runtime.secrets.passwordSessionId,
+      'password_session_id_missing',
+    );
+    const receipt = parentReceipt(env, {
+      canaryShape: checkpoint.canaryShapeOk === true && checkpoint.markerCalled === true,
+      secondConsent:
+        runtime.consentFlows[0] === 'external_a' &&
+        runtime.consentFlows[1] === 'downstream_b' &&
+        checkpoint.downstreamBound === true,
+      discoveryInitialize: checkpoint.discovered === true && checkpoint.initialized === true,
+      listTools: checkpoint.toolsListed === true && toolNames.includes('ari_test_marker_get'),
+      markerRead: checkpoint.markerCalled === true && runtime.observation.markerReads >= 1,
+      tokenARejectedAsB:
+        runtime.observation.tokenAOfferedAsB === true &&
+        runtime.observation.tokenARejectedAsB === true,
+      aSourceRevoked,
+      bSessionRevoked,
+      externalConsent: runtime.consentFlows.includes('external_a'),
+      passwordSessionId,
+      markerReads: runtime.observation.markerReads,
+      toolNames,
+      childEnvNames: finalMessage.childEnvNames,
+    });
+    assertIpcHasNoSecrets(receipt);
+    if (receipt.rowsPass !== true) throw coded('lane_b_row_failed');
+    return receipt;
+  } finally {
+    stdinReader.close();
+    reader.close();
   }
-  if (JWT_SHAPE.test(runtime.session.stderr) || /refresh_token/i.test(runtime.session.stderr)) {
-    throw coded('ipc_refused_secret');
-  }
-  assertIpcHasNoSecrets(receipt);
-  return receipt;
 }
 
 export async function stopExternalRuntime(runtime) {
@@ -505,9 +689,24 @@ async function main() {
   let runtime;
   try {
     runtime = await startExternalRuntime(process.env);
-    const receipt = await driveExternalSession(runtime, process.env);
+    const receipt = await driveExternalSession(runtime, process.env, process.stdin);
     process.stdout.write(`${JSON.stringify(receipt)}\n`);
   } catch (error) {
+    const sessionId = runtime?.secrets?.passwordSessionId;
+    if (typeof sessionId === 'string' && SESSION_ID.test(sessionId)) {
+      const failure = {
+        type: 'receipt',
+        packet: 'lane-b-external-client',
+        acceptance: false,
+        hookInstalled: false,
+        executedByWriter: false,
+        passwordSessionId: sessionId,
+        rowsPass: false,
+        reason: safeCode(error?.code),
+      };
+      assertIpcHasNoSecrets(failure);
+      process.stdout.write(`${JSON.stringify(failure)}\n`);
+    }
     process.stderr.write(`${safeCode(error?.code)}\n`);
     process.exitCode = 2;
   } finally {

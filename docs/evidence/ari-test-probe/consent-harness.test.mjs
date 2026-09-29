@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
-import { describe, test } from 'node:test';
 import { createHash } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
+import { describe, test } from 'node:test';
 import {
   authSessionControl,
   buildAuthorizeUrl,
@@ -12,6 +12,7 @@ import {
   exchangeAuthorizationCode,
   listenOnce,
   performConsent,
+  performLoopbackConsent,
   planConsent,
   redactCallback,
   redactResponseBody,
@@ -208,6 +209,90 @@ test('consent GET and POST plus S256 exchange stay redacted', async () => {
   assert.equal(direct.exchanged, true);
   assert.equal(JSON.stringify(direct).includes(code), false);
   assert.equal(JSON.stringify(direct).includes(access), false);
+});
+
+test('loopback consent delivers a code only after POST consent', async () => {
+  const sessionId = '66666666-6666-4666-8666-666666666666';
+  const payload = Buffer.from(JSON.stringify({ session_id: sessionId })).toString('base64url');
+  const session = `eyJhbGciOiJFUzI1NiJ9.${payload}.c2ln`;
+  const password = 'synthetic-password-must-not-leak';
+  const code = 'auth-code-must-not-leak-cccc';
+  const calls = [];
+  let retained = '';
+  const fetchImpl = async (url, init) => {
+    const href = `${url}`;
+    calls.push({ href, method: init?.method ?? 'GET' });
+    if (href.includes('/oauth/authorize?')) {
+      return jsonResponse(302, '', { location: '/oauth/consent?authorization_id=authz-loop' });
+    }
+    if (href.includes('grant_type=password')) {
+      return jsonResponse(200, { access_token: session, token_type: 'bearer' });
+    }
+    if (init?.method === 'GET' && href.endsWith('/oauth/authorizations/authz-loop')) {
+      return jsonResponse(200, { authorization_id: 'authz-loop' });
+    }
+    if (init?.method === 'POST' && href.endsWith('/consent')) {
+      return jsonResponse(200, { redirect_url: `${REDIRECT}?code=${code}&state=ari` });
+    }
+    if (href.startsWith(`${REDIRECT}?code=`))
+      return jsonResponse(200, 'callback_received', 'text/plain');
+    throw new Error(`unexpected ${init?.method ?? 'GET'} ${href}`);
+  };
+  const input = {
+    fetch: fetchImpl,
+    authOrigin: 'https://odbcejsuuqdzhabjmozi.supabase.co',
+    authorizationUrl:
+      'https://odbcejsuuqdzhabjmozi.supabase.co/auth/v1/oauth/authorize?response_type=code&state=ari',
+    publishableKey: 'publishable-key',
+    password,
+    retainSession(token) {
+      retained = token;
+    },
+  };
+  const delivered = await performLoopbackConsent(input);
+  assert.equal(delivered.ok, true);
+  assert.equal(delivered.reason, 'consent_delivered');
+  assert.equal(delivered.passwordSessionId, sessionId);
+  assert.equal(delivered.postConsent, true);
+  assert.equal(delivered.redirectDelivered, true);
+  assert.equal(retained, session);
+  const consentAt = calls.findIndex((call) => call.href.endsWith('/consent'));
+  const callbackAt = calls.findIndex((call) => call.href.startsWith(`${REDIRECT}?code=`));
+  assert.equal(consentAt > 0, true);
+  assert.equal(callbackAt > consentAt, true);
+  assert.equal(JSON.stringify(delivered).includes(password), false);
+  assert.equal(JSON.stringify(delivered).includes(session), false);
+  assert.equal(JSON.stringify(delivered).includes(code), false);
+
+  const skipped = await performLoopbackConsent({
+    ...input,
+    retainSession: undefined,
+    fetch: async (url) => {
+      const href = `${url}`;
+      if (href.includes('/oauth/callback') || href.includes('/callback?code=')) {
+        throw new Error('callback_fetched_without_consent');
+      }
+      return jsonResponse(302, '', { location: `${REDIRECT}?code=${code}&state=ari` });
+    },
+  });
+  assert.equal(skipped.ok, false);
+  assert.equal(skipped.reason, 'authorization_id_missing');
+  assert.equal(JSON.stringify(skipped).includes(code), false);
+  assert.equal(JSON.stringify(skipped).includes(password), false);
+
+  calls.length = 0;
+  const second = await performLoopbackConsent({
+    ...input,
+    userAccessToken: retained,
+    password: undefined,
+  });
+  assert.equal(second.ok, true);
+  assert.equal(second.passwordSessionId, sessionId);
+  assert.equal(
+    calls.some((call) => call.href.includes('grant_type=password')),
+    false,
+  );
+  assert.equal(JSON.stringify(second).includes(session), false);
 });
 
 test('openid_negative sends openid and records authorize or exchange rejection', async () => {

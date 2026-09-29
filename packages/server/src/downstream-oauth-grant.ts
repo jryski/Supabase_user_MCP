@@ -271,6 +271,38 @@ export class DownstreamOAuthGrantStore {
     };
   }
 
+  /**
+   * Offer a bearer to the B store. Token A must be rejected. The offer is
+   * never inserted into the grant map.
+   */
+  async rejectsOfferedAccessToken(
+    accessToken: string,
+    principal: DownstreamHandshakePrincipal,
+  ): Promise<boolean> {
+    if (accessToken.length === 0) return true;
+    const handshake: HandshakeRecord = {
+      sourceSessionId: principal.sourceSessionId,
+      sub: principal.sub,
+      agentId: principal.agentId,
+      aClientId: principal.aClientId,
+      id: principal.sourceSessionId,
+      expectedBClientId: this.config.expectedBClientId,
+      redirectUri: this.config.redirectUri,
+      codeVerifier: 'offer-not-retained',
+      authorizationUrl: 'https://offer.invalid/not-used',
+      expiresAtMs: this.now() + this.ttlMs,
+    };
+    const accepted = await this.acceptAccessToken(accessToken, handshake);
+    return accepted === undefined;
+  }
+
+  /** B auth session id for a live grant. Not an access token. */
+  boundSessionId(principal: DownstreamHandshakePrincipal): string | null {
+    const grant = this.grants.get(pairKey(principal));
+    if (grant === undefined || grant.expiresAtMs <= this.now()) return null;
+    return grant.sessionId;
+  }
+
   /** True when the needle is still in memory. Refresh tokens must not be. */
   containsRetainedMaterial(needle: string): boolean {
     if (needle.length === 0) return false;
