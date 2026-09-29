@@ -25,19 +25,22 @@ routes, or a lab dual-grant broker.
 
 | Credential | Role on this branch |
 | --- | --- |
-| Token A | Inbound `Authorization: Bearer` JWT. `withSupabase({ auth: 'user' })` verifies signature, `kid`, expiry, configured issuer (`{supabaseUrl}/auth/v1`), and MCP resource audience against the supplied asymmetric JWKS or JWKS URL. The handler then requires `role=authenticated`, server-controlled `client_id`, a UUID `sub` and `session_id`, and a resource-only `aud` (string or singleton array). It rejects `user_metadata` authority fields and any `aud` that contains `authenticated`. |
+| Token A | Inbound `Authorization: Bearer` JWT. `withSupabase({ auth: 'user' })` verifies signature, `kid`, expiry, configured issuer (`{supabaseUrl}/auth/v1`), and MCP resource audience against the supplied asymmetric JWKS or JWKS URL. The handler then requires `role=authenticated`, server-controlled `client_id`, a UUID `sub` and `session_id`, and a resource-only `aud`: exactly one value, as a string or a true singleton array, that canonicalizes to the MCP resource. Any other `aud` length or value is `401` `{ "error": "invalid_token" }`. |
 | Token B | Unresolved. No second Data API client is created. A resource-only Token A returns `403` `{ "error": "downstream_credential_unresolved" }`. |
 
 ## Fixed in this slice: MCP-side intended-recipient check
 
-The adapter rejects Token A when `aud` contains the Data API audience
-`authenticated`, including a mixed array such as `[resource, "authenticated"]`.
+`aud` must be resource-only: exactly one value, either a string or a true
+singleton array, and that value must canonicalize to the configured MCP resource.
 `withSupabase({ audience: resource })` uses jose, which treats any matching array
-entry as success, so that library check alone does not reject the mix. The local
-predicate does. Resource-only `aud` — a string or a singleton `[resource]` —
-passes auth and then hits the existing fail-closed `403`
-`downstream_credential_unresolved`. Role, client, session, issuer, signature, and
-expiry checks stay in place.
+entry as success, so the library alone accepts `[resource, other]`,
+`[resource, "authenticated"]`, duplicate `[resource, resource]`, and a
+case-variant co-audience that is not a true singleton. The local predicate
+rejects those with `401` `{ "error": "invalid_token" }`. A resource-only string
+or singleton `[resource]` passes auth and then hits the existing fail-closed
+`403` `downstream_credential_unresolved`. Role, client, session, issuer,
+signature, and expiry checks stay in place. This is not acceptance and not
+direct-API separation.
 
 ## Still open
 

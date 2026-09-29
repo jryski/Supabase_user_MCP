@@ -9,7 +9,6 @@ import {
 import {
   audienceValues,
   canonicalizeResourceUri,
-  DATA_API_AUDIENCE,
   DOWNSTREAM_CREDENTIAL_UNRESOLVED,
   extractServerControlledClientId,
   MAX_RESPONSE_BYTES,
@@ -31,9 +30,9 @@ import {
  * Token B, a distinct Data API credential, is unresolved. A resource-only
  * Token A fails closed with `downstream_credential_unresolved`.
  *
- * MCP-side check: reject `aud` that contains `authenticated`. Jose matches any
- * array entry, so the library resource audience does not do this alone.
- * Upstream Data API denial and Token B remain open. See the G2 evidence note.
+ * MCP-side check: `aud` must be one value, and that value must canonicalize
+ * to the MCP resource. Jose matches any array entry, so extra audiences are
+ * rejected here. Upstream Data API denial and Token B remain open.
  */
 export const SUPABASE_SERVER_PIN = '1.7.2' as const;
 export const SUPABASE_JS_PIN = '2.117.2' as const;
@@ -220,11 +219,11 @@ function mcpClaimsRejected(claims: JWTClaims, expected: ResolvedNativeUserMcpCon
   if (typeof claims.exp !== 'number' || !Number.isSafeInteger(claims.exp)) return true;
   if (claims.iss !== expected.issuer) return true;
   const audiences = audienceValues(claims.aud);
-  // `withSupabase({ audience: resource })` uses jose, which accepts an `aud`
-  // array when any entry matches. `[resource, "authenticated"]` therefore
-  // passes the library. Reject it here if the Data API audience is present.
-  if (audiences.includes(DATA_API_AUDIENCE)) return true;
-  if (!audiences.some((value) => canonicalAudience(value) === expected.resourceServer)) {
+  // Jose accepts an `aud` array when any entry matches the resource, so
+  // `[resource, other]` passes the library. Require a true singleton whose
+  // one value canonicalizes to the MCP resource.
+  const soleAudience = audiences.length === 1 ? audiences[0] : undefined;
+  if (soleAudience === undefined || canonicalAudience(soleAudience) !== expected.resourceServer) {
     return true;
   }
   if (explicitResourceMismatch(claims, expected.resourceServer)) return true;

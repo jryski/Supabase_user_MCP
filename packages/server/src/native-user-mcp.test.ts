@@ -197,7 +197,7 @@ describe('native user MCP adapter', () => {
     }
   });
 
-  it('accepts resource-only aud and rejects any aud containing authenticated', async () => {
+  it('accepts a resource-only aud and rejects every other audience', async () => {
     const { privateKey, jwks } = await es256Jwks();
     const handler = handlerFor(jwks);
     for (const audience of [RESOURCE, [RESOURCE]] as const) {
@@ -208,11 +208,15 @@ describe('native user MCP adapter', () => {
       expect(JSON.parse(body)).toEqual({ error: DOWNSTREAM_CREDENTIAL_UNRESOLVED });
       expect(body).not.toContain(token);
     }
+    const caseVariant = 'https://MCP.loopback.invalid/mcp';
     for (const audience of [
       DATA_API_AUDIENCE,
       [DATA_API_AUDIENCE],
       [RESOURCE, DATA_API_AUDIENCE],
       [DATA_API_AUDIENCE, RESOURCE],
+      [RESOURCE, 'https://other.loopback.invalid/api'],
+      [RESOURCE, RESOURCE],
+      [RESOURCE, caseVariant],
     ] as const) {
       const token = await signToken(privateKey, { audience });
       await expectInvalidToken(await handler(mcpPost(token)), token);
