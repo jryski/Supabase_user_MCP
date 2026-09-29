@@ -1,5 +1,7 @@
 -- L3 hook SQL for Ariadne. This file is not a supabase/migration.
 -- Do not apply it, and do not enable it in Authentication → Hooks.
+-- Superseded for review by sql/04-hook-v2-for-ariadne.sql. Do not install
+-- this older function.
 -- The adapter now requires role mcp_ingress and rejects role=authenticated
 -- (L2). That is not permission to install this hook.
 -- Still required before any install:

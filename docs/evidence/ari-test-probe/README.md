@@ -9,7 +9,7 @@ merge, Pages, DNS, or publish step.
 | Forbidden | `lygftpbjgqgvuunkwnxf`, HOUSE, VAULT, and any production project |
 | Adapter | Requires `role=mcp_ingress`. Rejects `role=authenticated`. |
 | Role SQL | `sql/03-mcp-ingress-role.sql`. Controller applies it on TEST. This agent does not. |
-| Hook | Documented in `sql/02-hook-for-ariadne.sql`. Not installed. R3 and R4 are still open. |
+| Hook | `sql/04-hook-v2-for-ariadne.sql` is the review packet. Not installed. `sql/02` must not be applied. |
 | Token B | Synthetic user password session. Positive control only. Not wired into MCP. |
 
 ## Verdict rules
@@ -46,11 +46,11 @@ accepts it and fail-closes. That acceptance is not Data API separation.
 ## L2 — ingress role check, landed in the adapter
 
 The native-user adapter requires `role=mcp_ingress` and rejects
-`role=authenticated`. `sql/03-mcp-ingress-role.sql` is the matching isolated
-role for the controller. This agent does not apply it and does not install
-`sql/02-hook-for-ariadne.sql`. R3 (exact client id in the hook) and R4
-(`session_id`) are still open. Do not run the probe against hosted TEST.
-Token B custody is still separate.
+`role=authenticated`. It also rejects a nil or empty `session_id`.
+`sql/03-mcp-ingress-role.sql` is the matching isolated role for the
+controller. This agent does not apply it. Hook v2 is
+`sql/04-hook-v2-for-ariadne.sql` and is not installed. Do not run the probe
+or the consent harness against hosted TEST. Token B custody is still separate.
 
 The probe still refuses to send a `role=authenticated` bearer as Token A
 (`role_flip_prerequisite_missing`) and sends no API request in that case.
@@ -72,8 +72,11 @@ for the same `sub`. No `service_role` key is accepted in the probe shell.
 | --- | --- |
 | `sql/00-baseline-public-execute.sql` | Ariadne, read-only, before the fixture |
 | `sql/01-synthetic-fixture.sql` | Ariadne, after the throwaway user exists. Do not recreate it. |
-| `sql/03-mcp-ingress-role.sql` | Ariadne, on TEST only, after the dashboard ref check. Not this agent. |
-| `sql/02-hook-for-ariadne.sql` | Not in this slice. Blocked on R3/R4. |
+| `sql/03-mcp-ingress-role.sql` | Ariadne, on TEST only, one batch with `set_config`. Not this agent. |
+| `sql/04-hook-v2-for-ariadne.sql` | Ariadne, only after Warden reviews v2. Not this agent. |
+| `sql/02-hook-for-ariadne.sql` | Do not apply. Superseded by `sql/04`. |
+| `hook-v2.mjs` | Local decision oracle. No network. |
+| `consent-harness.mjs` | Loopback checklist. `plan` and `redact` only. |
 | `probe.mjs` | Not against hosted TEST in this slice. |
 
 Local decision tests, with no network:
@@ -81,7 +84,10 @@ Local decision tests, with no network:
 ```bash
 npm run build
 node --test docs/evidence/ari-test-probe/decisions.test.mjs
+node --test docs/evidence/ari-test-probe/hook-v2.test.mjs
+node --test docs/evidence/ari-test-probe/consent-harness.test.mjs
 node docs/evidence/ari-test-probe/probe.mjs plan
+node docs/evidence/ari-test-probe/consent-harness.mjs plan
 ```
 
 The MCP-edge test imports `packages/server/dist`. Build first. Do not point
@@ -115,34 +121,81 @@ SQL apply order. This agent does not run it.
    Do not recreate a user that is already there.
 4. If not already applied, run `sql/01-synthetic-fixture.sql`. Do not add
    `ari_probe` to Exposed schemas.
-5. In that SQL editor session, attest the TEST ref and run
-   `sql/03-mcp-ingress-role.sql`:
+5. In one SQL-editor batch, paste the setting and then the body of
+   `sql/03-mcp-ingress-role.sql`. A second run will not see the setting.
+
+   ```sql
+   select set_config('ari.project_ref', 'odbcejsuuqdzhabjmozi', false);
+   ```
+
+6. Stop before the hook. `sql/03` may be applied by the controller. Do not
+   apply `sql/02` or `sql/04` until Warden reviews hook v2. Do not run
+   `probe.mjs run` against hosted TEST. Token B custody stays separate.
+
+## Hook v2
+
+`sql/04-hook-v2-for-ariadne.sql` is the install text. It is not installed
+from this branch. The same batch must set `ari.project_ref`,
+`ari.oauth_client_id` (the exact registered client id), `ari.mcp_resource`,
+and `ari.agent_id`. Absent `client_id` returns claims unchanged. `openid`
+raises for every OAuth client. An unmapped `client_id` raises. The mapped
+client sets `aud` to the configured MCP resource, `role` to `mcp_ingress`,
+`session_id` to `gen_random_uuid()` after it is checked non-nil and absent
+from `auth.sessions`, `source_session_id` to the original session id, and
+`agent_id` from `ari_probe.mcp_client`. Each call checks that
+`source_session_id` is still a live `auth.sessions` row. That check is not
+a revocation receipt.
+
+Rollback, on the TEST ref only, after the dashboard hook is disabled:
 
 ```sql
-select set_config('ari.project_ref', 'odbcejsuuqdzhabjmozi', false);
+drop function if exists ari_probe.custom_access_token_hook(jsonb);
+drop table if exists ari_probe.mcp_client;
 ```
 
-6. Stop. Do not run `sql/02-hook-for-ariadne.sql`. Do not enable
-   `ari_probe.custom_access_token_hook`. Do not run `probe.mjs run` against
-   hosted TEST. R3, R4, and Token B custody are still open.
-7. Later, only after those are reviewed: mint Token A through the registered
-   MCP OAuth client. Mint Token B with the publishable key and the throwaway
-   user's password:
+Do not drop the synthetic user, the marker fixture, or `mcp_ingress` in
+that rollback.
+
+## Loopback consent harness
+
+The redirect is `http://127.0.0.1:<port>/callback`. The controller sets the
+registered client's redirect and an explicit scope list that does not include
+`openid`. `consent-harness.mjs plan` prints the checklist and does not dial
+out. `consent-harness.mjs redact` reads a token response on stdin and prints
+key names only. Do not paste a verifier, authorization code, access token,
+or refresh token into chat, git, or an artifact.
+
+Discovery coverage, not fetched by this packet:
+
+- OAuth authorization-server metadata:
+  `/.well-known/oauth-authorization-server`. The later controller note is
+  whether `code_challenge_methods_supported` includes `S256`.
+- OIDC discovery: `/.well-known/openid-configuration`. Recorded only. It does
+  not authorize an `id_token`. A body that contains `id_token` fails the
+  receipt.
+
+Controls for a later controller run, after hook review:
+
+- Mapped client mint, scope without `openid`, code plus S256 PKCE.
+- Token A on Auth routes is HTTP `403` with `error` `session_not_found`.
+  That is the fresh session id missing from `auth.sessions`, not a
+  revocation proof.
+- An `openid` exchange is refused. The receipt has no `id_token`.
+- An unmapped `client_id` fails before a token is minted.
+- Password login, with no `client_id`, is unchanged.
+- Data API: Token A denied, Token B positive, labeled
+  `POSITIVE_CONTROL_NOT_MCP`.
+- MCP edge for Token A is `403` `downstream_credential_unresolved`.
+
+Password login for Token B, only in that later run. Do not print the body.
+Pipe it through redact and then discard it.
 
 ```bash
 curl -sS -X POST "$ARI_TEST_SUPABASE_URL/auth/v1/token?grant_type=password" \
   -H "apikey: $ARI_TEST_PUBLISHABLE_KEY" \
   -H "content-type: application/json" \
-  -d "{\"email\":\"ari-probe-synthetic@odbcejsuuqdzhabjmozi.invalid\",\"password\":\"$ARI_TEST_SYNTHETIC_PASSWORD\"}"
-```
-
-Export `access_token` as `ARI_TEST_TOKEN_B` and the OAuth token as
-`ARI_TEST_TOKEN_A`. Discard both when the probe is done.
-
-```bash
-export ARI_TEST_TOKEN_A
-export ARI_TEST_TOKEN_B
-node docs/evidence/ari-test-probe/probe.mjs run
+  -d "{\"email\":\"ari-probe-synthetic@odbcejsuuqdzhabjmozi.invalid\",\"password\":\"$ARI_TEST_SYNTHETIC_PASSWORD\"}" \
+  | node docs/evidence/ari-test-probe/consent-harness.mjs redact
 ```
 
 ## Probe matrix

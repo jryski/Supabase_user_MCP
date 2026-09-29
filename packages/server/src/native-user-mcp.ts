@@ -39,6 +39,7 @@ import {
  */
 export const SUPABASE_SERVER_PIN = '1.7.2' as const;
 export const MCP_INGRESS_ROLE = 'mcp_ingress' as const;
+const NIL_SESSION_ID = '00000000-0000-0000-0000-000000000000';
 export const SUPABASE_JS_PIN = '2.117.2' as const;
 export const NATIVE_USER_MCP_CONFIG_ERROR = 'NATIVE_USER_MCP_INVALID_CONFIGURATION' as const;
 
@@ -153,6 +154,13 @@ function isLoopbackHttp(url: URL): boolean {
   return url.hostname === 'localhost' || url.hostname === '::1' || url.hostname.startsWith('127.');
 }
 
+function sessionIdRejected(value: unknown): boolean {
+  if (typeof value !== 'string') return true;
+  if (value.length === 0 || value.trim().length === 0 || value.trim() !== value) return true;
+  if (value.toLowerCase() === NIL_SESSION_ID) return true;
+  return !RemotePrincipalIdSchema.safeParse(value).success;
+}
+
 function assertIngressRole(value: string): typeof MCP_INGRESS_ROLE {
   if (value !== MCP_INGRESS_ROLE) invalidConfig();
   return MCP_INGRESS_ROLE;
@@ -249,10 +257,7 @@ function mcpClaimsRejected(claims: JWTClaims, expected: ResolvedNativeUserMcpCon
   if (explicitResourceMismatch(claims, expected.resourceServer)) return true;
   if (userMetadataAttemptsAuthorization(claims)) return true;
   if (extractServerControlledClientId(claims) !== expected.expectedClientId) return true;
-  return (
-    typeof claims.session_id !== 'string' ||
-    !RemotePrincipalIdSchema.safeParse(claims.session_id).success
-  );
+  return sessionIdRejected(claims.session_id);
 }
 
 function respondAfterVerifiedMcpAuth(

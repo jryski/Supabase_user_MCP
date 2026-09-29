@@ -550,6 +550,9 @@ test('mcp_ingress role SQL stays isolated and forbids production targets', async
   assert.match(sql, /lygftpbjgqgvuunkwnxf/);
   assert.match(sql, /HOUSE, VAULT, or production/);
   assert.match(sql, /ari\.project_ref/);
+  assert.match(sql, /one SQL-editor batch/);
+  assert.match(sql, /ari-probe-synthetic@odbcejsuuqdzhabjmozi\.invalid/);
+  assert.match(sql, /expected exactly one throwaway user/);
   assert.equal(sql.includes('ari-probe-synthetic-client'), false);
   assert.match(sql, /do not apply/i);
   assert.match(sql, /sql\/02-hook-for-ariadne\.sql/);

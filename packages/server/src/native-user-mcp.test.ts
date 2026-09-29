@@ -254,6 +254,22 @@ describe('native user MCP adapter', () => {
     ).toThrow(NativeUserMcpConfigError);
   });
 
+  it('rejects nil and empty session_id', async () => {
+    const { privateKey, jwks } = await es256Jwks();
+    const handler = handlerFor(jwks);
+    const source = await readFile(new URL('./native-user-mcp.ts', import.meta.url), 'utf8');
+    expect(source).toContain('00000000-0000-0000-0000-000000000000');
+    const tokens = await Promise.all([
+      signToken(privateKey, { sessionId: '' }),
+      signToken(privateKey, { sessionId: '   ' }),
+      signToken(privateKey, { sessionId: '00000000-0000-0000-0000-000000000000' }),
+      signToken(privateKey, { sessionId: '00000000-0000-0000-0000-000000000000'.toUpperCase() }),
+    ]);
+    for (const token of tokens) {
+      await expectInvalidToken(await handler(mcpPost(token)), token);
+    }
+  });
+
   it('rejects wrong issuer, wrong signing key, service_role, and missing session_id', async () => {
     const { privateKey, jwks } = await es256Jwks();
     const otherKey = await generateKeyPair('ES256', { extractable: true });

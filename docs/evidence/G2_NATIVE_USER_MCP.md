@@ -25,7 +25,7 @@ routes, or a lab dual-grant broker.
 
 | Credential | Role on this branch |
 | --- | --- |
-| Token A | Inbound `Authorization: Bearer` JWT. `withSupabase({ auth: 'user' })` verifies signature, `kid`, expiry, configured issuer (`{supabaseUrl}/auth/v1`), and MCP resource audience against the supplied asymmetric JWKS or JWKS URL. The handler then requires configured `role=mcp_ingress` and rejects `role=authenticated`, plus server-controlled `client_id`, a UUID `sub` and `session_id`, and a resource-only `aud`: exactly one value, as a string or a true singleton array, that canonicalizes to the MCP resource. Any other `aud` length or value, or any other role, is `401` `{ "error": "invalid_token" }`. The handler rejects `user_metadata` authority fields. Configuring an ingress role other than `mcp_ingress` is a config error. |
+| Token A | Inbound `Authorization: Bearer` JWT. `withSupabase({ auth: 'user' })` verifies signature, `kid`, expiry, configured issuer (`{supabaseUrl}/auth/v1`), and MCP resource audience against the supplied asymmetric JWKS or JWKS URL. The handler then requires configured `role=mcp_ingress` and rejects `role=authenticated`, plus server-controlled `client_id`, a UUID `sub`, and a `session_id` that is a non-nil UUID (empty and nil are rejected), and a resource-only `aud`: exactly one value, as a string or a true singleton array, that canonicalizes to the MCP resource. Any other `aud` length or value, or any other role, is `401` `{ "error": "invalid_token" }`. The handler rejects `user_metadata` authority fields. Configuring an ingress role other than `mcp_ingress` is a config error. |
 | Token B | Unresolved. No second Data API client is created. A resource-only Token A returns `403` `{ "error": "downstream_credential_unresolved" }`. |
 
 ## Fixed in this slice: MCP-side intended-recipient check
@@ -53,9 +53,13 @@ Postgres role, install the Auth hook, or prove upstream Data API denial.
 
 `docs/evidence/ari-test-probe/sql/03-mcp-ingress-role.sql` is controller SQL
 for project `odbcejsuuqdzhabjmozi` only. This branch does not apply it.
-`sql/02-hook-for-ariadne.sql` stays uninstalled. R3 (exact registered client
-id) and R4 (`session_id`) are open. The live probe was not run. Token B is
-not wired into the MCP tool path. This is not acceptance.
+`sql/04-hook-v2-for-ariadne.sql` is the uninstalled hook v2 packet: absent
+`client_id` stays unchanged, `openid` raises for every OAuth client, an
+unmapped `client_id` raises, and the mapped client rewrites `aud`, `role`,
+and `session_id` while checking the original session on each call. That
+liveness check is not a revocation receipt. `sql/02` must not be applied.
+The live probe was not run. Token B is not wired into the MCP tool path.
+This is not acceptance.
 
 ## Still open
 

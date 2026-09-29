@@ -7,9 +7,11 @@
 -- Forbidden targets: lygftpbjgqgvuunkwnxf and any HOUSE, VAULT, or production
 -- project. Do not point this script at those.
 --
--- Same session, after that dashboard check and before this script:
+-- N8: one SQL-editor batch. Paste this statement at the top of the same
+-- batch as the rest of this file, then run that batch once:
 --   select set_config('ari.project_ref', 'odbcejsuuqdzhabjmozi', false);
--- An unset ref, or any other ref, aborts. The allowlist is the TEST ref.
+-- A later batch is a new session and will not see the setting. An unset
+-- ref, or any other ref, aborts. The allowlist is the TEST ref.
 --
 -- OAuth client id and MCP resource are not literals in this file. The
 -- controller passes the exact registered client id out of band
@@ -46,6 +48,25 @@ begin
   end if;
 end;
 $target$;
+
+-- N7: same existence fact as sql/01. Do not create or recreate the user.
+do $user$
+declare
+  synthetic_email constant text := 'ari-probe-synthetic@odbcejsuuqdzhabjmozi.invalid';
+  user_count integer;
+begin
+  select count(*) into user_count
+  from auth.users
+  where email = synthetic_email;
+
+  if user_count <> 1 then
+    raise exception
+      'expected exactly one throwaway user %, found %',
+      synthetic_email,
+      user_count;
+  end if;
+end;
+$user$;
 
 do $create$
 begin

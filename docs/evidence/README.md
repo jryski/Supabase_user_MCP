@@ -40,7 +40,7 @@ Draft candidates are listed separately and must not be described as merged or ac
 | --- | --- | --- | --- |
 | Experimental local remote HTTP + OAuth 2.1 | [Issue #62 evidence](ISSUE_62_REMOTE_OAUTH_HTTP.md) | `packages/server/src/remote-http-profile.test.ts`, `packages/server/src/local-oauth-pkce.e2e.test.ts`, and `npm run test:remote-oauth` | Fail-closed Data API dispatch. Downstream credential unresolved. Hosted live OAuth unmet. Not #62 completion. |
 | G2 native-user MCP adapter | [G2 native-user evidence](G2_NATIVE_USER_MCP.md) | `packages/server/src/native-user-mcp.test.ts` | `@supabase/server@1.7.2` nested middleware verifies Token A. Token B unresolved. Not #62 completion. |
-| Ari TEST probe packet (not executed) | [ari-test probe](ari-test-probe/README.md) | `node --test docs/evidence/ari-test-probe/decisions.test.mjs` | Controller packet for `odbcejsuuqdzhabjmozi` only. Adapter requires `mcp_ingress` and rejects `role=authenticated`. Role SQL is not applied here. Hook not installed. R3/R4, live probe, and Token B remain open. Not acceptance. |
+| Ari TEST probe packet (not executed) | [ari-test probe](ari-test-probe/README.md) | `node --test docs/evidence/ari-test-probe/decisions.test.mjs` | Controller packet for `odbcejsuuqdzhabjmozi` only. Adapter requires `mcp_ingress` and rejects nil `session_id`. Hook v2 is not installed. Role SQL is not applied here. Not acceptance. |
 
 Live S5 operational adoption remains gated on an approved caller-context Storage adapter and
 durable evidence backend. S6 semantic summaries have not started.
