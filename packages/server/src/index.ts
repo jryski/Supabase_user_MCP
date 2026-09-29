@@ -132,3 +132,12 @@ export {
   type AccessTokenRevocationAuthority,
   type RemoteTokenSigningKey,
 } from './remote-token-verifier.js';
+export {
+  createNativeUserMcpHandler,
+  NATIVE_USER_MCP_CONFIG_ERROR,
+  NATIVE_USER_MCP_CREDENTIAL_SPLIT,
+  NativeUserMcpConfigError,
+  type NativeUserMcpConfig,
+  SUPABASE_JS_PIN,
+  SUPABASE_SERVER_PIN,
+} from './native-user-mcp.js';

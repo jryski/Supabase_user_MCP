@@ -10,6 +10,11 @@ the first public package is released.
 
 ### Added
 
+- Draft G2 native-user fetch adapter. Pins `@supabase/server@1.7.2` and verifies Token A
+  with the stable nested `withOAuthProtectedResource(withSupabase({ auth: 'user' }))` form.
+  Token B is unresolved, so Data API dispatch stays `downstream_credential_unresolved`.
+  This does not complete issue #62 and does not add an MCP issuer. See
+  [G2 evidence](docs/evidence/G2_NATIVE_USER_MCP.md).
 - Opt-in candidate contracts for `memory_retrieve` and `session_capabilities_get`,
   reusing the existing read parser, result renderer and governance checks.
 - Synthetic regressions for contradictory results and six fresh-process MCP
