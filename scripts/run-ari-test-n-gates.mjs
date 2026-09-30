@@ -282,6 +282,7 @@ export function nGatesPlan() {
       'Unresolved issuance after a gate stops the runner before the next gate. N2 is not prepared and the second user is not deleted. The reconcile readback does not resolve the attempt and does not resume later gates.',
       'N7 subcase rows keep exchangeStatus, policyMarker, and token-presence booleans only. They do not carry token values.',
       'N8 keeps callback transport cases. signed_b_unbound and signed_b_mismatch run on the configured issuer, including hosted native Supabase. A signed B in harness memory is not a stored grant. Subject mismatch is labelled SUBJECT. A loopback agent-claim mutation is labelled synthetic_agent and is not a native agent or client change. Transport evidence, HTTP 5xx, and an unreadable body are not binding proof.',
+      'The N8 MCP marker read, including the full response body, uses the run timeout and SIGINT or SIGTERM. A header or body stall is orchestration_timeout or signal_received. It is not a marker pass and it does not start a later proof stage.',
       'N2: create one run-owned second synthetic user distinct from the verified baseline, then delete that user only after cleanup. The child never receives the password.',
       'Cleanup readbacks must be a bijection of the requested session ids. A duplicate or omitted id is not confirmation.',
       'N6: read back the enabled hook and the effective restrictive F1, prove the exact owner marker for the verified owner, arm restoration, then disable only that hook.',
@@ -960,65 +961,70 @@ function markerFromMessages(messages) {
   return { rpcError, isError, marker, authError };
 }
 
-async function callMarkerOnce(url, token) {
-  let response;
-  try {
-    response = await fetch(url, {
-      method: 'POST',
-      redirect: 'manual',
-      headers: {
-        accept: 'application/json, text/event-stream',
-        authorization: `Bearer ${token}`,
-        'content-type': 'application/json',
-      },
-      body: JSON.stringify({
-        jsonrpc: '2.0',
-        id: 1,
-        method: 'tools/call',
-        params: { name: MARKER_TOOL_NAME, arguments: {} },
-      }),
-    });
-  } catch {
-    return { readable: false, status: null, error: 'unreadable', marker: null, isError: false };
-  }
-  let text = '';
-  try {
-    text = await response.text();
-  } catch {
+async function callMarkerOnce(url, token, timeoutMs, signal) {
+  return callBounded(timeoutMs, signal, async (abortSignal) => {
+    let response;
+    try {
+      response = await fetch(url, {
+        method: 'POST',
+        redirect: 'manual',
+        signal: abortSignal,
+        headers: {
+          accept: 'application/json, text/event-stream',
+          authorization: `Bearer ${token}`,
+          'content-type': 'application/json',
+        },
+        body: JSON.stringify({
+          jsonrpc: '2.0',
+          id: 1,
+          method: 'tools/call',
+          params: { name: MARKER_TOOL_NAME, arguments: {} },
+        }),
+      });
+    } catch (error) {
+      if (abortSignal.aborted) throw error;
+      return { readable: false, status: null, error: 'unreadable', marker: null, isError: false };
+    }
+    let text = '';
+    try {
+      text = await response.text();
+    } catch (error) {
+      if (abortSignal.aborted) throw error;
+      return {
+        readable: false,
+        status: boundedHttpStatus(response.status),
+        error: 'unreadable',
+        marker: null,
+        isError: false,
+      };
+    }
+    const messages = parseRpcMessages(text);
+    if (messages.length === 0) {
+      return {
+        readable: false,
+        status: boundedHttpStatus(response.status),
+        error: 'unreadable',
+        marker: null,
+        isError: false,
+      };
+    }
+    const found = markerFromMessages(messages);
     return {
-      readable: false,
+      readable: true,
       status: boundedHttpStatus(response.status),
-      error: 'unreadable',
-      marker: null,
-      isError: false,
+      error: found.authError ?? (found.rpcError ? 'rpc_error' : 'ok'),
+      marker: found.marker,
+      isError: found.isError || found.rpcError,
+      redirected: response.status >= 300 && response.status < 400,
     };
-  }
-  const messages = parseRpcMessages(text);
-  if (messages.length === 0) {
-    return {
-      readable: false,
-      status: boundedHttpStatus(response.status),
-      error: 'unreadable',
-      marker: null,
-      isError: false,
-    };
-  }
-  const found = markerFromMessages(messages);
-  return {
-    readable: true,
-    status: boundedHttpStatus(response.status),
-    error: found.authError ?? (found.rpcError ? 'rpc_error' : 'ok'),
-    marker: found.marker,
-    isError: found.isError || found.rpcError,
-    redirected: response.status >= 300 && response.status < 400,
-  };
+  });
 }
 
-async function markerProof(url, token, observation, projectRef) {
+async function markerProof(url, token, observation, projectRef, timeoutMs, signal) {
   const beforeReads = observation.markerReads;
   const beforeChecks = observation.livenessChecks;
   const beforeDenials = observation.livenessDenials;
-  const called = await callMarkerOnce(url, token);
+  const called = await callMarkerOnce(url, token, timeoutMs, signal);
   const expected = expectedOwnerMarker(projectRef);
   const proved =
     called.readable === true &&
@@ -1538,6 +1544,8 @@ async function runN8(env, ledger, reader, timeoutMs, ctx) {
             issued.accessToken,
             replay.observation,
             env.ARI_TEST_PROJECT_REF,
+            timeoutMs,
+            ctx.signal,
           ));
         const replayed = await callbackGet(
           `${profile.redirectUri}?code=${encodeURIComponent(randomBytes(16).toString('base64url'))}&state=${state}`,
@@ -1558,6 +1566,8 @@ async function runN8(env, ledger, reader, timeoutMs, ctx) {
             issued.accessToken,
             replay.observation,
             env.ARI_TEST_PROJECT_REF,
+            timeoutMs,
+            ctx.signal,
           ));
         const issuedOther = await withTimeout(
           obtainGrant(replay, env, 'external_a', {}, replayFetch),

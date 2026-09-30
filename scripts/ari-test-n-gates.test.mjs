@@ -239,6 +239,8 @@ function laneTimeoutMs(mode, fault) {
     mode === 'stall_user_headers' ||
     mode === 'stall_user_body' ||
     mode === 'stall_marker_body' ||
+    mode === 'marker_mcp_stall_headers' ||
+    mode === 'marker_mcp_stall_body' ||
     fault === 'timeout_disable'
   ) {
     return '1000';
@@ -774,6 +776,8 @@ async function drive(mode, gates, fault = 'none', options = {}) {
       ARI_LANE_B_G5_HEAD: head,
       ARI_LANE_B_TIMEOUT_MS: laneTimeoutMs(mode, fault),
       ...(fault === 'callback_500' ? { ARI_N_GATES_SYNTHETIC_HTTP_STATUS: '500' } : {}),
+      ...(mode === 'marker_mcp_stall_headers' ? { ARI_N_GATES_MARKER_STALL: 'headers' } : {}),
+      ...(mode === 'marker_mcp_stall_body' ? { ARI_N_GATES_MARKER_STALL: 'body' } : {}),
       ARI_TEST_PROJECT_REF: 'odbcejsuuqdzhabjmozi',
       ARI_TEST_SUPABASE_URL: issuer.origin,
       ARI_TEST_PUBLISHABLE_KEY: PUBLISHABLE,
@@ -791,7 +795,10 @@ async function drive(mode, gates, fault = 'none', options = {}) {
     },
   });
   const stderr = [];
-  proc.stderr.on('data', (chunk) => stderr.push(chunk));
+  proc.stderr.on('data', (chunk) => {
+    stderr.push(chunk);
+    if (chunk.toString('utf8').includes('marker_http_stall')) hooks.onStall?.();
+  });
   hooks.onStall = () => {
     if (hooks.signaled === true) return;
     hooks.signaled = true;
@@ -877,6 +884,8 @@ async function drive(mode, gates, fault = 'none', options = {}) {
               mode === 'stall_user_headers' ||
               mode === 'stall_user_body' ||
               mode === 'stall_marker_body' ||
+              mode === 'marker_mcp_stall_headers' ||
+              mode === 'marker_mcp_stall_body' ||
               fault === 'timeout_disable' ||
               fault === 'sigint_user' ||
               fault === 'sigterm_user'
@@ -1652,6 +1661,47 @@ test('exchange service failure and callback HTTP 500 cannot pass binding or URI'
     .subcases.find((row) => row.id === 'callback_uri_mismatch');
   assert.equal(uriRow.pass, false);
   assert.equal(uriRow.reason, 'uri_inconclusive');
+});
+
+test('stalled MCP marker headers or body do not pass N8 or start a later gate', async () => {
+  const cases = [
+    ['marker_mcp_stall_headers', 'none', 'orchestration_timeout'],
+    ['marker_mcp_stall_body', 'none', 'orchestration_timeout'],
+    ['marker_mcp_stall_headers', 'sigint_user', 'signal_received'],
+    ['marker_mcp_stall_body', 'sigterm_user', 'signal_received'],
+  ];
+  for (const [mode, fault, reason] of cases) {
+    const started = Date.now();
+    const result = await drive(mode, 'N8,N2', fault);
+    const elapsed = Date.now() - started;
+    assert.equal(result.code, 2, `${mode}:${fault}\n${result.errText}\n${result.outText}`);
+    assert.equal(elapsed < 12_000, true, `${mode}:${fault}:${elapsed}`);
+    assert.equal(result.receipt.acceptance, false, mode);
+    assert.equal(result.receipt.rowsPass, false, mode);
+    assert.equal(result.receipt.reason, reason, mode);
+    assert.equal(result.receipt.rows, undefined, mode);
+    assert.equal(result.errText.includes('marker_http_stall'), true, mode);
+    assert.equal(result.actions.includes('prepare_second_synthetic_user'), false, mode);
+    assert.equal(result.actions.includes('delete_second_synthetic_user'), false, mode);
+    assert.equal(result.outText.includes('"gate":"N2"'), false, mode);
+    assert.equal(result.outText.includes('"reason":"replay_rejected"'), false, mode);
+    assert.equal(result.outText.includes('"reason":"SUBJECT"'), false, mode);
+    issuanceCleanedBeforeReceipt(result);
+    const cleaned = new Set(
+      result.messages
+        .filter((row) => row.action === 'cleanup_sessions')
+        .flatMap((row) => row.sessionIds),
+    );
+    assert.equal(result.receipt.sessionLedger.length > 0, true, mode);
+    for (const row of result.receipt.sessionLedger) {
+      for (const key of ['passwordSessionId', 'sourceSessionId', 'bSessionId', 'authSessionId']) {
+        if (row[key] !== undefined)
+          assert.equal(cleaned.has(row[key]), true, `${mode}:${row[key]}`);
+      }
+    }
+    assert.equal(result.actions.includes('reconcile_unresolved_issuance'), false, mode);
+    assertNoIssuanceSecrets(result, `${mode}:${fault}`);
+  }
 });
 
 test('N8 rejects marker 5xx, unreadable marker, bad signature, malformed B, and wrong subject', async () => {

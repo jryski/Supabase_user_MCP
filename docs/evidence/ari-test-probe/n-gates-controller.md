@@ -160,7 +160,11 @@ not a redirect-mismatch pass. After a successful bind, native B liveness
 and the MCP same-owner marker read must succeed, replay must leave that
 binding and session in place, and a different genuine A source session must
 not inherit it. HTTP 5xx, a timeout, and an unreadable body are not that
-proof.
+proof. The MCP marker read waits on the response headers and the full
+body inside the same run timeout. SIGINT and SIGTERM abort that wait.
+A header stall or a partial body is `orchestration_timeout` or
+`signal_received`. It does not pass the marker, it does not start a later
+proof stage, and it still reaches runtime close and final cleanup.
 N7 prepares the same run-owned second user before either profile has an
 openid consent. The gate passes only when external A and mapped B each
 observe `approval_post` and then `already_consented_get`, with exchange

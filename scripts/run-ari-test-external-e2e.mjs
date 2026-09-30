@@ -87,6 +87,28 @@ function loopbackLivenessTimeout(env) {
   return value;
 }
 
+function stallMarkerRequest(pathname, method, body, res) {
+  const stall = process.env.ARI_N_GATES_MARKER_STALL;
+  if (stall !== 'headers' && stall !== 'body') return false;
+  if (method !== 'POST' || pathname !== '/mcp') return false;
+  let name = '';
+  try {
+    const parsed = JSON.parse(body.toString('utf8'));
+    if (parsed?.method === 'tools/call' && typeof parsed.params?.name === 'string') {
+      name = parsed.params.name;
+    }
+  } catch {
+    return false;
+  }
+  if (name !== 'ari_test_marker_get') return false;
+  process.stderr.write('marker_http_stall\n');
+  if (stall === 'body') {
+    res.writeHead(200, { 'content-type': 'application/json', 'cache-control': 'no-store' });
+    res.write('{"jsonrpc":"2.0","id":1,"result":');
+  }
+  return true;
+}
+
 function rpcFaultResponse(request, fault, bodyText) {
   let parsed;
   try {
@@ -808,6 +830,7 @@ export async function startExternalRuntime(env, options = {}) {
     req.on('data', (chunk) => chunks.push(chunk));
     req.on('end', () => {
       const body = Buffer.concat(chunks);
+      if (stallMarkerRequest(requestUrl.pathname, req.method, body, res)) return;
       const request = new Request(`http://${host}${req.url}`, {
         method: req.method,
         headers: req.headers,
