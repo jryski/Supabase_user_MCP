@@ -105,16 +105,17 @@ fully read and either a real session UUID from that body is on the ledger,
 or the body is a complete pre-issuance denial. A denial is HTTP 400, 401,
 or 403 with a JSON `error` of `invalid_request`, `invalid_client`,
 `invalid_grant`, `unauthorized_client`, `unsupported_grant_type`,
-`invalid_scope`, or `access_denied`, and no access token. A complete
-native hook-policy denial resolves the same way: HTTP 403, a full JSON
-object, the exact marker `openid_scope_refused`, and no `access_token`,
-`id_token`, or `refresh_token` field. The packet does not require a
-particular error field for that denial. Headers alone, a truncated or
-stalled body, an aborted read, malformed JSON, a non-object envelope, HTTP
-2xx without a usable session UUID, and HTTP 5xx stay `unresolved`. A
-hook-marked body that still has an `access_token`, `id_token`, or
-`refresh_token` field stays `unresolved`, including when `error` is an
-allowlisted OAuth name. A generic HTTP 403 without the complete
+`invalid_scope`, or `access_denied`, and none of the token fields below.
+A complete native hook-policy denial resolves the same way: HTTP 403, a
+full JSON object, the exact marker `openid_scope_refused`, and no
+`access_token`, `id_token`, or `refresh_token` field. The packet does not
+require a particular error field for that denial. A top-level
+`access_token`, `id_token`, or `refresh_token` field rejects the attempt
+before either that marker or an allowlisted `error` can resolve it. The
+field counts when its value is a string, null, or any other non-string.
+Headers alone, a truncated or stalled body, an aborted read, malformed
+JSON, a non-object envelope, HTTP 2xx without a usable session UUID, and
+HTTP 5xx stay `unresolved`. A generic HTTP 403 without the complete
 hook-policy denial, and without an allowlisted OAuth `error`, also stays
 `unresolved`.
 

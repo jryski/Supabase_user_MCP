@@ -278,7 +278,7 @@ export function nGatesPlan() {
       'Baseline A /callback remains the consent-harness profile where that profile is used.',
       'N3 presents one genuine signed A, unmodified, under one local verifier mismatch at a time. Reauthorization stays off.',
       'N7 sends openid for external A and mapped B, both consent branches. Only exchange HTTP 403 openid_scope_refused with no token is a hook-policy pass.',
-      'A complete hook-policy denial is HTTP 403 and a full JSON object that carries the exact marker openid_scope_refused and no access_token, id_token, or refresh_token field. That denial resolves issuance the same way as an allowlisted OAuth error. It does not require a particular error field. A truncated or malformed body, HTTP 5xx, a token field, or a non-object envelope stays unresolved.',
+      'A complete hook-policy denial is HTTP 403 and a full JSON object that carries the exact marker openid_scope_refused and no access_token, id_token, or refresh_token field. That denial resolves issuance the same way as a clean allowlisted OAuth error. It does not require a particular error field. A top-level access_token, id_token, or refresh_token field, including null or any non-string value, stays unresolved before a hook marker or an allowlisted error can resolve it. A truncated or malformed body, HTTP 5xx, or a non-object envelope stays unresolved.',
       'Unresolved issuance after a gate stops the runner before the next gate. N2 is not prepared and the second user is not deleted. The reconcile readback does not resolve the attempt and does not resume later gates.',
       'N7 subcase rows keep exchangeStatus, policyMarker, and token-presence booleans only. They do not carry token values.',
       'N8 keeps callback transport cases, and passes only with a legitimate signed B that the grant store refuses to bind. Transport evidence alone is incomplete.',
@@ -496,7 +496,7 @@ function jsonHasExactMarker(value, depth = 0) {
   return items.some((item) => jsonHasExactMarker(item, depth + 1));
 }
 
-function hookPolicyTokenPresent(body) {
+function topLevelTokenFieldPresent(body) {
   return (
     Object.hasOwn(body, 'access_token') ||
     Object.hasOwn(body, 'id_token') ||
@@ -507,10 +507,8 @@ function hookPolicyTokenPresent(body) {
 function definitivePreIssuanceDenial(status, body) {
   if (status !== 400 && status !== 401 && status !== 403) return false;
   if (body === null || typeof body !== 'object' || Array.isArray(body)) return false;
-  if (typeof body.access_token === 'string') return false;
-  const marked = jsonHasExactMarker(body);
-  if (marked && hookPolicyTokenPresent(body)) return false;
-  if (status === 403 && marked) return true;
+  if (topLevelTokenFieldPresent(body)) return false;
+  if (status === 403 && jsonHasExactMarker(body)) return true;
   return typeof body.error === 'string' && PRE_ISSUANCE_DENIAL.has(body.error);
 }
 

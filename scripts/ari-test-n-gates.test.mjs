@@ -537,6 +537,22 @@ async function startIssuer(mode, hooks = {}) {
                 send(403, JSON.stringify({ error: 'temporarily_unavailable' }));
                 return;
               }
+              if (mode === 'deny_refresh_token') {
+                send(400, JSON.stringify({ error: 'invalid_request', refresh_token: 'synthetic' }));
+                return;
+              }
+              if (mode === 'deny_id_token') {
+                send(401, JSON.stringify({ error: 'invalid_grant', id_token: 'synthetic' }));
+                return;
+              }
+              if (mode === 'deny_access_null') {
+                send(403, JSON.stringify({ error: 'access_denied', access_token: null }));
+                return;
+              }
+              if (mode === 'deny_access_nonstring') {
+                send(400, JSON.stringify({ error: 'invalid_request', access_token: false }));
+                return;
+              }
               send(
                 403,
                 JSON.stringify({
@@ -1191,6 +1207,9 @@ test('generic invalid_scope is not an N7 hook-policy pass', async () => {
     n7.subcases.every((row) => row.exchangeStatus === 400 && row.policyMarker === null),
     true,
   );
+  assert.equal(result.receipt.issuanceStatus, 'resolved');
+  assert.deepEqual(result.receipt.unresolvedAttemptIds, []);
+  assert.equal(result.actions.includes('reconcile_unresolved_issuance'), false);
 });
 
 function assertNoIssuanceSecrets(result, label) {
@@ -1287,6 +1306,50 @@ test('truncated malformed 5xx token-present and ambiguous bodies stay unresolved
     const reconcileAt = result.outText.indexOf('"action":"reconcile_unresolved_issuance"');
     const receiptAt = result.outText.lastIndexOf('"type":"receipt"');
     assert.equal(reconcileAt >= 0 && receiptAt > reconcileAt, true, mode);
+    assertNoIssuanceSecrets(result, mode);
+  }
+});
+
+test('allowlisted denials that carry a token field stay unresolved and do not start N2', async () => {
+  const cases = [
+    ['deny_refresh_token', 400, false, false, true],
+    ['deny_id_token', 401, false, true, false],
+    ['deny_access_null', 403, false, false, false],
+    ['deny_access_nonstring', 400, false, false, false],
+  ];
+  for (const [mode, status, access, idToken, refresh] of cases) {
+    const result = await drive(mode, 'N7,N2');
+    assert.equal(result.code, 2, `${mode}\n${result.errText}\n${result.outText}`);
+    assert.equal(result.receipt.acceptance, false, mode);
+    assert.equal(result.receipt.rowsPass, false, mode);
+    assert.equal(result.receipt.issuanceStatus, 'unresolved', mode);
+    assert.notEqual(result.receipt.issuanceStatus, 'resolved', mode);
+    assert.equal(result.receipt.cleanupStatus, 'unresolved', mode);
+    assert.equal(result.receipt.unresolvedAttemptIds.length > 0, true, mode);
+    assert.equal(result.actions.includes('reconcile_unresolved_issuance'), true, mode);
+    assertStoppedBeforeN2(result, mode);
+    const n7 = result.receipt.rows.find((row) => row.id === 'N7');
+    assert.equal(n7.executed, true, mode);
+    assert.equal(n7.pass, false, mode);
+    assert.equal(
+      n7.subcases.every(
+        (row) =>
+          row.exchangeStatus === status &&
+          row.policyMarker === null &&
+          row.accessTokenPresent === access &&
+          row.idTokenPresent === idToken &&
+          row.refreshTokenPresent === refresh,
+      ),
+      true,
+      `${mode}:${JSON.stringify(n7.subcases)}`,
+    );
+    const reconcileAt = result.outText.indexOf('"action":"reconcile_unresolved_issuance"');
+    const receiptAt = result.outText.lastIndexOf('"type":"receipt"');
+    assert.equal(reconcileAt >= 0 && receiptAt > reconcileAt, true, mode);
+    assert.equal(result.outText.includes('"refresh_token"'), false, mode);
+    assert.equal(result.outText.includes('"id_token"'), false, mode);
+    assert.equal(result.outText.includes('"access_token"'), false, mode);
+    assert.equal(result.outText.includes('"synthetic"'), false, mode);
     assertNoIssuanceSecrets(result, mode);
   }
 });
