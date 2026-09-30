@@ -91,6 +91,7 @@ for the same `sub`. No `service_role` key is accepted in the probe shell.
 | `sql/06-ingress-client-rls.sql` | Lane B F1 on the marker table only. Not this agent. |
 | `sql/07-downstream-and-external-a.sql` | Lane B additive B and external A mapping. External A `mcp_resource` is the fixed constant `http://127.0.0.1:8788/mcp`. Baseline A keeps the hosted TEST `/mcp` URL. Does not replace `sql/03`. Not this agent. |
 | `lane-b-controller.md` | Later G5 and live steps. Not executed from this branch. |
+| `n-gates-controller.md` | Remaining N3, N7, N8, N2, and N6 packet. Local until Ariadne runs it. Not acceptance. |
 | `sql/02-hook-for-ariadne.sql` | Do not apply. Superseded by `sql/04`. |
 | `hook-v2.mjs` | Local decision oracle. Kept only where the PGlite test asserts the same results as `sql/04`. |
 | `hook-v2.pglite.test.mjs` | Loads `sql/04` verbatim in `@electric-sql/pglite`. No Docker and no hosted project. |

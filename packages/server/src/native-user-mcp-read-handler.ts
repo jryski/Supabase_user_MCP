@@ -8,6 +8,7 @@ import { readAriTestMarker } from './ari-test-marker.js';
 import {
   DOWNSTREAM_AUTHORIZATION_REQUIRED,
   DOWNSTREAM_B_GRANT_PROFILE,
+  type DownstreamGrantPublicFact,
   type DownstreamHandshakePrincipal,
   DownstreamOAuthGrantStore,
 } from './downstream-oauth-grant.js';
@@ -56,6 +57,8 @@ export interface NativeUserMcpReadHandlerConfig {
   readonly dispatchGate?: (
     request: Request,
   ) => Response | undefined | Promise<Response | undefined>;
+  /** UUIDs only. The handler does not copy bearers into this callback. */
+  readonly onGrantFact?: (fact: DownstreamGrantPublicFact) => void;
 }
 
 export interface LaneBRunObservation {
@@ -164,6 +167,7 @@ export function createNativeUserMcpReadHandler(
     ...(config.handshakeTtlMs === undefined ? {} : { handshakeTtlMs: config.handshakeTtlMs }),
     ...(config.now === undefined ? {} : { now: config.now }),
     ...(fetchImpl === undefined ? {} : { fetch: fetchImpl }),
+    ...(config.onGrantFact === undefined ? {} : { onGrantFact: config.onGrantFact }),
   });
   const enableMarker = config.enableAriTestMarker === true;
 

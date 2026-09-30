@@ -76,6 +76,20 @@ interface GrantRecord extends DownstreamHandshakePrincipal {
 
 type FetchLike = typeof globalThis.fetch;
 
+/** Public grant fact. Session and subject UUIDs only. Never a bearer. */
+export interface DownstreamGrantPublicFact {
+  readonly event:
+    | 'unknown_state'
+    | 'replay'
+    | 'redirect_mismatch'
+    | 'exchange_failed'
+    | 'exchange_rejected'
+    | 'bound';
+  readonly sessionId: string | null;
+  readonly sub: string | null;
+  readonly subjectMismatch: boolean;
+}
+
 export interface DownstreamOAuthGrantConfig {
   readonly issuer: string;
   readonly authOrigin: string;
@@ -87,6 +101,8 @@ export interface DownstreamOAuthGrantConfig {
   readonly now?: () => number;
   readonly randomId?: () => string;
   readonly fetch?: FetchLike;
+  /** Called with UUIDs only, including a B session rejected after verification. */
+  readonly onGrantFact?: (fact: DownstreamGrantPublicFact) => void;
 }
 
 function reject(): never {
@@ -128,6 +144,7 @@ function audienceValues(aud: unknown): readonly string[] {
 export class DownstreamOAuthGrantStore {
   private readonly handshakes = new Map<string, HandshakeRecord>();
   private readonly grants = new Map<string, GrantRecord>();
+  private readonly consumedStates = new Set<string>();
   private readonly keys: JWTVerifyGetKey;
   private readonly now: () => number;
   private readonly randomId: () => string;
@@ -220,10 +237,27 @@ export class DownstreamOAuthGrantStore {
     readonly redirectUri: string;
   }): Promise<boolean> {
     const handshake = this.handshakes.get(input.state);
-    if (handshake === undefined) return false;
+    if (handshake === undefined) {
+      this.emitFact({
+        event: this.consumedStates.has(input.state) ? 'replay' : 'unknown_state',
+        sessionId: null,
+        sub: null,
+        subjectMismatch: false,
+      });
+      return false;
+    }
     this.handshakes.delete(input.state);
+    this.consumedStates.add(input.state);
     if (this.now() >= handshake.expiresAtMs) return false;
-    if (input.redirectUri !== handshake.redirectUri) return false;
+    if (input.redirectUri !== handshake.redirectUri) {
+      this.emitFact({
+        event: 'redirect_mismatch',
+        sessionId: null,
+        sub: null,
+        subjectMismatch: false,
+      });
+      return false;
+    }
     if (input.code.length === 0) return false;
     let accessToken: string;
     try {
@@ -237,11 +271,23 @@ export class DownstreamOAuthGrantStore {
       });
       accessToken = dropRefreshToken(exchanged);
     } catch {
+      this.emitFact({
+        event: 'exchange_failed',
+        sessionId: null,
+        sub: null,
+        subjectMismatch: false,
+      });
       return false;
     }
-    const accepted = await this.acceptAccessToken(accessToken, handshake);
+    const accepted = await this.acceptAccessToken(accessToken, handshake, true);
     if (accepted === undefined) return false;
     this.grants.set(pairKey(handshake), accepted);
+    this.emitFact({
+      event: 'bound',
+      sessionId: accepted.sessionId,
+      sub: accepted.sub,
+      subjectMismatch: false,
+    });
     return true;
   }
 
@@ -292,7 +338,7 @@ export class DownstreamOAuthGrantStore {
       authorizationUrl: 'https://offer.invalid/not-used',
       expiresAtMs: this.now() + this.ttlMs,
     };
-    const accepted = await this.acceptAccessToken(accessToken, handshake);
+    const accepted = await this.acceptAccessToken(accessToken, handshake, false);
     return accepted === undefined;
   }
 
@@ -317,9 +363,29 @@ export class DownstreamOAuthGrantStore {
     return false;
   }
 
+  private emitFact(fact: DownstreamGrantPublicFact): void {
+    this.config.onGrantFact?.(fact);
+  }
+
+  private rejectVerified(
+    payload: JWTPayload,
+    subjectMismatch: boolean,
+    notify: boolean,
+  ): undefined {
+    if (!notify) return undefined;
+    this.emitFact({
+      event: 'exchange_rejected',
+      sessionId: publicUuid(payload.session_id),
+      sub: publicUuid(payload.sub),
+      subjectMismatch,
+    });
+    return undefined;
+  }
+
   private async acceptAccessToken(
     accessToken: string,
     handshake: HandshakeRecord,
+    notify: boolean,
   ): Promise<GrantRecord | undefined> {
     let payload: JWTPayload;
     try {
@@ -332,25 +398,25 @@ export class DownstreamOAuthGrantStore {
     } catch {
       return undefined;
     }
-    if (payload.sub !== handshake.sub) return undefined;
-    if (payload.role === MCP_INGRESS_ROLE) return undefined;
-    if (payload.role !== DATA_API_AUDIENCE) return undefined;
+    if (payload.sub !== handshake.sub) return this.rejectVerified(payload, true, notify);
+    if (payload.role === MCP_INGRESS_ROLE) return this.rejectVerified(payload, false, notify);
+    if (payload.role !== DATA_API_AUDIENCE) return this.rejectVerified(payload, false, notify);
     const audiences = audienceValues(payload.aud);
-    if (!audiences.includes(DATA_API_AUDIENCE)) return undefined;
-    if (payload.client_id !== handshake.expectedBClientId) return undefined;
-    if (payload.client_id === handshake.aClientId) return undefined;
-    if (payload.agent_id !== handshake.agentId) return undefined;
-    if (
-      typeof payload.session_id !== 'string' ||
-      !RemotePrincipalIdSchema.safeParse(payload.session_id).success
-    ) {
-      return undefined;
+    if (!audiences.includes(DATA_API_AUDIENCE)) return this.rejectVerified(payload, false, notify);
+    if (payload.client_id !== handshake.expectedBClientId) {
+      return this.rejectVerified(payload, false, notify);
     }
-    if (payload.session_id.toLowerCase() === '00000000-0000-0000-0000-000000000000')
-      return undefined;
-    if (typeof payload.exp !== 'number' || !Number.isSafeInteger(payload.exp)) return undefined;
-    if (payload.exp * 1000 <= this.now()) return undefined;
-    if (payload.iss !== this.config.issuer) return undefined;
+    if (payload.client_id === handshake.aClientId)
+      return this.rejectVerified(payload, false, notify);
+    if (payload.agent_id !== handshake.agentId) return this.rejectVerified(payload, false, notify);
+    if (publicUuid(payload.session_id) === null) return this.rejectVerified(payload, false, notify);
+    if (typeof payload.exp !== 'number' || !Number.isSafeInteger(payload.exp)) {
+      return this.rejectVerified(payload, false, notify);
+    }
+    if (payload.exp * 1000 <= this.now()) return this.rejectVerified(payload, false, notify);
+    if (payload.iss !== this.config.issuer) return this.rejectVerified(payload, false, notify);
+    const sessionId = publicUuid(payload.session_id);
+    if (sessionId === null) return undefined;
     return {
       sourceSessionId: handshake.sourceSessionId,
       sub: handshake.sub,
@@ -358,10 +424,16 @@ export class DownstreamOAuthGrantStore {
       aClientId: handshake.aClientId,
       accessToken,
       bClientId: handshake.expectedBClientId,
-      sessionId: payload.session_id,
+      sessionId,
       expiresAtMs: payload.exp * 1000,
     };
   }
+}
+
+function publicUuid(value: unknown): string | null {
+  if (typeof value !== 'string' || !RemotePrincipalIdSchema.safeParse(value).success) return null;
+  if (value.toLowerCase() === '00000000-0000-0000-0000-000000000000') return null;
+  return value;
 }
 
 function dropRefreshToken(exchanged: {

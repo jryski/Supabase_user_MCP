@@ -62,7 +62,30 @@ export function isLoopbackHostname(hostname) {
   return hostname === '127.0.0.1' || hostname === 'localhost' || hostname === '::1';
 }
 
-export function assertRedirectUri(value) {
+/** Exact registered callbacks. No extra path, query, fragment, or userinfo. */
+export const CALLBACK_PROFILES = Object.freeze({
+  baseline_a: '/callback',
+  external_a: '/oauth/callback',
+  downstream_b: '/oauth/downstream/callback',
+});
+
+function redirectExpectation(options) {
+  const profile = options?.callbackProfile;
+  if (profile !== undefined && !Object.hasOwn(CALLBACK_PROFILES, profile)) {
+    return { ok: false, reason: 'redirect_not_exact' };
+  }
+  return {
+    ok: true,
+    pathname:
+      profile === undefined ? (options?.pathname ?? '/callback') : CALLBACK_PROFILES[profile],
+    origin: typeof options?.expectedOrigin === 'string' ? options.expectedOrigin : undefined,
+    requirePort: options?.requirePort === true,
+  };
+}
+
+export function assertRedirectUri(value, options = {}) {
+  const expected = redirectExpectation(options);
+  if (!expected.ok) return expected;
   let url;
   try {
     url = new URL(value);
@@ -77,11 +100,36 @@ export function assertRedirectUri(value) {
     url.password !== '' ||
     url.search !== '' ||
     url.hash !== '' ||
-    url.pathname !== '/callback'
+    url.pathname !== expected.pathname
   ) {
     return { ok: false, reason: 'redirect_not_exact' };
   }
+  if (expected.origin !== undefined && url.origin !== expected.origin) {
+    return { ok: false, reason: 'redirect_not_exact' };
+  }
+  if (expected.requirePort) {
+    const port = Number(url.port);
+    if (!Number.isSafeInteger(port) || port < 1 || port > 65535) {
+      return { ok: false, reason: 'redirect_not_exact' };
+    }
+  }
   return { ok: true, redirectUri: url.origin + url.pathname };
+}
+
+function resourceMode(input) {
+  const downstream = input?.callbackProfile === 'downstream_b';
+  if (input?.omitResource === true && !downstream)
+    return { ok: false, reason: 'resource_omit_refused' };
+  if (downstream && input?.omitResource === false)
+    return { ok: false, reason: 'resource_not_omitted' };
+  const omitResource = input?.omitResource === true || downstream;
+  if (omitResource && typeof input?.resource === 'string' && input.resource.length > 0) {
+    return { ok: false, reason: 'resource_not_omitted' };
+  }
+  if (!omitResource && (typeof input?.resource !== 'string' || input.resource.length === 0)) {
+    return { ok: false, reason: 'mcp_resource_required' };
+  }
+  return { ok: true, omitResource };
 }
 
 export function assertScopes(scopes, options = {}) {
@@ -110,16 +158,20 @@ export function buildAuthorizeUrl(input) {
     return { ok: false, reason: 'forbidden_target' };
   }
   const openidNegative = input.label === 'openid_negative';
-  const redirect = assertRedirectUri(input.redirectUri);
+  const redirect = assertRedirectUri(input.redirectUri, {
+    callbackProfile: input.callbackProfile,
+    pathname: input.pathname,
+    expectedOrigin: input.expectedOrigin,
+    requirePort: input.requirePort,
+  });
   if (!redirect.ok) return redirect;
   const scopes = assertScopes(input.scopes, { allowOpenId: openidNegative });
   if (!scopes.ok) return scopes;
   if (typeof input.clientId !== 'string' || input.clientId.length === 0) {
     return { ok: false, reason: 'oauth_client_id_required' };
   }
-  if (typeof input.resource !== 'string' || input.resource.length === 0) {
-    return { ok: false, reason: 'mcp_resource_required' };
-  }
+  const resource = resourceMode(input);
+  if (!resource.ok) return resource;
   if (typeof input.codeChallenge !== 'string' || input.codeChallenge.length === 0) {
     return { ok: false, reason: 'pkce_challenge_required' };
   }
@@ -135,13 +187,14 @@ export function buildAuthorizeUrl(input) {
   authorize.searchParams.set('scope', scopes.scope);
   authorize.searchParams.set('code_challenge', input.codeChallenge);
   authorize.searchParams.set('code_challenge_method', 'S256');
-  authorize.searchParams.set('resource', input.resource);
+  if (!resource.omitResource) authorize.searchParams.set('resource', input.resource);
   if (typeof input.state === 'string' && input.state.length > 0) {
     authorize.searchParams.set('state', input.state);
   }
   return {
     ok: true,
     url: authorize.toString(),
+    resourceOmitted: resource.omitResource === true,
     ...(openidNegative ? { label: 'openid_negative', openidSent: true } : {}),
   };
 }
@@ -895,6 +948,7 @@ export async function performLoopbackConsent(input) {
         authOrigin: input.authOrigin,
         publishableKey: input.publishableKey,
         password: input.password,
+        email: input.email,
       });
     } catch {
       return fail('password_login_failed');
@@ -924,6 +978,9 @@ export async function performLoopbackConsent(input) {
   });
   remember(secrets, consent.code);
   remember(secrets, consent.redirectUrl);
+  if (typeof input.retainCode === 'function' && typeof consent.code === 'string') {
+    input.retainCode(consent.code);
+  }
   const session = { passwordSessionId: sessionId };
   const facts = publicConsentFacts({
     consentFlow: consent.consentFlow,
@@ -1054,7 +1111,11 @@ async function exchangeWithSecrets(input) {
       }),
     );
   }
-  const redirect = assertRedirectUri(input.redirectUri);
+  const redirect = assertRedirectUri(input.redirectUri, {
+    callbackProfile: input.callbackProfile,
+    expectedOrigin: input.expectedOrigin,
+    requirePort: input.requirePort,
+  });
   if (!redirect.ok) {
     return secretResult(
       baseReceipt({
@@ -1077,14 +1138,16 @@ async function exchangeWithSecrets(input) {
       }),
     );
   }
-  if (typeof input.resource !== 'string' || input.resource.length === 0) {
+  const resource = resourceMode(input);
+  if (!resource.ok) {
     return secretResult(
       baseReceipt({
         ok: false,
-        reason: 'mcp_resource_required',
+        reason: resource.reason,
         exchanged: false,
         idTokenPresent: false,
         status: null,
+        resourceSent: false,
       }),
     );
   }
@@ -1102,14 +1165,15 @@ async function exchangeWithSecrets(input) {
       }),
     );
   }
-  const body = new URLSearchParams({
+  const bodyParams = new URLSearchParams({
     grant_type: 'authorization_code',
     client_id: input.clientId,
     redirect_uri: redirect.redirectUri,
     code: input.code,
     code_verifier: input.codeVerifier,
-    resource: input.resource,
-  }).toString();
+  });
+  if (!resource.omitResource) bodyParams.set('resource', input.resource);
+  const body = bodyParams.toString();
   try {
     const response = await input.fetch(tokenUrl, {
       method: 'POST',
@@ -1140,8 +1204,10 @@ async function exchangeWithSecrets(input) {
         oauthError: oauthErrorName(parsed),
         hookMarker: responseHasHookMarker(response, text),
         accessTokenPresent: accessToken !== null,
+        refreshTokenPresent: (redacted.secretKeyNames ?? []).includes('refresh_token'),
         secretKeyNames: redacted.secretKeyNames ?? [],
         codeChallengeMethod: 'S256',
+        resourceSent: resource.omitResource !== true,
       }),
     };
   } catch {
@@ -1160,6 +1226,16 @@ async function exchangeWithSecrets(input) {
 export async function exchangeAuthorizationCode(input) {
   const exchanged = await exchangeWithSecrets(input);
   return exchanged.receipt;
+}
+
+/** Caller keeps the bearer in memory. The receipt does not. */
+export async function exchangeNativeCode(input) {
+  const exchanged = await exchangeWithSecrets(input);
+  return {
+    accessToken: exchanged.accessToken,
+    sessionId: passwordSessionId(exchanged.accessToken),
+    receipt: exchanged.receipt,
+  };
 }
 
 export async function runConsentExchange(input) {
@@ -1215,16 +1291,25 @@ function exchangePolicyFacts(exchange) {
   return {
     idTokenPresent: exchange.idTokenPresent === true,
     accessTokenPresent: exchange.accessTokenPresent === true,
+    refreshTokenPresent: exchange.refreshTokenPresent === true,
     policyMarker: exchange.hookMarker === true ? HOOK_OPENID_MARKER : null,
   };
 }
 
 export async function runOpenIdNegative(input) {
-  const sessionId = passwordSessionId(input.userAccessToken);
+  let sessionId = passwordSessionId(input.userAccessToken);
   const receipt = (extra) => openIdReceipt(extra, sessionId);
+  const downstream = input.callbackProfile === 'downstream_b';
+  if (downstream && typeof input.resource === 'string' && input.resource.length > 0) {
+    return receipt({ ok: false, reason: 'resource_not_omitted' });
+  }
   const guard = guardTarget(input);
   if (guard) return receipt({ ok: false, reason: guard });
-  const redirect = assertRedirectUri(input.redirectUri);
+  const redirect = assertRedirectUri(input.redirectUri, {
+    callbackProfile: input.callbackProfile,
+    expectedOrigin: input.expectedOrigin,
+    requirePort: input.callbackProfile !== undefined || input.requirePort === true,
+  });
   if (!redirect.ok) return receipt({ ok: false, reason: redirect.reason });
   const pkce =
     typeof input.codeVerifier === 'string' && typeof input.codeChallenge === 'string'
@@ -1245,9 +1330,16 @@ export async function runOpenIdNegative(input) {
     clientId: input.clientId,
     redirectUri: redirect.redirectUri,
     scopes: input.scopes ?? ['openid', 'email'],
-    resource: input.resource,
+    ...(downstream
+      ? { omitResource: true, callbackProfile: 'downstream_b' }
+      : { resource: input.resource }),
+    ...(input.callbackProfile !== undefined && !downstream
+      ? { callbackProfile: input.callbackProfile }
+      : {}),
     codeChallenge: pkce.codeChallenge,
     state: input.state ?? 'openid-negative',
+    expectedOrigin: input.expectedOrigin,
+    requirePort: input.callbackProfile !== undefined || input.requirePort === true,
   });
   if (!built.ok) return receipt({ ok: false, reason: built.reason });
   let authorized;
@@ -1312,7 +1404,45 @@ export async function runOpenIdNegative(input) {
       authorizeStatus,
     });
   }
-  const consent = await consentWithCode({ ...input, authorizationId });
+  let consentInput = input;
+  if (typeof input.userAccessToken !== 'string' || input.userAccessToken.length === 0) {
+    if (typeof input.password !== 'string' || input.password.length === 0) {
+      return receipt({
+        ok: false,
+        reason: 'synthetic_password_required',
+        openidSent: true,
+        rejectionStage: 'consent',
+      });
+    }
+    let login;
+    try {
+      login = await passwordLogin({
+        fetch: input.fetch,
+        authOrigin: input.authOrigin,
+        publishableKey: input.publishableKey,
+        password: input.password,
+        email: input.email,
+      });
+    } catch {
+      return receipt({
+        ok: false,
+        reason: 'password_login_failed',
+        openidSent: true,
+        rejectionStage: 'consent',
+      });
+    }
+    if (login.accessToken === null || login.receipt.ok !== true) {
+      return receipt({
+        ok: false,
+        reason: 'password_login_failed',
+        openidSent: true,
+        rejectionStage: 'consent',
+      });
+    }
+    sessionId = passwordSessionId(login.accessToken);
+    consentInput = { ...input, userAccessToken: login.accessToken };
+  }
+  const consent = await consentWithCode({ ...consentInput, authorizationId });
   if (consent.idTokenPresent === true) {
     return receipt({
       ok: false,
@@ -1359,8 +1489,20 @@ export async function runOpenIdNegative(input) {
     codeVerifier: pkce.codeVerifier,
     codeChallenge: pkce.codeChallenge,
     redirectUri: redirect.redirectUri,
+    callbackProfile: input.callbackProfile,
+    expectedOrigin: input.expectedOrigin,
+    requirePort: input.callbackProfile !== undefined || input.requirePort === true,
+    ...(downstream ? { resource: undefined, omitResource: true } : {}),
   });
-  const policyFacts = exchangePolicyFacts(exchange);
+  const policyFacts = {
+    ...exchangePolicyFacts(exchange),
+    consentFlow: consent.consentFlow ?? null,
+    resourceOnAuthorize: built.resourceOmitted !== true,
+    resourceOnExchange: exchange.resourceSent === true,
+  };
+  const resourceOk = downstream
+    ? built.resourceOmitted === true && exchange.resourceSent !== true
+    : built.resourceOmitted !== true && exchange.resourceSent === true;
   if (exchange.idTokenPresent === true) {
     return receipt({
       ok: false,
@@ -1415,6 +1557,28 @@ export async function runOpenIdNegative(input) {
     return receipt({
       ok: false,
       reason: 'access_token_present',
+      openidSent: true,
+      rejectionStage: 'exchange',
+      exchangeStatus: exchange.status,
+      codeChallengeMethod: 'S256',
+      ...policyFacts,
+    });
+  }
+  if (exchange.refreshTokenPresent === true) {
+    return receipt({
+      ok: false,
+      reason: 'refresh_token_present',
+      openidSent: true,
+      rejectionStage: 'exchange',
+      exchangeStatus: exchange.status,
+      codeChallengeMethod: 'S256',
+      ...policyFacts,
+    });
+  }
+  if (exchangeHookDenial(exchange) && !resourceOk) {
+    return receipt({
+      ok: false,
+      reason: 'resource_not_omitted',
       openidSent: true,
       rejectionStage: 'exchange',
       exchangeStatus: exchange.status,
@@ -1647,6 +1811,21 @@ function publicProbeSummary(probe) {
 }
 
 async function passwordLogin(input) {
+  const supplied = typeof input.email === 'string' ? input.email : '';
+  if (supplied.includes(FORBIDDEN_PROJECT_REF)) {
+    return {
+      accessToken: null,
+      receipt: baseReceipt({
+        ok: false,
+        reason: 'forbidden_target',
+        label: 'POSITIVE_CONTROL_NOT_MCP',
+        status: null,
+        idTokenPresent: false,
+        secretKeyNames: [],
+      }),
+    };
+  }
+  const email = supplied.length > 0 ? supplied : SYNTHETIC_EMAIL;
   const url = new URL('/auth/v1/token', input.authOrigin);
   url.searchParams.set('grant_type', 'password');
   const response = await input.fetch(url, {
@@ -1655,7 +1834,7 @@ async function passwordLogin(input) {
       apikey: input.publishableKey,
       'content-type': 'application/json',
     },
-    body: JSON.stringify({ email: SYNTHETIC_EMAIL, password: input.password }),
+    body: JSON.stringify({ email, password: input.password }),
   });
   const text = await readBody(response);
   const parsed = parseJson(text);

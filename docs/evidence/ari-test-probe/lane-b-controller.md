@@ -378,7 +378,9 @@ Acceptance ids match Atlas MC1545 J. Receipt rows use these same ids.
   match, is not stored. Not executed by this run. This id is not Atlas N5.
 
 N2, N3, N6, N7, and N8 are labelled `not_executed` on the receipt. They are
-not passed.
+not passed. The separate packet in `n-gates-controller.md` can execute those
+gates later. It does not rewrite this H1 receipt and it does not set
+acceptance.
 
 ## Honest gaps
 

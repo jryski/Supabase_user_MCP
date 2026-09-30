@@ -41,6 +41,9 @@ const PARENT_SECRET_ENV = [
   'ARI_TEST_PUBLISHABLE_KEY',
   'ARI_TEST_JWKS_JSON',
   'ARI_TEST_SUPABASE_URL',
+  'ARI_N2_SECOND_PASSWORD',
+  'ARI_N2_SECOND_EMAIL',
+  'ARI_N6_HOOK_MANIFEST',
 ];
 const CLIENT_SCRIPT = fileURLToPath(new URL('./ari-test-external-client.mjs', import.meta.url));
 
@@ -624,7 +627,7 @@ function rejectJson(res) {
   res.end(JSON.stringify({ error: 'invalid_request' }));
 }
 
-export async function startExternalRuntime(env) {
+export async function startExternalRuntime(env, options = {}) {
   const gate = controllerGate(env);
   if (!gate.ok) throw coded(gate.reason);
   if (env.ARI_LANE_B_EXECUTE !== '1') throw coded('live_runtime_not_started');
@@ -690,10 +693,10 @@ export async function startExternalRuntime(env) {
   let handler;
   try {
     handler = createNativeUserMcpReadHandler({
-      resourceServer: mcpUrl.origin + mcpUrl.pathname,
+      resourceServer: options.resourceServer ?? mcpUrl.origin + mcpUrl.pathname,
       supabaseUrl,
-      expectedClientId: required(env, 'ARI_EXTERNAL_A_CLIENT_ID'),
-      expectedAgentId: required(env, 'ARI_AGENT_ID'),
+      expectedClientId: options.expectedClientId ?? required(env, 'ARI_EXTERNAL_A_CLIENT_ID'),
+      expectedAgentId: options.expectedAgentId ?? required(env, 'ARI_AGENT_ID'),
       ingressRole: 'mcp_ingress',
       publishableKey: required(env, 'ARI_TEST_PUBLISHABLE_KEY'),
       jwks,
@@ -702,6 +705,8 @@ export async function startExternalRuntime(env) {
       enableAriTestMarker: true,
       observation,
       ...(livenessTimeoutMs === undefined ? {} : { livenessTimeoutMs }),
+      ...(options.fetch === undefined ? {} : { fetch: options.fetch }),
+      ...(options.onGrantFact === undefined ? {} : { onGrantFact: options.onGrantFact }),
       ...(diagnosticFault === undefined
         ? {}
         : {
@@ -719,6 +724,8 @@ export async function startExternalRuntime(env) {
     expectedAState: undefined,
     expectedBState: undefined,
     aSent: false,
+    retainedCode: undefined,
+    captureDownstreamCode: options.captureDownstreamCode === true,
     stderr: '',
   };
   const writeChild = (value) => {
@@ -756,9 +763,36 @@ export async function startExternalRuntime(env) {
         return;
       }
       session.aSent = true;
+      session.retainedCode = code;
       res.writeHead(200, { 'content-type': 'text/plain', 'cache-control': 'no-store' });
       res.end('callback_received');
       writeChild({ type: 'authorization_code', code, state });
+      return;
+    }
+    if (
+      req.method === 'GET' &&
+      requestUrl.pathname === bRedirect.pathname &&
+      session.captureDownstreamCode === true
+    ) {
+      const keys = [...requestUrl.searchParams.keys()];
+      const code = requestUrl.searchParams.get('code') ?? '';
+      const state = requestUrl.searchParams.get('state') ?? '';
+      const keysOk = keys.length === 2 && keys.every((key) => key === 'code' || key === 'state');
+      if (
+        !keysOk ||
+        code.length < 1 ||
+        code.length > 512 ||
+        state.length < 1 ||
+        state.length > 256 ||
+        /\s/u.test(code) ||
+        JWT_SHAPE.test(code)
+      ) {
+        rejectJson(res);
+        return;
+      }
+      session.retainedCode = code;
+      res.writeHead(200, { 'content-type': 'text/plain', 'cache-control': 'no-store' });
+      res.end('callback_received');
       return;
     }
     const chunks = [];
@@ -802,6 +836,21 @@ export async function startExternalRuntime(env) {
   } catch {
     server.close();
     throw coded('mcp_listen_failed');
+  }
+  if (options.spawnChild === false) {
+    return {
+      server,
+      child: undefined,
+      session,
+      timeoutMs,
+      childEnv: {},
+      writeChild,
+      authOrigin: supabase.origin,
+      observation,
+      secrets: { syntheticAccessToken: undefined, passwordSessionId: undefined },
+      consentFlows: [],
+      handler,
+    };
   }
   const child = spawn(process.execPath, [CLIENT_SCRIPT], {
     stdio: ['pipe', 'pipe', 'pipe'],

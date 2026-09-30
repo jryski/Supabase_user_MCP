@@ -248,4 +248,68 @@ describe('downstream OAuth grant binding', () => {
     ).toBe(false);
     expect(timed.resolve(principal).status).toBe('missing');
   });
+
+  it('keeps a rejected B session uuid and drops the bearer on subject mismatch', async () => {
+    const material = await keys();
+    const otherSub = '55555555-5555-4555-8555-555555555555';
+    const rejectedSession = '66666666-6666-4666-8666-666666666666';
+    const tokenB = await sign(material.privateKey, {
+      role: 'authenticated',
+      client_id: B_CLIENT,
+      agent_id: AGENT,
+      session_id: rejectedSession,
+      sub: otherSub,
+    });
+    const facts: Array<{
+      event: string;
+      sessionId: string | null;
+      sub: string | null;
+      subjectMismatch: boolean;
+    }> = [];
+    const store = new DownstreamOAuthGrantStore({
+      issuer: ISSUER,
+      authOrigin: ORIGIN,
+      expectedBClientId: B_CLIENT,
+      expectedAgentId: AGENT,
+      redirectUri: REDIRECT,
+      jwks: material.jwks,
+      fetch: async () =>
+        new Response(JSON.stringify({ access_token: tokenB, refresh_token: REFRESH }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        }),
+      onGrantFact(fact) {
+        facts.push(fact);
+      },
+    });
+    const handshake = store.beginHandshake(principal);
+    expect(new URL(handshake.authorizationUrl).searchParams.get('resource')).toBeNull();
+    expect(
+      await store.completeCallback({
+        code: 'cross-user',
+        state: handshake.id,
+        redirectUri: REDIRECT,
+      }),
+    ).toBe(false);
+    expect(store.resolve(principal).status).toBe('missing');
+    expect(store.boundSessionId(principal)).toBeNull();
+    expect(store.containsRetainedMaterial(tokenB)).toBe(false);
+    expect(store.containsRetainedMaterial(REFRESH)).toBe(false);
+    expect(facts).toEqual([
+      {
+        event: 'exchange_rejected',
+        sessionId: rejectedSession,
+        sub: otherSub,
+        subjectMismatch: true,
+      },
+    ]);
+    expect(
+      await store.completeCallback({
+        code: 'replay',
+        state: handshake.id,
+        redirectUri: REDIRECT,
+      }),
+    ).toBe(false);
+    expect(facts.at(-1)?.event).toBe('replay');
+  });
 });

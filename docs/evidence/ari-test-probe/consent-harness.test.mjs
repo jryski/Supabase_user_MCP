@@ -1744,3 +1744,61 @@ test('loopback listener does not echo token query values', async () => {
     await server.close();
   }
 });
+
+test('downstream B omits resource on authorize and token exchange', async () => {
+  const pkce = createPkce();
+  const redirect = 'http://127.0.0.1:8788/oauth/downstream/callback';
+  const blocked = buildAuthorizeUrl({
+    authorizeEndpoint: 'https://127.0.0.1:9/auth/v1/oauth/authorize',
+    clientId: 'downstream-b-client',
+    redirectUri: redirect,
+    scopes: ['email'],
+    resource: 'http://127.0.0.1:8788/mcp',
+    callbackProfile: 'downstream_b',
+    codeChallenge: pkce.codeChallenge,
+    state: 'b-state',
+  });
+  assert.equal(blocked.reason, 'resource_not_omitted');
+  const built = buildAuthorizeUrl({
+    authorizeEndpoint: 'https://127.0.0.1:9/auth/v1/oauth/authorize',
+    clientId: 'downstream-b-client',
+    redirectUri: redirect,
+    scopes: ['openid', 'email'],
+    callbackProfile: 'downstream_b',
+    omitResource: true,
+    label: 'openid_negative',
+    codeChallenge: pkce.codeChallenge,
+    state: 'b-state',
+    requirePort: true,
+    expectedOrigin: 'http://127.0.0.1:8788',
+  });
+  assert.equal(built.ok, true);
+  assert.equal(built.resourceOmitted, true);
+  assert.equal(new URL(built.url).searchParams.get('resource'), null);
+  assert.equal(new URL(built.url).searchParams.get('scope').includes('openid'), true);
+  const bodies = [];
+  const exchanged = await exchangeAuthorizationCode({
+    fetch: async (url, init) => {
+      bodies.push(String(init?.body ?? ''));
+      assert.equal(String(url).includes('odbcejsuuqdzhabjmozi'), false);
+      return jsonResponse(403, {
+        error: 'invalid_request',
+        error_description: 'openid_scope_refused',
+      });
+    },
+    authOrigin: 'https://127.0.0.1:9',
+    publishableKey: 'publishable-key',
+    clientId: 'downstream-b-client',
+    redirectUri: redirect,
+    code: 'auth-code',
+    codeVerifier: pkce.codeVerifier,
+    codeChallenge: pkce.codeChallenge,
+    callbackProfile: 'downstream_b',
+    omitResource: true,
+    requirePort: true,
+    expectedOrigin: 'http://127.0.0.1:8788',
+  });
+  assert.equal(exchanged.resourceSent, false);
+  assert.equal(bodies[0].includes('resource='), false);
+  assert.equal(exchanged.accessTokenPresent, false);
+});
