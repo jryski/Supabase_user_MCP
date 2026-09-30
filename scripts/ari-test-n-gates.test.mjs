@@ -270,7 +270,7 @@ async function startIssuer(mode) {
           send(404, JSON.stringify({ error: 'not_found' }));
           return;
         }
-        const consentKey = `${user.sub}:${record.clientId}`;
+        const consentKey = `${user.sub}:${record.clientId}:${record.scope}`;
         if (req.method === 'GET' && authorizationPath[2] === undefined) {
           if (remembered.has(consentKey)) {
             record.sub = user.sub;
