@@ -278,12 +278,16 @@ export function nGatesPlan() {
       'Baseline A /callback remains the consent-harness profile where that profile is used.',
       'N3 presents one genuine signed A, unmodified, under one local verifier mismatch at a time. Reauthorization stays off.',
       'N7 sends openid for external A and mapped B, both consent branches. Only exchange HTTP 403 openid_scope_refused with no token is a hook-policy pass.',
+      'A complete hook-policy denial is HTTP 403 and a full JSON object that carries the exact marker openid_scope_refused and no access_token, id_token, or refresh_token field. That denial resolves issuance the same way as an allowlisted OAuth error. It does not require a particular error field. A truncated or malformed body, HTTP 5xx, a token field, or a non-object envelope stays unresolved.',
+      'Unresolved issuance after a gate stops the runner before the next gate. N2 is not prepared and the second user is not deleted. The reconcile readback does not resolve the attempt and does not resume later gates.',
+      'N7 subcase rows keep exchangeStatus, policyMarker, and token-presence booleans only. They do not carry token values.',
       'N8 keeps callback transport cases, and passes only with a legitimate signed B that the grant store refuses to bind. Transport evidence alone is incomplete.',
       'N2: create one run-owned second synthetic user distinct from the verified baseline, then delete that user only after cleanup. The child never receives the password.',
       'Cleanup readbacks must be a bijection of the requested session ids. A duplicate or omitted id is not confirmation.',
       'N6: read back the enabled hook and the effective restrictive F1, prove the exact owner marker for the verified owner, arm restoration, then disable only that hook.',
       'Hook-off A is verified with issuer and JWKS before the marker read. HTTP 401, HTTP 403, and HTTP 500 are inconclusive.',
       'Hook-off GET /auth/v1/user and the N6 marker read include their response bodies in the run timeout and in SIGINT or SIGTERM. A stall after disable still reaches exact restore or a pending or failed recovery receipt, and it is not an F1 pass.',
+      'The N6 recovery file is in the process temporary directory. A spawned runner must receive the same TMPDIR as the process that checks the locator.',
       'Clean every minted auth session, with sessions and refresh rows at zero, then restore the saved configuration and canary.',
       'cleanupStatus is confirmed when every recorded session id was cleaned. It is not_required only when the run recorded no session id. failed and unresolved take priority. Per-action cleanup readbacks stay mandatory.',
       'Restore stays armed until the readback hash matches the saved configuration. A failed readback is pending or failed, never not_required.',
@@ -483,11 +487,30 @@ const PRE_ISSUANCE_DENIAL = new Set([
   'unauthorized_client',
   'unsupported_grant_type',
 ]);
+const HOOK_POLICY_MARKER = 'openid_scope_refused';
+
+function jsonHasExactMarker(value, depth = 0) {
+  if (value === HOOK_POLICY_MARKER) return true;
+  if (depth > 4 || value === null || typeof value !== 'object') return false;
+  const items = Array.isArray(value) ? value : Object.values(value);
+  return items.some((item) => jsonHasExactMarker(item, depth + 1));
+}
+
+function hookPolicyTokenPresent(body) {
+  return (
+    Object.hasOwn(body, 'access_token') ||
+    Object.hasOwn(body, 'id_token') ||
+    Object.hasOwn(body, 'refresh_token')
+  );
+}
 
 function definitivePreIssuanceDenial(status, body) {
   if (status !== 400 && status !== 401 && status !== 403) return false;
   if (body === null || typeof body !== 'object' || Array.isArray(body)) return false;
   if (typeof body.access_token === 'string') return false;
+  const marked = jsonHasExactMarker(body);
+  if (marked && hookPolicyTokenPresent(body)) return false;
+  if (status === 403 && marked) return true;
   return typeof body.error === 'string' && PRE_ISSUANCE_DENIAL.has(body.error);
 }
 
@@ -875,6 +898,17 @@ function zeroCounts(observation) {
   );
 }
 
+function openIdRowProjection(receipt) {
+  const status = receipt?.exchangeStatus;
+  return {
+    exchangeStatus: Number.isInteger(status) && status >= 100 && status <= 599 ? status : null,
+    policyMarker: receipt?.policyMarker === HOOK_POLICY_MARKER ? HOOK_POLICY_MARKER : null,
+    accessTokenPresent: receipt?.accessTokenPresent === true,
+    idTokenPresent: receipt?.idTokenPresent === true,
+    refreshTokenPresent: receipt?.refreshTokenPresent === true,
+  };
+}
+
 function subcaseRow(id, subcases, label) {
   return {
     id,
@@ -1007,6 +1041,7 @@ async function runN7(env, ledger, timeoutMs, ctx) {
         pass,
         observedFlow: typeof observed === 'string' ? observed : 'unobserved',
         reason: pass ? 'openid_scope_refused' : safeCode(receipt.reason),
+        ...openIdRowProjection(receipt),
       });
     }
   }
@@ -1635,7 +1670,11 @@ async function runN2(env, ledger, reader, timeoutMs, ctx) {
     ctx.eligibleSecondUserId = secondUserId;
   }
   await confirmCleanup(reader, ctx, timeoutMs, 'N2');
-  if (ctx.deletionEligible === true && ctx.eligibleSecondUserId !== undefined) {
+  if (
+    ctx.issuance.ambiguous() !== true &&
+    ctx.deletionEligible === true &&
+    ctx.eligibleSecondUserId !== undefined
+  ) {
     const deleted = await pauseForContinue(
       reader,
       {
@@ -2246,6 +2285,7 @@ export async function runNGates(env, stdin) {
       else throw coded('live_configuration_incomplete');
       results.set(id, row);
       if (id !== 'N2' && id !== 'N6') await confirmCleanup(reader, ctx, timeoutMs, id);
+      if (ctx.issuance.ambiguous()) break;
       if (row.pass !== true) break;
     }
   } catch (error) {

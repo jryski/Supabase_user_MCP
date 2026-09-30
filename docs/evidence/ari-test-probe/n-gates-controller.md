@@ -77,7 +77,9 @@ code, or admin key.
    manifest itself. The packet recomputes the hash from that readback.
    Do this on failure, timeout, EOF, and SIGINT or SIGTERM as well.
    Until that readback matches, restoration is `pending` or `failed`,
-   never `not_required`.
+   never `not_required`. The recovery file is in the process temporary
+   directory. A spawned runner must receive the same `TMPDIR` as the
+   process that checks the locator.
 
 N6 passes only when a cryptographically verified hook-off A for the same
 synthetic owner returns HTTP 200 with an empty marker, the owner marker
@@ -103,15 +105,25 @@ fully read and either a real session UUID from that body is on the ledger,
 or the body is a complete pre-issuance denial. A denial is HTTP 400, 401,
 or 403 with a JSON `error` of `invalid_request`, `invalid_client`,
 `invalid_grant`, `unauthorized_client`, `unsupported_grant_type`,
-`invalid_scope`, or `access_denied`, and no access token. Headers alone,
-a truncated or stalled body, an aborted read, malformed JSON, HTTP 2xx
-without a usable session UUID, and HTTP 5xx stay `unresolved`. The packet
-asks for `reconcile_unresolved_issuance` for those attempt ids only. That
-readback does not resolve the attempt and is not permission to list or
-delete baseline sessions, including any ids the controller sends back.
-`cleanupStatus` stays `unresolved`. A late token whose body does arrive
-in full, with a real session UUID, is ledgered and cleaned before the
-receipt.
+`invalid_scope`, or `access_denied`, and no access token. A complete
+native hook-policy denial resolves the same way: HTTP 403, a full JSON
+object, the exact marker `openid_scope_refused`, and no `access_token`,
+`id_token`, or `refresh_token` field. The packet does not require a
+particular error field for that denial. Headers alone, a truncated or
+stalled body, an aborted read, malformed JSON, a non-object envelope, HTTP
+2xx without a usable session UUID, HTTP 5xx, and any of those token fields
+stay `unresolved`. A generic HTTP 403 without the complete hook-policy
+denial, and without an allowlisted OAuth `error`, also stays `unresolved`.
+
+If any issuance attempt is still unresolved when a gate returns, the runner
+does not start the next gate. It does not prepare N2 and it does not delete
+the second synthetic user. The packet then asks for
+`reconcile_unresolved_issuance` for those attempt ids only. That readback
+does not resolve the attempt, does not resume later gates, and is not
+permission to list or delete baseline sessions, including any ids the
+controller sends back. `cleanupStatus` stays `unresolved`. A late token
+whose body does arrive in full, with a real session UUID, is ledgered and
+cleaned before the receipt.
 
 `cleanupStatus` is `confirmed` when every recorded session id for the
 run already has a confirmed cleanup readback. It is `not_required` only
@@ -134,7 +146,10 @@ An issuer or service failure is not binding proof. Callback HTTP 500 is
 not a redirect-mismatch pass. After a successful bind, replay must leave
 that binding and session in place. N7 records the consent flow it actually
 sees. Policy proof remains exchange HTTP 403 `openid_scope_refused` with
-no token. A retained client that is already consented does not need a new
+no token. Each N7 subcase row keeps `exchangeStatus`, `policyMarker`, and
+the booleans `accessTokenPresent`, `idTokenPresent`, and
+`refreshTokenPresent`. Those fields are status and presence only. A
+retained client that is already consented does not need a new
 registration.
 
 ## Local proof

@@ -485,6 +485,58 @@ async function startIssuer(mode, hooks = {}) {
                 send(400, JSON.stringify({ error: 'invalid_scope' }));
                 return;
               }
+              if (mode === 'hook_marker_nested') {
+                send(
+                  403,
+                  JSON.stringify({ error: { http_code: 403, message: 'openid_scope_refused' } }),
+                );
+                return;
+              }
+              if (mode === 'hook_marker_description') {
+                send(403, JSON.stringify({ error_description: 'openid_scope_refused' }));
+                return;
+              }
+              if (mode === 'hook_truncated') {
+                send(403, '{"message":"openid_scope_refused"');
+                return;
+              }
+              if (mode === 'hook_malformed') {
+                send(403, 'not-json');
+                return;
+              }
+              if (mode === 'hook_5xx') {
+                send(503, JSON.stringify({ message: 'openid_scope_refused' }));
+                return;
+              }
+              if (mode === 'hook_token') {
+                send(
+                  403,
+                  JSON.stringify({
+                    message: 'openid_scope_refused',
+                    access_token: 'access-sentinel-must-not-leak',
+                  }),
+                );
+                return;
+              }
+              if (mode === 'hook_refresh') {
+                send(
+                  403,
+                  JSON.stringify({
+                    error: 'invalid_request',
+                    error_description: 'openid_scope_refused',
+                    refresh_token: 'refresh-sentinel-must-not-leak',
+                  }),
+                );
+                return;
+              }
+              if (mode === 'hook_ambiguous') {
+                send(403, JSON.stringify(['openid_scope_refused']));
+                return;
+              }
+              if (mode === 'generic_403') {
+                send(403, JSON.stringify({ error: 'temporarily_unavailable' }));
+                return;
+              }
               send(
                 403,
                 JSON.stringify({
@@ -649,7 +701,8 @@ async function startIssuer(mode, hooks = {}) {
   };
 }
 
-async function drive(mode, gates, fault = 'none') {
+async function drive(mode, gates, fault = 'none', options = {}) {
+  const recoveryTmp = typeof options.tmpdir === 'string' ? options.tmpdir : tmpdir();
   const hooks = {};
   const issuer = await startIssuer(mode, hooks);
   const mcpPort = await freePort();
@@ -697,6 +750,7 @@ async function drive(mode, gates, fault = 'none') {
       ARI_TEST_SYNTHETIC_PASSWORD: PASSWORD,
       ARI_N2_SECOND_EMAIL: EMAIL2,
       ARI_N2_SECOND_PASSWORD: PASSWORD2,
+      TMPDIR: recoveryTmp,
     },
   });
   const stderr = [];
@@ -960,6 +1014,7 @@ async function drive(mode, gates, fault = 'none') {
       actions,
       messages,
       head,
+      recoveryTmp,
     };
   } finally {
     issuer.https.closeAllConnections?.();
@@ -1005,6 +1060,17 @@ test('synthetic packet executes the remaining gates without hosted contact', asy
   );
   assert.equal(
     byId.N7.subcases.every((row) => row.reason === 'openid_scope_refused'),
+    true,
+  );
+  assert.equal(
+    byId.N7.subcases.every(
+      (row) =>
+        row.exchangeStatus === 403 &&
+        row.policyMarker === 'openid_scope_refused' &&
+        row.accessTokenPresent === false &&
+        row.idTokenPresent === false &&
+        row.refreshTokenPresent === false,
+    ),
     true,
   );
   const bAuthorize = result.seen.authorize.filter((row) => row.clientId === B_CLIENT);
@@ -1121,6 +1187,138 @@ test('generic invalid_scope is not an N7 hook-policy pass', async () => {
     n7.subcases.some((row) => row.pass === true),
     false,
   );
+  assert.equal(
+    n7.subcases.every((row) => row.exchangeStatus === 400 && row.policyMarker === null),
+    true,
+  );
+});
+
+function assertNoIssuanceSecrets(result, label) {
+  for (const secret of [
+    PASSWORD,
+    PASSWORD2,
+    REFRESH,
+    'access-sentinel-must-not-leak',
+    'refresh-sentinel-must-not-leak',
+    'eyJ',
+  ]) {
+    assert.equal(result.outText.includes(secret), false, `${label}:${secret}`);
+    assert.equal(result.errText.includes(secret), false, `${label}:${secret}`);
+  }
+}
+
+function assertStoppedBeforeN2(result, label) {
+  assert.equal(result.actions.includes('prepare_second_synthetic_user'), false, label);
+  assert.equal(result.actions.includes('delete_second_synthetic_user'), false, label);
+  const n2 = result.receipt.rows.find((row) => row.id === 'N2');
+  assert.equal(n2.executed, false, label);
+  assert.equal(n2.pass, false, label);
+  assert.equal(n2.label, 'not_executed', label);
+}
+
+test('complete hook-policy denials resolve issuance without an OAuth error name', async () => {
+  for (const mode of ['hook_marker_description', 'hook_marker_nested']) {
+    const result = await drive(mode, 'N7');
+    assert.equal(result.code, 0, `${mode}\n${result.errText}\n${result.outText}`);
+    assert.equal(result.receipt.acceptance, false, mode);
+    assert.equal(result.receipt.rowsPass, true, mode);
+    assert.equal(result.receipt.issuanceStatus, 'resolved', mode);
+    assert.deepEqual(result.receipt.unresolvedAttemptIds, [], mode);
+    assert.equal(result.actions.includes('reconcile_unresolved_issuance'), false, mode);
+    const n7 = result.receipt.rows.find((row) => row.id === 'N7');
+    assert.equal(n7.pass, true, mode);
+    for (const row of n7.subcases) {
+      assert.equal(row.exchangeStatus, 403, mode);
+      assert.equal(row.policyMarker, 'openid_scope_refused', mode);
+      assert.equal(row.accessTokenPresent, false, mode);
+      assert.equal(row.idTokenPresent, false, mode);
+      assert.equal(row.refreshTokenPresent, false, mode);
+      assert.equal(row.reason, 'openid_scope_refused', mode);
+      assert.equal(JSON.stringify(row).includes('access_token'), false, mode);
+    }
+    assertNoIssuanceSecrets(result, mode);
+  }
+  const continued = await drive('hook_marker_description', 'N7,N2');
+  assert.equal(continued.code, 0, `${continued.errText}\n${continued.outText}`);
+  assert.equal(continued.receipt.acceptance, false);
+  assert.equal(continued.receipt.issuanceStatus, 'resolved');
+  assert.equal(continued.actions.includes('prepare_second_synthetic_user'), true);
+  assert.equal(continued.actions.includes('delete_second_synthetic_user'), true);
+  assert.equal(continued.receipt.rows.find((row) => row.id === 'N2').pass, true);
+  assertNoIssuanceSecrets(continued, 'continued');
+});
+
+test('truncated malformed 5xx token-present and ambiguous bodies stay unresolved', async () => {
+  const cases = [
+    ['hook_truncated', false, 403, null, false, false, false],
+    ['hook_malformed', false, 403, null, false, false, false],
+    ['hook_5xx', false, 503, 'openid_scope_refused', false, false, false],
+    ['hook_token', false, 403, 'openid_scope_refused', true, false, false],
+    ['hook_refresh', false, 403, 'openid_scope_refused', false, false, true],
+    ['hook_ambiguous', true, 403, 'openid_scope_refused', false, false, false],
+    ['generic_403', false, 403, null, false, false, false],
+  ];
+  for (const [mode, n7Pass, status, marker, access, idToken, refresh] of cases) {
+    const result = await drive(mode, 'N7,N2');
+    assert.equal(result.code, 2, `${mode}\n${result.errText}\n${result.outText}`);
+    assert.equal(result.receipt.acceptance, false, mode);
+    assert.equal(result.receipt.rowsPass, false, mode);
+    assert.equal(result.receipt.issuanceStatus, 'unresolved', mode);
+    assert.notEqual(result.receipt.issuanceStatus, 'resolved', mode);
+    assert.equal(result.receipt.cleanupStatus, 'unresolved', mode);
+    assert.equal(result.receipt.unresolvedAttemptIds.length > 0, true, mode);
+    assert.equal(result.actions.includes('reconcile_unresolved_issuance'), true, mode);
+    assertStoppedBeforeN2(result, mode);
+    const n7 = result.receipt.rows.find((row) => row.id === 'N7');
+    assert.equal(n7.executed, true, mode);
+    assert.equal(n7.pass, n7Pass, mode);
+    assert.equal(
+      n7.subcases.every(
+        (row) =>
+          row.exchangeStatus === status &&
+          row.policyMarker === marker &&
+          row.accessTokenPresent === access &&
+          row.idTokenPresent === idToken &&
+          row.refreshTokenPresent === refresh,
+      ),
+      true,
+      `${mode}:${JSON.stringify(n7.subcases)}`,
+    );
+    const reconcileAt = result.outText.indexOf('"action":"reconcile_unresolved_issuance"');
+    const receiptAt = result.outText.lastIndexOf('"type":"receipt"');
+    assert.equal(reconcileAt >= 0 && receiptAt > reconcileAt, true, mode);
+    assertNoIssuanceSecrets(result, mode);
+  }
+});
+
+test('unresolved issuance after a passing gate does not start N2', async () => {
+  const result = await drive('missing_session', 'N7,N2');
+  assert.equal(result.code, 2, `${result.errText}\n${result.outText}`);
+  assert.equal(result.receipt.acceptance, false);
+  assert.equal(result.receipt.rowsPass, false);
+  assert.equal(result.receipt.issuanceStatus, 'unresolved');
+  assert.equal(result.receipt.cleanupStatus, 'unresolved');
+  const n7 = result.receipt.rows.find((row) => row.id === 'N7');
+  assert.equal(n7.executed, true);
+  assert.equal(n7.pass, true);
+  assert.equal(
+    n7.subcases.every(
+      (row) =>
+        row.pass === true &&
+        row.exchangeStatus === 403 &&
+        row.policyMarker === 'openid_scope_refused' &&
+        row.accessTokenPresent === false &&
+        row.idTokenPresent === false &&
+        row.refreshTokenPresent === false,
+    ),
+    true,
+  );
+  assertStoppedBeforeN2(result, 'missing_session');
+  assert.equal(result.actions.includes('reconcile_unresolved_issuance'), true);
+  const reconcileAt = result.outText.indexOf('"action":"reconcile_unresolved_issuance"');
+  const receiptAt = result.outText.lastIndexOf('"type":"receipt"');
+  assert.equal(reconcileAt >= 0 && receiptAt > reconcileAt, true);
+  assertNoIssuanceSecrets(result, 'missing_session');
 });
 
 function assertHookOffStall(result, label, reason) {
@@ -1244,8 +1442,30 @@ test('EOF after disable stays pending and keeps the recovery locator', async () 
   assert.equal(result.receipt.restoreStatus, 'pending');
   assert.notEqual(result.receipt.restoreStatus, 'not_required');
   assert.equal(typeof result.receipt.recoveryLocator, 'string');
+  assert.equal(result.recoveryTmp, tmpdir());
   const file = join(tmpdir(), 'ari-n-gates-recovery', result.receipt.recoveryLocator);
   assert.equal(existsSync(file), true);
+  const saved = JSON.parse(readFileSync(file, 'utf8'));
+  assert.equal(saved.phase, 'disable_armed');
+  assert.equal(saved.hookManifest.function, 'ari_probe.custom_access_token_hook');
+  assert.equal(JSON.stringify(saved).includes(PASSWORD), false);
+  assert.equal(JSON.stringify(saved).includes('eyJ'), false);
+});
+
+test('N6 EOF recovery locator follows a profile-scratch TMPDIR', async () => {
+  const scratch = mkdtempSync(join(tmpdir(), 'ari-n-gates-profile-'));
+  const result = await drive('policy', 'N6', 'eof_disable', { tmpdir: scratch });
+  assert.equal(result.code, 2, `${result.errText}\n${result.outText}`);
+  assert.equal(result.receipt.acceptance, false);
+  assert.equal(result.receipt.restoreStatus, 'pending');
+  assert.notEqual(result.receipt.restoreStatus, 'not_required');
+  assert.equal(result.recoveryTmp, scratch);
+  const file = join(scratch, 'ari-n-gates-recovery', result.receipt.recoveryLocator);
+  assert.equal(existsSync(file), true);
+  assert.equal(
+    existsSync(join(tmpdir(), 'ari-n-gates-recovery', result.receipt.recoveryLocator)),
+    false,
+  );
   const saved = JSON.parse(readFileSync(file, 'utf8'));
   assert.equal(saved.phase, 'disable_armed');
   assert.equal(saved.hookManifest.function, 'ari_probe.custom_access_token_hook');
