@@ -6,6 +6,8 @@ import { PGlite } from '@electric-sql/pglite';
 const USER = '11111111-1111-4111-8111-111111111111';
 const OTHER = '44444444-4444-4444-8444-444444444444';
 const SOURCE = '22222222-2222-4222-8222-222222222222';
+const B_SESSION = '33333333-3333-4333-8333-333333333333';
+const B_DEAD = '55555555-5555-4555-8555-555555555555';
 const DEAD = '66666666-6666-4666-8666-666666666666';
 const FUTURE = '77777777-7777-4777-8777-777777777777';
 const CLIENT_A = 'registered-client-parameter';
@@ -24,8 +26,14 @@ const sql07 = new URL('./sql/07-downstream-and-external-a.sql', import.meta.url)
 const sql04 = new URL('./sql/04-hook-v2-for-ariadne.sql', import.meta.url);
 const sql03 = new URL('./sql/03-mcp-ingress-role.sql', import.meta.url);
 
-function claims(clientId, agentId, role = 'authenticated') {
-  return JSON.stringify({ role, client_id: clientId, agent_id: agentId, sub: USER });
+function claims(clientId, agentId, role = 'authenticated', sessionId = B_SESSION) {
+  return JSON.stringify({
+    role,
+    client_id: clientId,
+    agent_id: agentId,
+    sub: USER,
+    session_id: sessionId,
+  });
 }
 
 describe('lane B SQL packet', { concurrency: false }, () => {
@@ -59,6 +67,10 @@ describe('lane B SQL packet', { concurrency: false }, () => {
     assert.match(sql, /ari_probe\.downstream_client/);
     assert.match(sql, /ari_probe\.mcp_client/);
     assert.match(sql, /session\.oauth_client_id = a_client_id/);
+    assert.match(sql, /v_claims ->> 'session_id'/);
+    assert.match(sql, /b_session\.user_id = v_uid/);
+    assert.match(sql, /b_session\.oauth_client_id = v_client_id/);
+    assert.match(sql, /b_session\.not_after is null or b_session\.not_after > pg_catalog\.now\(\)/);
     assert.match(sql, /ingress\.agent_id = v_b_agent/);
     assert.match(
       sql,
@@ -127,7 +139,9 @@ describe('sql/05 liveness in PGlite', { concurrency: false }, () => {
       insert into auth.sessions (id, user_id, oauth_client_id, not_after) values
         ('${SOURCE}', '${USER}', '${CLIENT_A}', null),
         ('${FUTURE}', '${USER}', '${CLIENT_EXT}', '2999-01-01T00:00:00Z'),
-        ('${DEAD}', '${USER}', '${CLIENT_A}', '2000-01-01T00:00:00Z');
+        ('${DEAD}', '${USER}', '${CLIENT_A}', '2000-01-01T00:00:00Z'),
+        ('${B_SESSION}', '${USER}', '${CLIENT_B}', null),
+        ('${B_DEAD}', '${USER}', '${CLIENT_B}', '2000-01-01T00:00:00Z');
       create function auth.uid() returns uuid language sql stable as $$
         select nullif(current_setting('request.jwt.claim.sub', true), '')::uuid
       $$;
@@ -168,9 +182,66 @@ describe('sql/05 liveness in PGlite', { concurrency: false }, () => {
     assert.equal(await live(SOURCE, CLIENT_B, claims(CLIENT_B, AGENT)), false);
     assert.equal(await live(SOURCE, CLIENT_EXT, claims(CLIENT_B, AGENT)), false);
     assert.equal(await live(DEAD, CLIENT_A, claims(CLIENT_B, AGENT)), false);
+    assert.equal(
+      await live(SOURCE, CLIENT_A, claims(CLIENT_B, AGENT, 'authenticated', B_DEAD)),
+      false,
+    );
+    assert.equal(
+      await live(
+        SOURCE,
+        CLIENT_A,
+        claims(CLIENT_B, AGENT, 'authenticated', '00000000-0000-0000-0000-000000000000'),
+      ),
+      false,
+    );
+    assert.equal(
+      await live(
+        SOURCE,
+        CLIENT_A,
+        JSON.stringify({
+          role: 'authenticated',
+          client_id: CLIENT_B,
+          agent_id: AGENT,
+          sub: USER,
+        }),
+      ),
+      false,
+    );
+    assert.equal(
+      await live(SOURCE, CLIENT_A, claims(CLIENT_B, AGENT, 'authenticated', 'not-a-uuid')),
+      false,
+    );
     assert.equal(await live(SOURCE, OTHER_AGENT_A, claims(CLIENT_B, AGENT)), false);
     assert.equal(await live(SOURCE, CLIENT_A, claims(CLIENT_B, OTHER_AGENT)), false);
     assert.equal(await live(SOURCE, CLIENT_A, JSON.stringify({ role: 'authenticated' })), false);
+  });
+
+  test('B session present is true; deleting only B or only A is false', async () => {
+    await db.exec('begin');
+    try {
+      assert.equal(await live(SOURCE, CLIENT_A, claims(CLIENT_B, AGENT)), true);
+      await db.query(`delete from auth.sessions where id = $1`, [B_SESSION]);
+      const aRemains = await db.query(
+        `select count(*)::int as n from auth.sessions where id = $1`,
+        [SOURCE],
+      );
+      assert.equal(aRemains.rows[0]?.n, 1);
+      assert.equal(await live(SOURCE, CLIENT_A, claims(CLIENT_B, AGENT)), false);
+      await db.query(
+        `insert into auth.sessions (id, user_id, oauth_client_id, not_after) values ($1, $2, $3, null)`,
+        [B_SESSION, USER, CLIENT_B],
+      );
+      await db.query(`delete from auth.sessions where id = $1`, [SOURCE]);
+      const bRemains = await db.query(
+        `select count(*)::int as n from auth.sessions where id = $1`,
+        [B_SESSION],
+      );
+      assert.equal(bRemains.rows[0]?.n, 1);
+      assert.equal(await live(SOURCE, CLIENT_A, claims(CLIENT_B, AGENT)), false);
+    } finally {
+      await db.exec('rollback');
+    }
+    assert.equal(await live(SOURCE, CLIENT_A, claims(CLIENT_B, AGENT)), true);
   });
 
   test('execute is authenticated only', async () => {

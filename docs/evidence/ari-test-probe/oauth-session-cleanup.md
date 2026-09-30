@@ -2,7 +2,10 @@
 
 Controller runbook only. Not executed from this branch. Not acceptance.
 This is fixture cleanup of one session row. It is not a revocation receipt
-and it does not prove that a presented JWT is rejected.
+and it does not prove that a presented JWT is rejected. N4 and N5 during
+`run` use the readback in `lane-b-controller.md`: delete only the requested
+session, read target session and refresh counts back to zero, and leave the
+opposite session live before typing `continue`.
 
 | | |
 | --- | --- |

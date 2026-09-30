@@ -14,8 +14,8 @@ baseline hook packet. `sql/07` is the additive B and external-A mapping.
 | Forbidden | `lygftpbjgqgvuunkwnxf`, HOUSE, VAULT, production |
 | B profile | `TEST_ONLY_PUBLIC_PKCE` — public client, S256, no secret, scope `email`, no `openid`, no refresh retention |
 | F1 | `sql/06` covers `public.ari_probe_marker` only. Production F1 is every protected surface. |
-| N4 | A source-session revocation. Not the B grant. |
-| N5 | B-session revocation. A first-party B auth session, not a refresh token. |
+| N4 | A source-session revocation on its own fresh A/B pair. B stays live. Not the B grant. |
+| N5 | B-session revocation on a different fresh A/B pair. The A source stays live. A first-party B auth session, not a refresh token. |
 
 ## G5 before any hosted write
 
@@ -31,11 +31,24 @@ G5 PASS for the Lane B packet is
 Lane B commit, not the parent of later orchestration commits. A later tip is
 not a G5 re-PASS and is not acceptance.
 
+Startup compares `ARI_LANE_B_G5_HEAD` to the actual `git rev-parse HEAD`.
+A different 40-character sha is refused (`g5_head_mismatch`). A dirty tracked
+worktree or index is refused (`g5_worktree_dirty`). Untracked files are not
+that check. The receipt records `actualHead` and `reviewedHead`, and they
+are equal. Neither value is a token.
+
 ```bash
 git fetch origin cursor/supabase-native-user-mcp-g2
+git rev-parse HEAD
 git rev-parse origin/cursor/supabase-native-user-mcp-g2
 git rev-parse origin/cursor/supabase-native-user-mcp-g2^{tree}
+git status --porcelain=v1 --untracked-files=no
 ```
+
+Stop unless `git rev-parse HEAD` is exactly the reviewed sha you will put in
+`ARI_LANE_B_G5_HEAD`, and the porcelain command prints nothing. Run
+`npm run build` only after those two checks, and immediately before the
+live launch below. Do not build first and then edit the tree.
 
 ## Stop and report (N25)
 
@@ -114,16 +127,21 @@ The CLI never reads a bearer from stdin. After P5 it prints a
 `continue`:
 
 ```json
-{"type":"controller_action","action":"revoke_a_source_session","source_session_id":"<uuid>"}
+{"type":"controller_action","action":"revoke_a_source_session","pair":"n4","source_session_id":"<a-uuid>","b_session_id":"<b-uuid>"}
 ```
 
 ```json
-{"type":"controller_action","action":"revoke_b_session","b_session_id":"<uuid>"}
+{"type":"controller_action","action":"revoke_b_session","pair":"n5","source_session_id":"<a-uuid>","b_session_id":"<b-uuid>"}
 ```
 
-Do not paste a token, password, or code on that line. The last stdout line
-is a receipt with `acceptance: false`. It has no token, code, or refresh
-token. Rows use the Atlas MC1545 J ids.
+N4 and N5 are different processes and different A/B pairs. The parent never
+sends N5 for a `source_session_id` it already revoked. Each executed receipt
+row carries that row's `sourceSessionId` and `bSessionId`.
+
+Do not paste a token, password, or code on the continue line. The last
+stdout line is a receipt with `acceptance: false`. It has no token, code,
+or refresh token. Rows use the Atlas MC1545 J ids. `actualHead` and
+`reviewedHead` are the same 40-character sha.
 
 Without `ARI_LANE_B_EXECUTE=1`, `run` exits 2 and prints
 `live_runtime_not_started`. It does not listen and does not spawn the child.
@@ -141,7 +159,13 @@ node --test scripts/ari-test-external-ipc.test.mjs
 
 ## Live loopback, after a review of the exact commit
 
+Confirm the exact head and a clean tracked tree first. Build only after
+that, immediately before launch.
+
 ```bash
+git rev-parse HEAD
+git status --porcelain=v1 --untracked-files=no
+npm run build
 unset SUPABASE_SERVICE_ROLE_KEY SUPABASE_SECRET_KEY SERVICE_ROLE_KEY SUPABASE_SERVICE_KEY
 unset ARI_FIRST_PARTY_ACCESS_TOKEN
 export ARI_LANE_B_LIVE=controller-g5
@@ -171,12 +195,114 @@ B only when that callback `state` matches the handshake for the verified A.
 A green receipt still has `acceptance: false`. Hosted contact is not
 acceptance, not a hook install, and not a G5 re-PASS.
 
-When `revoke_a_source_session` appears, revoke that `source_session_id` out
-of band, then write a line that is exactly `continue`. When
-`revoke_b_session` appears, revoke that B auth session out of band, then
-write `continue` again. The child then makes one more tool call. The row
-passes only when that call fails closed at liveness and the marker is not
-requested.
+`run` proves P1–P5 and N1 on one A/B pair and does not revoke that pair.
+It then starts a new child and a new A/B pair for N4 only, and another new
+child and pair for N5 only. Do not answer N5 on the N4 source session.
+
+When `revoke_a_source_session` appears, delete only that
+`source_session_id`. When `revoke_b_session` appears, delete only that
+`b_session_id`. The other id on the same line is the opposite session.
+Read it back and leave it in place. Type a line that is exactly `continue`
+only after the readback below. Do not put a bearer on stdin. The child
+then makes one more tool call. The row passes only when that call fails
+closed at liveness and the marker is not requested. N4 also requires B
+still live. N5 also requires the A source still live. Revoking the opposite
+session fails that row.
+
+## Revocation readback before continue
+
+Target is `odbcejsuuqdzhabjmozi` only. User is
+`ari-probe-synthetic@odbcejsuuqdzhabjmozi.invalid`. Replace
+`<target_session_id>` with `source_session_id` for N4 or `b_session_id` for
+N5. Replace `<opposite_session_id>` with the other uuid on that
+`controller_action`. Do not delete the opposite id. Do not delete the decoy
+`session_id` claim. Do not paste a token into the batch.
+
+Before, confirm the target is one synthetic-user row:
+
+```sql
+select session.id, session.user_id, session.not_after, usr.email
+from auth.sessions as session
+join auth.users as usr on usr.id = session.user_id
+where session.id = '<target_session_id>'::uuid
+  and usr.email = 'ari-probe-synthetic@odbcejsuuqdzhabjmozi.invalid';
+```
+
+Stop unless that returns exactly one row. Confirm the opposite session
+is already one live synthetic-user row. If it is missing, stop. Do not
+delete the target and do not type `continue`.
+
+```sql
+select session.id, session.not_after
+from auth.sessions as session
+join auth.users as usr on usr.id = session.user_id
+where session.id = '<opposite_session_id>'::uuid
+  and usr.email = 'ari-probe-synthetic@odbcejsuuqdzhabjmozi.invalid'
+  and (session.not_after is null or session.not_after > now());
+```
+
+Record the refresh count:
+
+```sql
+select count(*) as refresh_rows
+from auth.refresh_tokens
+where session_id = '<target_session_id>'::uuid;
+```
+
+Delete only that session, still under the synthetic-user guard:
+
+```sql
+delete from auth.refresh_tokens
+where session_id = '<target_session_id>'::uuid
+  and session_id in (
+    select session.id
+    from auth.sessions as session
+    join auth.users as usr on usr.id = session.user_id
+    where session.id = '<target_session_id>'::uuid
+      and usr.email = 'ari-probe-synthetic@odbcejsuuqdzhabjmozi.invalid'
+  );
+
+delete from auth.sessions
+where id = '<target_session_id>'::uuid
+  and user_id = (
+    select id
+    from auth.users
+    where email = 'ari-probe-synthetic@odbcejsuuqdzhabjmozi.invalid'
+  );
+```
+
+Read back independently. Continue only when both target counts are 0 and
+the opposite session is still one live row (`not_after` null or future):
+
+```sql
+select count(*) as target_session_rows
+from auth.sessions
+where id = '<target_session_id>'::uuid;
+
+select count(*) as target_refresh_rows
+from auth.refresh_tokens
+where session_id = '<target_session_id>'::uuid;
+
+select session.id, session.not_after
+from auth.sessions as session
+join auth.users as usr on usr.id = session.user_id
+where session.id = '<opposite_session_id>'::uuid
+  and usr.email = 'ari-probe-synthetic@odbcejsuuqdzhabjmozi.invalid'
+  and (session.not_after is null or session.not_after > now());
+```
+
+`target_session_rows` and `target_refresh_rows` must be 0. The opposite
+query must return exactly one row. For N4 that opposite row is the B
+session. For N5 it is the A source session. If the opposite row is missing,
+do not type `continue`.
+
+Keep a count receipt. It has uuids and counts only:
+
+```json
+{"action":"revoke_a_source_session","targetSessionId":"<target_session_id>","targetSessionRows":0,"targetRefreshRows":0,"oppositeSessionId":"<opposite_session_id>","oppositeSessionRows":1}
+```
+
+Then write `continue`.
 
 Acceptance ids match Atlas MC1545 J. Receipt rows use these same ids.
 
@@ -191,14 +317,17 @@ Acceptance ids match Atlas MC1545 J. Receipt rows use these same ids.
 - N2. Wrong user. Not executed by this run. A second synthetic user is a
   later controller run. This packet does not create one.
 - N3. Wrong agent, client, or resource. Not executed by this run.
-- N4. A source-session revocation. After P5, the parent prints
-  `revoke_a_source_session` with `source_session_id`, waits for `continue`,
-  and the next tool call must fail closed at liveness with zero marker
-  requests. Do not use a service-role shortcut. This is not the B grant.
-- N5. B-session revocation. Same continue pattern for the B auth session.
+- N4. A source-session revocation on a fresh pair after the positive proof.
+  The parent prints `revoke_a_source_session` with that pair's
+  `source_session_id` and `b_session_id`. Delete only the A source. B must
+  still be live. The next tool call must fail closed at liveness with zero
+  marker requests. Do not use a service-role shortcut. This is not the B
+  grant. Do not run N5 on this source session.
+- N5. B-session revocation on a second fresh pair. The A source for this
+  pair stays live. Delete only the B auth session after the same readback.
   The next tool call must fail closed at liveness with zero marker
-  requests. N5 is not a refresh-token exercise. This packet does not keep
-  refresh tokens.
+  requests. N5 is not a refresh-token exercise and is not an A-liveness
+  denial left over from N4. This packet does not keep refresh tokens.
 - N6. Hook-bypass F1. Not executed by this run. `sql/06` covers
   `public.ari_probe_marker` only.
 - N7. `openid` on A or B. Not executed by this run. A structured 403 from
@@ -211,13 +340,15 @@ not passed.
 
 ## Honest gaps
 
-`run` executes P1–P5, N1, N4, and N5 against the configured issuer. On the
-synthetic loopback that issuer is not hosted TEST. N2, N3, N6, N7, and N8
-are not executed. Restarting the process drops B; this CLI does not prove
-that restart. The subprocess test is synthetic loopback. It is not hosted
-client delivery, not acceptance, and not a new G5 PASS. The hook is not
-installed. SQL is not applied. No client is registered. No durable B custody
-and no refresh retention.
+`run` executes P1–P5 and N1 on one pair, then N4 and N5 on two later fresh
+pairs, against the configured issuer. On the synthetic loopback that issuer
+is not hosted TEST. N2, N3, N6, N7, and N8 are not executed. Restarting the
+process drops B; this CLI does not prove that restart. The subprocess test
+is synthetic loopback. It is not hosted client delivery, not acceptance,
+and not a new G5 PASS. `sql/05` in this commit checks the caller B session
+as well as the A source and must be re-reviewed at this exact head before
+any apply. The hook is not installed. SQL is not applied. No client is
+registered. No durable B custody and no refresh retention.
 
 ## Rollback
 
@@ -236,7 +367,9 @@ must return to the baseline A mapping. Do not delete
 `probe_label = ari-test-synthetic`. Do not drop the synthetic user, the
 marker row, or `mcp_ingress`.
 
-Session cleanup for the real A `source_session_id` stays in
+N4 and N5 deletion during `run` is the readback above: one target session,
+a zero-row session and refresh readback, and the opposite session still
+live. Leftover fixture cleanup for a real A `source_session_id` stays in
 `oauth-session-cleanup.md`. Do not delete the decoy `session_id` claim. That
 value is not an `auth.sessions` row. `passwordSessionId` on the receipt is
 the synthetic password-grant session created for consent. Clean that session

@@ -17,6 +17,9 @@
 -- A rows in ari_probe.mcp_client). Do not apply this file before those.
 -- Do not grant new privileges on schema auth. If the function owner cannot
 -- read auth.sessions, this batch stops and reports. It does not repair that.
+-- The function also requires the caller JWT session_id to be a live B row
+-- in auth.sessions (same user, mapped B client, unexpired). A missing B
+-- row fails closed while A remains. Re-review the exact commit before apply.
 --
 -- Rollback, controller only, on this TEST ref:
 --   drop function if exists public.ari_probe_source_session_live_v1(uuid, text);
@@ -85,8 +88,11 @@ end;
 $target$;
 
 -- Lives in public for PostgREST. Boolean only. NULL claims fail closed.
--- Pair-exact: the caller is B, and the named session is that user's A
--- session for the same agent.
+-- Pair-exact: the signed caller session_id is that user's live B session
+-- for the mapped B client, and the named session is that user's live A
+-- session for the same agent. The B session id comes from the JWT, not
+-- from an argument. Deleting either row fails closed. No new auth grant.
+-- Re-review this exact commit before applying the changed function body.
 create or replace function public.ari_probe_source_session_live_v1(
   source_session_id uuid,
   a_client_id text
@@ -104,6 +110,8 @@ declare
   v_client_id text;
   v_agent_id text;
   v_b_agent text;
+  v_b_session_text text;
+  v_b_session uuid;
 begin
   v_uid := auth.uid();
   v_claims := auth.jwt();
@@ -120,16 +128,21 @@ begin
   v_role := v_claims ->> 'role';
   v_client_id := v_claims ->> 'client_id';
   v_agent_id := v_claims ->> 'agent_id';
+  v_b_session_text := v_claims ->> 'session_id';
   if v_role is null
     or v_client_id is null
     or v_agent_id is null
+    or v_b_session_text is null
     or pg_catalog.btrim(v_role) = ''
     or pg_catalog.btrim(v_client_id) = ''
     or pg_catalog.btrim(v_agent_id) = ''
+    or pg_catalog.btrim(v_b_session_text) = ''
     or v_role is distinct from 'authenticated'
+    or v_b_session_text !~* '^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$'
   then
     return false;
   end if;
+  v_b_session := v_b_session_text::uuid;
 
   select mapping.agent_id
   into v_b_agent
@@ -152,6 +165,17 @@ begin
     return false;
   end if;
 
+  if not exists (
+    select 1
+    from auth.sessions as b_session
+    where b_session.id = v_b_session
+      and b_session.user_id = v_uid
+      and b_session.oauth_client_id = v_client_id
+      and (b_session.not_after is null or b_session.not_after > pg_catalog.now())
+  ) then
+    return false;
+  end if;
+
   return exists (
     select 1
     from auth.sessions as session
@@ -164,7 +188,7 @@ end;
 $function$;
 
 comment on function public.ari_probe_source_session_live_v1(uuid, text) is
-  'Lives in public so PostgREST can expose it. Boolean source-session liveness for the paired A client. No session metadata.';
+  'Lives in public so PostgREST can expose it. Boolean liveness for the caller B session and the paired A source session. No session metadata.';
 
 revoke all on function public.ari_probe_source_session_live_v1(uuid, text)
   from public, anon, service_role, mcp_ingress;

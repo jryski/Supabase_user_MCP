@@ -6,13 +6,14 @@
  * password, or admin credential. The parent performs first-party consent
  * for external A and downstream B. Stdin accepts only the line `continue`.
  */
-import { spawn } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
 import { once } from 'node:events';
 import { createServer } from 'node:http';
 import { createInterface } from 'node:readline';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 import { performLoopbackConsent } from '../docs/evidence/ari-test-probe/consent-harness.mjs';
+import { SYNTHETIC_EMAIL } from '../docs/evidence/ari-test-probe/decisions.mjs';
 import { assertIpcHasNoSecrets } from './ari-test-external-client.mjs';
 
 const FORBIDDEN = [
@@ -32,6 +33,7 @@ const CHILD_ARI = [
 const SAFE_CODE = /^[a-z0-9_]{1,64}$/;
 const JWT_SHAPE = /eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\./;
 const SESSION_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;
+const SHA40 = /^[0-9a-f]{40}$/;
 const PARENT_SECRET_ENV = [
   'ARI_TEST_SYNTHETIC_PASSWORD',
   'ARI_USER_PASSWORD',
@@ -65,13 +67,16 @@ export function controllerPlan() {
       'Apply sql/07, then sql/05, then sql/06 on odbcejsuuqdzhabjmozi only.',
       'If sql/05 raises STOP AND REPORT because auth.sessions is not readable, stop. Do not grant schema auth.',
       'Register external A and TEST-only public PKCE B out of band. No client secret. No openid. No DCR.',
-      'N4 is A source-session revocation. N5 is B-session revocation and uses a first-party session.',
+      'N4 is A source-session revocation on a fresh A/B pair. N5 is B-session revocation on a different fresh A/B pair and uses a first-party session. Never run N5 after N4 on the same source session.',
+      'After P1–P5 and N1 on the positive pair, start one fresh pair for N4 only, then another fresh pair for N5 only.',
+      'Keep B live during N4. Keep the A source live during N5. Opposite-state contamination fails that row.',
       'N2, N3, N6, N7, and N8 are not executed by this run.',
       'F1 in sql/06 covers public.ari_probe_marker only. That case is N6 and is not executed here.',
       'node scripts/run-ari-test-external-e2e.mjs plan',
-      'After G5, set ARI_LANE_B_EXECUTE=1 and run node scripts/run-ari-test-external-e2e.mjs run.',
+      'Confirm git HEAD equals ARI_LANE_B_G5_HEAD and the tracked worktree is clean, then npm run build immediately before launch.',
+      'After that build, set ARI_LANE_B_EXECUTE=1 and run node scripts/run-ari-test-external-e2e.mjs run.',
       'The parent consents for external_a and downstream_b. Do not paste a bearer into the child or stdin.',
-      'After P5, answer each revoke controller_action with a stdin line that is exactly continue.',
+      'Answer each fresh-pair revoke controller_action with a stdin line that is exactly continue, only after the target readback is zero and the opposite session is still live.',
     ],
     rollback: [
       'drop function if exists public.ari_probe_source_session_live_v1(uuid, text)',
@@ -83,7 +88,33 @@ export function controllerPlan() {
   };
 }
 
-export function controllerGate(env) {
+export function readActualGitHead(cwd = process.cwd()) {
+  try {
+    const head = execFileSync('git', ['rev-parse', 'HEAD'], {
+      cwd,
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+    }).trim();
+    return SHA40.test(head) ? head : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+export function trackedWorktreeDirty(cwd = process.cwd()) {
+  try {
+    const out = execFileSync('git', ['status', '--porcelain=v1', '--untracked-files=no'], {
+      cwd,
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+    });
+    return out.split('\n').some((line) => line.trim().length > 0);
+  } catch {
+    return true;
+  }
+}
+
+export function controllerGate(env, git = undefined) {
   for (const name of FORBIDDEN) {
     if (typeof env[name] === 'string' && env[name].length > 0) {
       return { ok: false, reason: 'service_role_refused' };
@@ -93,13 +124,18 @@ export function controllerGate(env) {
   if (env.ARI_TEST_PROJECT_REF !== 'odbcejsuuqdzhabjmozi') {
     return { ok: false, reason: 'project_ref_refused' };
   }
-  if (
-    typeof env.ARI_LANE_B_G5_HEAD !== 'string' ||
-    !/^[0-9a-f]{40}$/.test(env.ARI_LANE_B_G5_HEAD)
-  ) {
+  const reviewedHead = env.ARI_LANE_B_G5_HEAD;
+  if (typeof reviewedHead !== 'string' || !SHA40.test(reviewedHead)) {
     return { ok: false, reason: 'g5_head_required' };
   }
-  return { ok: true };
+  const actualHead = git?.actualHead ?? readActualGitHead(git?.cwd);
+  if (typeof actualHead !== 'string' || !SHA40.test(actualHead)) {
+    return { ok: false, reason: 'g5_head_unreadable' };
+  }
+  if (actualHead !== reviewedHead) return { ok: false, reason: 'g5_head_mismatch' };
+  const trackedDirty = git?.trackedDirty ?? trackedWorktreeDirty(git?.cwd);
+  if (trackedDirty) return { ok: false, reason: 'g5_worktree_dirty' };
+  return { ok: true, actualHead, reviewedHead };
 }
 
 function required(env, name) {
@@ -168,6 +204,121 @@ export function childEnvironment(env) {
 
 export function isContinueLine(line) {
   return line === 'continue';
+}
+
+function sessionLive(row, now = Date.now()) {
+  return row !== undefined && (row.notAfter == null || row.notAfter > now);
+}
+
+/**
+ * Delete only the requested synthetic-user session, then read it back.
+ * N4 keeps the B session. N5 keeps the A source session.
+ * Continue is allowed only when the target session and its refresh rows
+ * are zero and the opposite session is still present and live.
+ * The receipt is UUIDs and counts. It does not carry a bearer.
+ */
+export function applyControllerRevocation(store, action) {
+  const sessions = Array.isArray(store?.sessions) ? store.sessions.map((row) => ({ ...row })) : [];
+  const refreshTokens = Array.isArray(store?.refreshTokens)
+    ? store.refreshTokens.map((row) => ({ ...row }))
+    : sessions.flatMap((row) =>
+        Array.from({ length: Number.isInteger(row.refreshRows) ? row.refreshRows : 0 }, () => ({
+          sessionId: row.id,
+        })),
+      );
+  const kind = action?.action;
+  const sourceSessionId = action?.source_session_id;
+  const bSessionId = action?.b_session_id;
+  const targetSessionId =
+    kind === 'revoke_a_source_session'
+      ? sourceSessionId
+      : kind === 'revoke_b_session'
+        ? bSessionId
+        : undefined;
+  const oppositeSessionId = kind === 'revoke_a_source_session' ? bSessionId : sourceSessionId;
+  const snapshot = (rows, refreshRows) => {
+    const opposite = rows.find((row) => row.id === oppositeSessionId);
+    return {
+      action: kind,
+      targetSessionId,
+      oppositeSessionId,
+      targetSessionRows: rows.filter((row) => row.id === targetSessionId).length,
+      targetRefreshRows: refreshRows.filter((row) => row.sessionId === targetSessionId).length,
+      oppositeSessionRows: opposite === undefined ? 0 : 1,
+      oppositeLive: sessionLive(opposite),
+    };
+  };
+  const unread = snapshot(sessions, refreshTokens);
+  if (
+    (kind !== 'revoke_a_source_session' && kind !== 'revoke_b_session') ||
+    typeof targetSessionId !== 'string' ||
+    !SESSION_ID.test(targetSessionId) ||
+    typeof oppositeSessionId !== 'string' ||
+    !SESSION_ID.test(oppositeSessionId) ||
+    targetSessionId === oppositeSessionId
+  ) {
+    return {
+      ok: false,
+      continue: false,
+      reason: 'session_id_unreadable',
+      receipt: unread,
+      sessions,
+    };
+  }
+  const target = sessions.find((row) => row.id === targetSessionId);
+  if (target === undefined || target.userEmail !== SYNTHETIC_EMAIL) {
+    return {
+      ok: false,
+      continue: false,
+      reason: 'synthetic_user_guard',
+      receipt: unread,
+      sessions,
+    };
+  }
+  if (!sessionLive(sessions.find((row) => row.id === oppositeSessionId))) {
+    return {
+      ok: false,
+      continue: false,
+      reason: 'opposite_not_live',
+      receipt: unread,
+      sessions,
+    };
+  }
+  const next = sessions.filter((row) => row.id !== targetSessionId);
+  const nextRefresh = refreshTokens.filter((row) => row.sessionId !== targetSessionId);
+  const receipt = snapshot(next, nextRefresh);
+  const continueOk =
+    receipt.targetSessionRows === 0 &&
+    receipt.targetRefreshRows === 0 &&
+    receipt.oppositeSessionRows === 1 &&
+    receipt.oppositeLive === true;
+  return {
+    ok: continueOk,
+    continue: continueOk,
+    reason: continueOk ? 'readback_ok' : 'opposite_not_live',
+    receipt,
+    sessions: next,
+  };
+}
+
+/**
+ * N4 passes only when this pair's A source is dead and its B session is live.
+ * N5 passes only when this pair's B session is dead and its A source is live.
+ * A denial caused by the opposite session, or by an A source already revoked
+ * for another row, fails the row.
+ */
+export function revocationRowPass(input) {
+  const prior = Array.isArray(input?.priorSourceSessionIds) ? input.priorSourceSessionIds : [];
+  const sourceSessionId = input?.sourceSessionId;
+  const bSessionId = input?.bSessionId;
+  if (typeof sourceSessionId !== 'string' || typeof bSessionId !== 'string') return false;
+  if (!SESSION_ID.test(sourceSessionId) || !SESSION_ID.test(bSessionId)) return false;
+  if (sourceSessionId === bSessionId) return false;
+  if (prior.includes(sourceSessionId)) return false;
+  if (input.livenessDenied !== true || input.markerUnchanged !== true) return false;
+  if (input.row === 'N4') return input.sourceLive === false && input.bLive === true;
+  if (input.row === 'N5') return input.sourceLive === true && input.bLive === false;
+  return false;
 }
 
 function lineReader(stream) {
@@ -241,22 +392,28 @@ function notExecuted(id, name) {
   return { id, name, executed: false, pass: false, label: 'not_executed' };
 }
 
-function executedRow(id, name, pass) {
-  return { id, name, executed: true, pass: pass === true };
+function executedRow(id, name, pass, pair) {
+  const row = { id, name, executed: true, pass: pass === true };
+  if (pair !== undefined) {
+    row.sourceSessionId = pair.sourceSessionId;
+    row.bSessionId = pair.bSessionId;
+  }
+  return row;
 }
 
 function acceptanceRows(input) {
+  const positive = input.positivePair;
   return [
-    executedRow('P1', 'canary_shape', input.canaryShape),
-    executedRow('P2', 'b_via_second_consent', input.secondConsent),
-    executedRow('P3', 'discovery_initialize', input.discoveryInitialize),
-    executedRow('P4', 'list_tools', input.listTools),
-    executedRow('P5', 'marker_read', input.markerRead),
-    executedRow('N1', 'a_as_b', input.tokenARejectedAsB),
+    executedRow('P1', 'canary_shape', input.canaryShape, positive),
+    executedRow('P2', 'b_via_second_consent', input.secondConsent, positive),
+    executedRow('P3', 'discovery_initialize', input.discoveryInitialize, positive),
+    executedRow('P4', 'list_tools', input.listTools, positive),
+    executedRow('P5', 'marker_read', input.markerRead, positive),
+    executedRow('N1', 'a_as_b', input.tokenARejectedAsB, positive),
     notExecuted('N2', 'wrong_user'),
     notExecuted('N3', 'wrong_agent_client_resource'),
-    executedRow('N4', 'a_source_session_revocation', input.aSourceRevoked),
-    executedRow('N5', 'b_session_revocation', input.bSessionRevoked),
+    executedRow('N4', 'a_source_session_revocation', input.aSourceRevoked, input.n4Pair),
+    executedRow('N5', 'b_session_revocation', input.bSessionRevoked, input.n5Pair),
     notExecuted('N6', 'hook_bypass_f1'),
     notExecuted('N7', 'openid'),
     notExecuted('N8', 'unbound_mismatched_b'),
@@ -265,6 +422,10 @@ function acceptanceRows(input) {
 
 function rowsPass(rows) {
   return rows.every((row) => (row.executed === true ? row.pass === true : row.pass === false));
+}
+
+function safeSha(value) {
+  return typeof value === 'string' && SHA40.test(value) ? value : undefined;
 }
 
 function parentReceipt(env, details) {
@@ -286,7 +447,9 @@ function parentReceipt(env, details) {
     hookInstalled: false,
     executedByWriter: false,
     syntheticLoopback: loopbackSupabase(env.ARI_TEST_SUPABASE_URL),
-    g5Head: env.ARI_LANE_B_G5_HEAD,
+    g5Head: safeSha(details.reviewedHead),
+    actualHead: safeSha(details.actualHead),
+    reviewedHead: safeSha(details.reviewedHead),
     projectRef: env.ARI_TEST_PROJECT_REF,
     passwordSessionId: details.passwordSessionId,
     markerReads: details.markerReads,
@@ -539,10 +702,17 @@ function observeCounts(observation) {
   };
 }
 
-async function driveExternalSession(runtime, env, stdin) {
+function currentPair(observation) {
+  return {
+    sourceSessionId: sessionIdOrThrow(observation.sourceSessionId, 'session_id_unreadable'),
+    bSessionId: sessionIdOrThrow(observation.bSessionId, 'session_id_unreadable'),
+  };
+}
+
+async function driveExternalSession(runtime, env, stdinReader, probe) {
   const deadline = Date.now() + runtime.timeoutMs;
   const reader = lineReader(runtime.child.stdout);
-  const stdinReader = lineReader(stdin);
+  const priorSourceSessionIds = probe.priorSourceSessionIds ?? [];
   try {
     const remaining = () => {
       const left = deadline - Date.now();
@@ -579,12 +749,18 @@ async function driveExternalSession(runtime, env, stdin) {
         throw coded('child_failed');
       }
     }
-    const probeRevocation = async (id, action, field, value) => {
-      const sessionId = sessionIdOrThrow(value, 'session_id_unreadable');
+    const pair = currentPair(runtime.observation);
+    if (pair.sourceSessionId === pair.bSessionId) throw coded('session_id_unreadable');
+    if (priorSourceSessionIds.includes(pair.sourceSessionId)) {
+      throw coded('negative_pair_reused');
+    }
+    const probeRevocation = async (id, action) => {
       writeJson(process.stdout, {
         type: 'controller_action',
         action,
-        [field]: sessionId,
+        pair: id === 'N4' ? 'n4' : 'n5',
+        source_session_id: pair.sourceSessionId,
+        b_session_id: pair.bSessionId,
       });
       const line = await withTimeout(stdinReader.next(), remaining());
       if (!isContinueLine(line)) throw coded('stdin_refused');
@@ -593,20 +769,30 @@ async function driveExternalSession(runtime, env, stdin) {
       const result = await readChild();
       if (result.type !== 'tool_call_result' || result.id !== id) throw coded('child_failed');
       const after = observeCounts(runtime.observation);
-      return livenessFailClosed(before, after, result.failed === true);
+      const denied = livenessFailClosed(before, after, result.failed === true);
+      // Continue already required the controller readback: N4 keeps B live
+      // and N5 keeps the A source live. This process does not read
+      // auth.sessions. A reused A source still fails the row.
+      const pass = revocationRowPass({
+        row: id,
+        sourceSessionId: pair.sourceSessionId,
+        bSessionId: pair.bSessionId,
+        livenessDenied: denied,
+        markerUnchanged: after.markerReads === before.markerReads,
+        sourceLive: id !== 'N4',
+        bLive: id === 'N4',
+        priorSourceSessionIds,
+      });
+      return { pass, pair };
     };
-    const aSourceRevoked = await probeRevocation(
-      'N4',
-      'revoke_a_source_session',
-      'source_session_id',
-      runtime.observation.sourceSessionId,
-    );
-    const bSessionRevoked = await probeRevocation(
-      'N5',
-      'revoke_b_session',
-      'b_session_id',
-      runtime.observation.bSessionId,
-    );
+    let revocation = { pass: true, pair };
+    if (probe.negative === 'N4') {
+      revocation = await probeRevocation('N4', 'revoke_a_source_session');
+    } else if (probe.negative === 'N5') {
+      revocation = await probeRevocation('N5', 'revoke_b_session');
+    } else if (probe.negative !== null && probe.negative !== undefined) {
+      throw coded('child_failed');
+    }
     runtime.writeChild({ type: 'finish' });
     const finalMessage = await readChild();
     if (finalMessage.type !== 'receipt') throw coded('child_failed');
@@ -618,32 +804,109 @@ async function driveExternalSession(runtime, env, stdin) {
       runtime.secrets.passwordSessionId,
       'password_session_id_missing',
     );
-    const receipt = parentReceipt(env, {
-      canaryShape: checkpoint.canaryShapeOk === true && checkpoint.markerCalled === true,
-      secondConsent:
-        runtime.consentFlows[0] === 'external_a' &&
-        runtime.consentFlows[1] === 'downstream_b' &&
-        checkpoint.downstreamBound === true,
-      discoveryInitialize: checkpoint.discovered === true && checkpoint.initialized === true,
-      listTools: checkpoint.toolsListed === true && toolNames.includes('ari_test_marker_get'),
-      markerRead: checkpoint.markerCalled === true && runtime.observation.markerReads >= 1,
-      tokenARejectedAsB:
-        runtime.observation.tokenAOfferedAsB === true &&
-        runtime.observation.tokenARejectedAsB === true,
-      aSourceRevoked,
-      bSessionRevoked,
-      externalConsent: runtime.consentFlows.includes('external_a'),
+    return {
+      pass: revocation.pass === true,
+      pair,
       passwordSessionId,
       markerReads: runtime.observation.markerReads,
       toolNames,
       childEnvNames: finalMessage.childEnvNames,
+      details: {
+        canaryShape: checkpoint.canaryShapeOk === true && checkpoint.markerCalled === true,
+        secondConsent:
+          runtime.consentFlows[0] === 'external_a' &&
+          runtime.consentFlows[1] === 'downstream_b' &&
+          checkpoint.downstreamBound === true,
+        discoveryInitialize: checkpoint.discovered === true && checkpoint.initialized === true,
+        listTools: checkpoint.toolsListed === true && toolNames.includes('ari_test_marker_get'),
+        markerRead: checkpoint.markerCalled === true && runtime.observation.markerReads >= 1,
+        tokenARejectedAsB:
+          runtime.observation.tokenAOfferedAsB === true &&
+          runtime.observation.tokenARejectedAsB === true,
+        externalConsent: runtime.consentFlows.includes('external_a'),
+      },
+    };
+  } finally {
+    reader.close();
+  }
+}
+
+async function runFreshPair(env, stdinReader, probe) {
+  const runtime = await startExternalRuntime(env);
+  try {
+    return await driveExternalSession(runtime, env, stdinReader, probe);
+  } catch (error) {
+    const sessionId = runtime?.secrets?.passwordSessionId;
+    if (
+      typeof sessionId === 'string' &&
+      error !== null &&
+      typeof error === 'object' &&
+      error.passwordSessionId === undefined
+    ) {
+      error.passwordSessionId = sessionId;
+    }
+    throw error;
+  } finally {
+    await stopExternalRuntime(runtime);
+  }
+}
+
+function distinctPairs(positive, n4, n5) {
+  const sources = [positive.sourceSessionId, n4.sourceSessionId, n5.sourceSessionId];
+  const sessions = [positive.bSessionId, n4.bSessionId, n5.bSessionId];
+  return new Set(sources).size === 3 && new Set(sessions).size === 3;
+}
+
+async function runLaneB(env, stdin) {
+  const gate = controllerGate(env);
+  if (!gate.ok) throw coded(gate.reason);
+  const stdinReader = lineReader(stdin);
+  let passwordSessionId;
+  try {
+    const positive = await runFreshPair(env, stdinReader, {
+      negative: null,
+      priorSourceSessionIds: [],
+    });
+    passwordSessionId = positive.passwordSessionId;
+    const n4 = await runFreshPair(env, stdinReader, {
+      negative: 'N4',
+      priorSourceSessionIds: [],
+    });
+    const n5 = await runFreshPair(env, stdinReader, {
+      negative: 'N5',
+      priorSourceSessionIds: [n4.pair.sourceSessionId],
+    });
+    if (!distinctPairs(positive.pair, n4.pair, n5.pair)) throw coded('negative_pair_reused');
+    const receipt = parentReceipt(env, {
+      ...positive.details,
+      aSourceRevoked: n4.pass,
+      bSessionRevoked: n5.pass,
+      positivePair: positive.pair,
+      n4Pair: n4.pair,
+      n5Pair: n5.pair,
+      passwordSessionId: positive.passwordSessionId,
+      markerReads: positive.markerReads,
+      toolNames: positive.toolNames,
+      childEnvNames: positive.childEnvNames,
+      actualHead: gate.actualHead,
+      reviewedHead: gate.reviewedHead,
     });
     assertIpcHasNoSecrets(receipt);
+    if (receipt.actualHead !== receipt.reviewedHead) throw coded('g5_head_mismatch');
     if (receipt.rowsPass !== true) throw coded('lane_b_row_failed');
     return receipt;
+  } catch (error) {
+    if (
+      passwordSessionId !== undefined &&
+      error !== null &&
+      typeof error === 'object' &&
+      error.passwordSessionId === undefined
+    ) {
+      error.passwordSessionId = passwordSessionId;
+    }
+    throw error;
   } finally {
     stdinReader.close();
-    reader.close();
   }
 }
 
@@ -686,13 +949,11 @@ async function main() {
     process.exitCode = 2;
     return;
   }
-  let runtime;
   try {
-    runtime = await startExternalRuntime(process.env);
-    const receipt = await driveExternalSession(runtime, process.env, process.stdin);
+    const receipt = await runLaneB(process.env, process.stdin);
     process.stdout.write(`${JSON.stringify(receipt)}\n`);
   } catch (error) {
-    const sessionId = runtime?.secrets?.passwordSessionId;
+    const sessionId = error?.passwordSessionId;
     if (typeof sessionId === 'string' && SESSION_ID.test(sessionId)) {
       const failure = {
         type: 'receipt',
@@ -709,8 +970,6 @@ async function main() {
     }
     process.stderr.write(`${safeCode(error?.code)}\n`);
     process.exitCode = 2;
-  } finally {
-    await stopExternalRuntime(runtime);
   }
 }
 

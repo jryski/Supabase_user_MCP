@@ -1,13 +1,14 @@
 import assert from 'node:assert/strict';
 import { execFileSync, spawn } from 'node:child_process';
-import { createHash, randomBytes } from 'node:crypto';
+import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { once } from 'node:events';
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { createServer as createHttpServer } from 'node:http';
 import { createServer as createHttpsServer } from 'node:https';
 import { tmpdir } from 'node:os';
 import { createInterface } from 'node:readline';
 import test from 'node:test';
+import { fileURLToPath } from 'node:url';
 import { exportJWK, generateKeyPair, SignJWT } from 'jose';
 import { SYNTHETIC_EMAIL } from '../docs/evidence/ari-test-probe/decisions.mjs';
 import {
@@ -17,10 +18,12 @@ import {
   publishDownstreamAuthorization,
 } from './ari-test-external-client.mjs';
 import {
+  applyControllerRevocation,
   childEnvironment,
   controllerGate,
   controllerPlan,
   isContinueLine,
+  revocationRowPass,
 } from './run-ari-test-external-e2e.mjs';
 
 test('IPC refuses tokens and the provider does not register or keep refresh tokens', async () => {
@@ -89,6 +92,8 @@ test('plan prints controller steps and run stays closed', async () => {
   assert.equal(plan.hookInstalled, false);
   assert.match(plan.steps.join('\n'), /STOP AND REPORT/);
   assert.match(plan.steps.join('\n'), /first-party session/);
+  assert.match(plan.steps.join('\n'), /fresh A\/B pair/);
+  assert.match(plan.steps.join('\n'), /npm run build/);
   assert.match(plan.rollback.join('\n'), /ari-test-external-a/);
   assert.equal(controllerGate({}).ok, false);
   assert.equal(controllerGate({ ARI_LANE_B_LIVE: 'controller-g5' }).reason, 'project_ref_refused');
@@ -149,7 +154,7 @@ test('child environment drops bearers and execute stays closed without the opt-i
       PATH: process.env.PATH,
       ARI_LANE_B_LIVE: 'controller-g5',
       ARI_TEST_PROJECT_REF: 'odbcejsuuqdzhabjmozi',
-      ARI_LANE_B_G5_HEAD: 'a'.repeat(40),
+      ARI_LANE_B_G5_HEAD: execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim(),
       ARI_EXTERNAL_MCP_URL: 'http://127.0.0.1:9/mcp',
     },
   });
@@ -215,6 +220,220 @@ test('continue is the only stdin line the parent accepts', () => {
   assert.equal(isContinueLine('synthetic-password-sentinel'), false);
 });
 
+test('G5 gate requires the reviewed head to equal the actual clean head', () => {
+  const reviewed = 'a'.repeat(40);
+  const actual = 'b'.repeat(40);
+  const env = {
+    ARI_LANE_B_LIVE: 'controller-g5',
+    ARI_TEST_PROJECT_REF: 'odbcejsuuqdzhabjmozi',
+    ARI_LANE_B_G5_HEAD: reviewed,
+  };
+  assert.equal(
+    controllerGate(env, { actualHead: actual, trackedDirty: false }).reason,
+    'g5_head_mismatch',
+  );
+  assert.equal(
+    controllerGate(env, { actualHead: reviewed, trackedDirty: true }).reason,
+    'g5_worktree_dirty',
+  );
+  const open = controllerGate(
+    { ...env, ARI_LANE_B_G5_HEAD: reviewed },
+    { actualHead: reviewed, trackedDirty: false },
+  );
+  assert.equal(open.ok, true);
+  assert.equal(open.actualHead, reviewed);
+  assert.equal(open.reviewedHead, reviewed);
+});
+
+test('opposite-state contamination fails the wrong revocation row', () => {
+  const a1 = '22222222-2222-4222-8222-222222222222';
+  const b1 = '33333333-3333-4333-8333-333333333333';
+  const a2 = '55555555-5555-4555-8555-555555555555';
+  const b2 = '77777777-7777-4777-8777-777777777777';
+  const stranger = '88888888-8888-4888-8888-888888888888';
+  const store = {
+    sessions: [
+      { id: a1, userEmail: SYNTHETIC_EMAIL, refreshRows: 2, notAfter: null },
+      { id: b1, userEmail: SYNTHETIC_EMAIL, refreshRows: 1, notAfter: null },
+      { id: a2, userEmail: SYNTHETIC_EMAIL, refreshRows: 1, notAfter: null },
+      { id: b2, userEmail: SYNTHETIC_EMAIL, refreshRows: 0, notAfter: null },
+      { id: stranger, userEmail: 'other@example.com', refreshRows: 1, notAfter: null },
+    ],
+  };
+  const n4 = applyControllerRevocation(store, {
+    action: 'revoke_a_source_session',
+    source_session_id: a1,
+    b_session_id: b1,
+  });
+  assert.equal(n4.continue, true);
+  assert.equal(n4.receipt.targetSessionId, a1);
+  assert.equal(n4.receipt.targetSessionRows, 0);
+  assert.equal(n4.receipt.targetRefreshRows, 0);
+  assert.equal(n4.receipt.oppositeSessionId, b1);
+  assert.equal(n4.receipt.oppositeSessionRows, 1);
+  assert.equal(n4.receipt.oppositeLive, true);
+  assert.equal(
+    n4.sessions.some((row) => row.id === a1),
+    false,
+  );
+  assert.equal(
+    n4.sessions.some((row) => row.id === b1),
+    true,
+  );
+  assert.equal(JSON.stringify(n4.receipt).includes('Bearer'), false);
+  assert.equal(
+    revocationRowPass({
+      row: 'N4',
+      sourceSessionId: a1,
+      bSessionId: b1,
+      livenessDenied: true,
+      markerUnchanged: true,
+      sourceLive: false,
+      bLive: true,
+      priorSourceSessionIds: [],
+    }),
+    true,
+  );
+  const n4Opposite = revocationRowPass({
+    row: 'N4',
+    sourceSessionId: a1,
+    bSessionId: b1,
+    livenessDenied: true,
+    markerUnchanged: true,
+    sourceLive: true,
+    bLive: false,
+    priorSourceSessionIds: [],
+  });
+  assert.equal(n4Opposite, false);
+  const contaminated = {
+    sessions: store.sessions.filter((row) => row.id !== b1),
+  };
+  const n4MissingB = applyControllerRevocation(contaminated, {
+    action: 'revoke_a_source_session',
+    source_session_id: a1,
+    b_session_id: b1,
+  });
+  assert.equal(n4MissingB.continue, false);
+  assert.equal(n4MissingB.receipt.oppositeLive, false);
+  assert.equal(
+    n4MissingB.sessions.some((row) => row.id === a1),
+    true,
+  );
+  const n5SameSource = revocationRowPass({
+    row: 'N5',
+    sourceSessionId: a1,
+    bSessionId: b1,
+    livenessDenied: true,
+    markerUnchanged: true,
+    sourceLive: false,
+    bLive: true,
+    priorSourceSessionIds: [a1],
+  });
+  assert.equal(n5SameSource, false);
+  const n5 = applyControllerRevocation(store, {
+    action: 'revoke_b_session',
+    source_session_id: a2,
+    b_session_id: b2,
+  });
+  assert.equal(n5.continue, true);
+  assert.equal(n5.receipt.targetSessionRows, 0);
+  assert.equal(n5.receipt.targetRefreshRows, 0);
+  assert.equal(n5.receipt.oppositeSessionId, a2);
+  assert.equal(n5.receipt.oppositeLive, true);
+  assert.equal(
+    n5.sessions.some((row) => row.id === a2),
+    true,
+  );
+  assert.equal(
+    revocationRowPass({
+      row: 'N5',
+      sourceSessionId: a2,
+      bSessionId: b2,
+      livenessDenied: true,
+      markerUnchanged: true,
+      sourceLive: true,
+      bLive: false,
+      priorSourceSessionIds: [a1],
+    }),
+    true,
+  );
+  const n5Opposite = revocationRowPass({
+    row: 'N5',
+    sourceSessionId: a2,
+    bSessionId: b2,
+    livenessDenied: true,
+    markerUnchanged: true,
+    sourceLive: false,
+    bLive: true,
+    priorSourceSessionIds: [a1],
+  });
+  assert.equal(n5Opposite, false);
+  const guarded = applyControllerRevocation(store, {
+    action: 'revoke_a_source_session',
+    source_session_id: stranger,
+    b_session_id: b2,
+  });
+  assert.equal(guarded.continue, false);
+  assert.equal(guarded.reason, 'synthetic_user_guard');
+  assert.equal(
+    guarded.sessions.some((row) => row.id === stranger),
+    true,
+  );
+});
+
+const PARENT_SCRIPT = fileURLToPath(new URL('./run-ari-test-external-e2e.mjs', import.meta.url));
+
+function initTrackedRepo() {
+  const repo = mkdtempSync(`${tmpdir()}/ari-g5-`);
+  execFileSync('git', ['init'], { cwd: repo, stdio: 'ignore' });
+  execFileSync('git', ['config', 'user.email', 'g5-fixture@example.com'], { cwd: repo });
+  execFileSync('git', ['config', 'user.name', 'g5-fixture'], { cwd: repo });
+  writeFileSync(`${repo}/integration.txt`, 'tracked\n');
+  execFileSync('git', ['add', 'integration.txt'], { cwd: repo, stdio: 'ignore' });
+  execFileSync('git', ['-c', 'commit.gpgsign=false', 'commit', '-m', 'tracked integration file'], {
+    cwd: repo,
+    stdio: 'ignore',
+  });
+  const head = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: repo, encoding: 'utf8' }).trim();
+  return { repo, head };
+}
+
+async function refuseRun(repo, head) {
+  const proc = spawn(process.execPath, [PARENT_SCRIPT, 'run'], {
+    cwd: repo,
+    stdio: ['ignore', 'pipe', 'pipe'],
+    env: {
+      PATH: process.env.PATH,
+      ARI_LANE_B_LIVE: 'controller-g5',
+      ARI_LANE_B_EXECUTE: '1',
+      ARI_TEST_PROJECT_REF: 'odbcejsuuqdzhabjmozi',
+      ARI_LANE_B_G5_HEAD: head,
+    },
+  });
+  const stderr = [];
+  proc.stderr.on('data', (chunk) => stderr.push(chunk));
+  const [code] = await once(proc, 'exit');
+  return { code, stderr: Buffer.concat(stderr).toString('utf8') };
+}
+
+test('wrong G5 head and a dirty tracked integration file are refused', async () => {
+  const { repo, head } = initTrackedRepo();
+  try {
+    const wrong = head.startsWith('a') ? 'b'.repeat(40) : 'a'.repeat(40);
+    assert.match(wrong, /^[0-9a-f]{40}$/);
+    assert.notEqual(wrong, head);
+    const mismatched = await refuseRun(repo, wrong);
+    assert.equal(mismatched.code, 2);
+    assert.match(mismatched.stderr, /g5_head_mismatch/);
+    writeFileSync(`${repo}/integration.txt`, 'tracked\ndirty\n');
+    const dirty = await refuseRun(repo, head);
+    assert.equal(dirty.code, 2);
+    assert.match(dirty.stderr, /g5_worktree_dirty/);
+  } finally {
+    rmSync(repo, { recursive: true, force: true });
+  }
+});
+
 async function freePort() {
   const probe = createHttpServer();
   await new Promise((resolve) => probe.listen(0, '127.0.0.1', () => resolve()));
@@ -224,7 +443,7 @@ async function freePort() {
   return port;
 }
 
-test('CLI run completes SDK OAuth, B bind, and the marker call', { timeout: 40_000 }, async () => {
+test('CLI run completes SDK OAuth, B bind, and the marker call', { timeout: 90_000 }, async () => {
   const plantedToken = 'eyJhbGciOiJFUzI1NiJ9.eyJzdWIiOiJ4In0.sig';
   const plantedPassword = 'synthetic-password-sentinel';
   const refreshSentinel = 'refresh-sentinel-must-not-leak';
@@ -233,9 +452,6 @@ test('CLI run completes SDK OAuth, B bind, and the marker call', { timeout: 40_0
   const bClient = 'downstream-b-client';
   const agent = 'hook-only-agent';
   const sub = '11111111-1111-4111-8111-111111111111';
-  const source = '22222222-2222-4222-8222-222222222222';
-  const decoy = '44444444-4444-4444-8444-444444444444';
-  const bSession = '33333333-3333-4333-8333-333333333333';
   const { privateKey, publicKey } = await generateKeyPair('ES256', { extractable: true });
   const jwk = await exportJWK(publicKey);
   const jwks = { keys: [{ ...jwk, kid: 'g2-test', alg: 'ES256', use: 'sig' }] };
@@ -449,6 +665,9 @@ test('CLI run completes SDK OAuth, B bind, and the marker call', { timeout: 40_0
           const tokenA = record.clientId === aClient;
           if (tokenA) counts.aExchange += 1;
           if (record.clientId === bClient) counts.bExchange += 1;
+          const source = randomUUID();
+          const decoy = randomUUID();
+          const bSession = randomUUID();
           const access = await new SignJWT(
             tokenA
               ? {
@@ -577,7 +796,7 @@ test('CLI run completes SDK OAuth, B bind, and the marker call', { timeout: 40_0
       const line = await Promise.race([
         reader.next(),
         new Promise((resolve) => {
-          timer = setTimeout(() => resolve(null), 20_000);
+          timer = setTimeout(() => resolve(null), 40_000);
         }),
       ]);
       clearTimeout(timer);
@@ -586,17 +805,47 @@ test('CLI run completes SDK OAuth, B bind, and the marker call', { timeout: 40_0
       if (message.type === 'controller_action') {
         assert.equal(message.authorizationUrl, undefined);
         assert.equal(message.code, undefined);
+        assert.match(message.source_session_id, /^[0-9a-f-]{36}$/u);
+        assert.match(message.b_session_id, /^[0-9a-f-]{36}$/u);
+        assert.notEqual(message.source_session_id, message.b_session_id);
+        const proof = applyControllerRevocation(
+          {
+            sessions: [
+              {
+                id: message.source_session_id,
+                userEmail: SYNTHETIC_EMAIL,
+                refreshRows: 1,
+                notAfter: null,
+              },
+              {
+                id: message.b_session_id,
+                userEmail: SYNTHETIC_EMAIL,
+                refreshRows: 1,
+                notAfter: null,
+              },
+            ],
+          },
+          message,
+        );
+        assert.equal(proof.continue, true, proof.reason);
+        assert.equal(proof.receipt.targetSessionRows, 0);
+        assert.equal(proof.receipt.targetRefreshRows, 0);
+        assert.equal(proof.receipt.oppositeLive, true);
+        assert.equal(proof.receipt.oppositeSessionRows, 1);
         if (message.action === 'revoke_a_source_session') {
-          assert.equal(message.source_session_id, source);
+          assert.equal(message.pair, 'n4');
+          assert.equal(proof.receipt.targetSessionId, message.source_session_id);
+          assert.equal(revokedBSessions.has(message.b_session_id), false);
           revokedSources.add(message.source_session_id);
-          proc.stdin.write('continue\n');
         } else if (message.action === 'revoke_b_session') {
-          assert.equal(message.b_session_id, bSession);
+          assert.equal(message.pair, 'n5');
+          assert.equal(proof.receipt.targetSessionId, message.b_session_id);
+          assert.equal(revokedSources.has(message.source_session_id), false);
           revokedBSessions.add(message.b_session_id);
-          proc.stdin.write('continue\n');
         } else {
           assert.fail(`unexpected action ${message.action}`);
         }
+        proc.stdin.write('continue\n');
       } else if (message.type === 'receipt') {
         receipt = message;
       } else {
@@ -621,6 +870,8 @@ test('CLI run completes SDK OAuth, B bind, and the marker call', { timeout: 40_0
     assert.equal(receipt.passwordSessionId, passwordSessionId);
     assert.equal(receipt.rowsPass, true);
     assert.equal(receipt.markerReads, 1);
+    assert.equal(receipt.actualHead, head);
+    assert.equal(receipt.reviewedHead, head);
     const byId = Object.fromEntries(receipt.rows.map((row) => [row.id, row]));
     for (const id of ['P1', 'P2', 'P3', 'P4', 'P5', 'N1', 'N4', 'N5']) {
       assert.equal(byId[id].executed, true, id);
@@ -634,6 +885,45 @@ test('CLI run completes SDK OAuth, B bind, and the marker call', { timeout: 40_0
     assert.equal(byId.N1.name, 'a_as_b');
     assert.equal(byId.N4.name, 'a_source_session_revocation');
     assert.equal(byId.N5.name, 'b_session_revocation');
+    assert.notEqual(byId.N4.sourceSessionId, byId.N5.sourceSessionId);
+    assert.notEqual(byId.N4.bSessionId, byId.N5.bSessionId);
+    assert.notEqual(byId.P5.sourceSessionId, byId.N4.sourceSessionId);
+    assert.notEqual(byId.P5.sourceSessionId, byId.N5.sourceSessionId);
+    assert.notEqual(byId.P5.bSessionId, byId.N4.bSessionId);
+    assert.notEqual(byId.P5.bSessionId, byId.N5.bSessionId);
+    assert.equal(byId.P1.sourceSessionId, byId.P5.sourceSessionId);
+    assert.equal(byId.N1.sourceSessionId, byId.P5.sourceSessionId);
+    assert.equal(byId.N1.bSessionId, byId.P5.bSessionId);
+    assert.equal(revokedSources.has(byId.N4.sourceSessionId), true);
+    assert.equal(revokedBSessions.has(byId.N4.bSessionId), false);
+    assert.equal(revokedBSessions.has(byId.N5.bSessionId), true);
+    assert.equal(revokedSources.has(byId.N5.sourceSessionId), false);
+    assert.equal(
+      revocationRowPass({
+        row: 'N4',
+        sourceSessionId: byId.N4.sourceSessionId,
+        bSessionId: byId.N4.bSessionId,
+        livenessDenied: true,
+        markerUnchanged: true,
+        sourceLive: false,
+        bLive: !revokedBSessions.has(byId.N4.bSessionId),
+        priorSourceSessionIds: [],
+      }),
+      true,
+    );
+    assert.equal(
+      revocationRowPass({
+        row: 'N5',
+        sourceSessionId: byId.N5.sourceSessionId,
+        bSessionId: byId.N5.bSessionId,
+        livenessDenied: true,
+        markerUnchanged: true,
+        sourceLive: !revokedSources.has(byId.N5.sourceSessionId),
+        bLive: false,
+        priorSourceSessionIds: [byId.N4.sourceSessionId],
+      }),
+      true,
+    );
     for (const id of ['N2', 'N3', 'N6', 'N7', 'N8']) {
       assert.equal(byId[id].executed, false, id);
       assert.equal(byId[id].pass, false, id);
@@ -661,13 +951,13 @@ test('CLI run completes SDK OAuth, B bind, and the marker call', { timeout: 40_0
     assert.equal(outText.includes(publishable), false);
     assert.equal(errText.includes(plantedToken), false);
     assert.equal(errText.includes(refreshSentinel), false);
-    assert.equal(counts.aExchange, 1);
-    assert.equal(counts.bExchange, 1);
-    assert.equal(counts.passwordLogins, 1);
-    assert.equal(counts.consentPosts, 2);
+    assert.equal(counts.aExchange, 3);
+    assert.equal(counts.bExchange, 3);
+    assert.equal(counts.passwordLogins, 3);
+    assert.equal(counts.consentPosts, 6);
     assert.equal(counts.authorizeWithCode, 0);
     assert.equal(counts.livenessDenied >= 2, true);
-    assert.equal(counts.marker, 1);
+    assert.equal(counts.marker, 3);
     assert.equal(counts.markerUsedA, false);
   } finally {
     if (proc.exitCode === null && proc.signalCode === null) proc.kill('SIGKILL');
