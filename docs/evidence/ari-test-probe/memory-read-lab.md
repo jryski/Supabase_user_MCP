@@ -116,30 +116,77 @@ not toggle a hook and does not sign a hosted JWT.
 
 ## Hosted controller
 
-`node scripts/ari-memory-read-lab.mjs hosted-synthetic` keeps the local
-PGlite runner and adds one Ari-only controller. It does not remove the
-local-only guard. The writer command refuses any URL that names
-`odbcejsuuqdzhabjmozi`. `hosted` refuses retained-TEST contact. This writer does not open a socket
-to the hosted ref. The executable controller is `hosted-synthetic`.
+`node scripts/ari-memory-read-lab.mjs hosted-synthetic` is the local
+loopback controller. It keeps the PGlite runner and the local-only guard.
+`run` still requires `ARI_MEMORY_LAB_MODE=local` and refuses a URL that
+names `odbcejsuuqdzhabjmozi`.
 
-The synthetic controller binds each manifest user through native Token A and
-Token B. The second user id comes from the manifest, not a hardcoded local
-UUID. Data reads are `memory_get`, `memory_list_recent`, and `memory_search`
+Ariadne's retained command is:
+
+```
+ARI_MEMORY_LAB_EXECUTOR=ariadne node scripts/ari-memory-read-lab.mjs hosted \
+  --manifest <reviewed-run-manifest.json> \
+  --credentials <protected-credential-file.json>
+```
+
+Missing `--manifest` is `manifest_required`. Missing `--credentials` is
+`credentials_required`. Both are checked before the clean-worktree gate.
+Without `ARI_MEMORY_LAB_EXECUTOR=ariadne`, `hosted` is
+`hosted_execution_refused`. This writer does not run that command against
+the hosted ref and does not put passwords or the publishable key in the
+receipt.
+
+The reviewed manifest is a file. It has no synthetic defaults. Required
+fields are `version` `ari-memory-read-lab-v1`, `projectRef`
+`odbcejsuuqdzhabjmozi`, `supabaseUrl`, `reviewedHead`, `reviewedTree`,
+`resource`, `aClientId`, `bClientId`, `agentId`, `aRedirectUri`,
+`bRedirectUri`, two `users` (`baseline` and `second`, each with `id` and
+`email`), and `fixtures` (`runId`, `deniedPrincipalId`,
+`transientClients`, and `rows`). `reviewedHead` and `reviewedTree` must
+match `git rev-parse HEAD` and `HEAD^{tree}`. The manifest carries
+nonsecret ids only. The credential file is separate and is not printed. It
+holds the publishable key, the public JWKS, and each user's password.
+A private JWK parameter is refused.
+
+Phases, in order: parse the manifest and credentials; take the shared
+controller lock; reconcile the reviewed head and tree; bind one loopback
+MCP listener at the manifest resource; for each user, password grant, Token
+A exchange, then the handler-driven Token B consent and callback; reconcile
+the immutable session ledger; call `memory_get`, `memory_list_recent`, and
+`memory_search` through that listener; emit seed and cleanup statements;
+release the lock. Password, token, consent, and MCP calls, including the
+response body, use the same abort deadline as the N-gate marker read.
+The retained path does not open PGlite, does not start a synthetic issuer,
+does not sign tokens, and does not clear sessions. Admin seed and ownership
+projection stay outside the data calls. The receipt's `seedStatements` are
+dependency ordered: principals, clients, memberships, grants, memories.
+`cleanupStatements` reverse that and delete only the run-owned memory,
+workspace, transient-client, and denied-principal keys. They do not delete
+the baseline principals or the retained B client. The read path does not
+execute either list.
+
+An injected fetch may dial only `https://127.0.0.1` or `https://localhost`.
+Any `supabase.co` host, including the hosted ref, is `wrong_target` before
+a request. The live dial, with no injected fetch, accepts only
+`https://odbcejsuuqdzhabjmozi.supabase.co`. A mismatched reviewed head is
+`manifest_head_mismatch`.
+
+The synthetic controller remains the local stand-in. It binds each manifest
+user through native Token A and Token B. The second user id comes from the
+manifest, not a hardcoded local UUID. Data reads are the same three tools
 on `createNativeUserMcpReadHandler`. The controller does not call the SQL
 RPCs and does not manufacture `request.jwt.claims`. A loopback PostgREST
 stand-in verifies Token B, then applies that verified bearer to the RPCs.
 Both users' grants stay live together. Own foreign-only tokens must be found
 by their owner, and the other user's search of that token must be empty.
-Fetch and the response body use the same abort deadline as the N-gate marker
-read. A stalled header or body is `orchestration_timeout` or
-`signal_received`, then cleanup. The receipt lists the run-owned memories,
-memberships, grants, transient clients, denied principal, and session ids.
-Baseline principals, the retained B client, and both schemas stay.
-`acceptance` stays false.
+A stalled header or body is `orchestration_timeout` or `signal_received`,
+then cleanup. The receipt lists the run-owned memories, memberships, grants,
+transient clients, denied principal, and session ids. Baseline principals,
+the retained B client, and both schemas stay. `acceptance` stays false.
 
 ## Hosted first round, later
 
-Ariadne executes the retained-TEST command. The writer does not.
+Ariadne executes the retained command above. The writer does not.
 
 - Own get, list, and search return the exact seeded ids.
 - Limit-1 pagination walks every own id and stops.
@@ -160,9 +207,14 @@ exits nonzero with `acceptance` false.
 
 `sql/08-memory-read-lab-rollback.sql` is a separate reviewed recovery for
 version `ari-memory-read-lab-v1`. Before any drop it revalidates the same
-owned manifest. An unknown policy, trigger, constraint, column, index, or
-function body stops the transaction. It then looks for views, external
-constraints, and functions that depend on the lab. Any of those stops the
-transaction before a drop. Drops then follow the reverse object order,
-without `CASCADE`. A missing expected object fails the script rather than
-being ignored. Fixture cleanup is not this rollback.
+owned manifest and the same authenticated-select ownership check. Policy
+fingerprints include the target, command, permissive mode, roles, and a
+literal-aware expression. Function fingerprints include volatility.
+Whitespace inside a quoted literal is not removed. An unknown policy,
+trigger, constraint, column, index, function body, volatility change, or
+role change stops the transaction without rewriting or deleting the drifted
+object. It then looks for views, external constraints, and functions that
+depend on the lab. Any of those stops the transaction before a drop. Drops
+then follow the reverse object order, without `CASCADE`. A missing expected
+object fails the script rather than being ignored. Fixture cleanup is the
+retained receipt's `cleanupStatements`, not this rollback.

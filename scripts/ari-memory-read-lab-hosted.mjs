@@ -104,7 +104,7 @@ function headerRecord(headers) {
   return { ...headers };
 }
 
-function trustedFetch(ca) {
+export function trustedFetch(ca) {
   return (input, init = {}) =>
     new Promise((resolve, reject) => {
       const raw =
@@ -549,11 +549,12 @@ function structuredContent(text) {
   return null;
 }
 
-async function passwordGrant(fetchImpl, origin, user) {
+async function passwordGrant(fetchImpl, origin, user, signal) {
   const response = await fetchImpl(`${origin}/auth/v1/token?grant_type=password`, {
     method: 'POST',
     headers: { 'content-type': 'application/json', accept: 'application/json' },
     body: JSON.stringify({ email: user.email, password: user.password }),
+    ...(signal === undefined ? {} : { signal }),
   });
   if (!response.ok) throw coded('password_grant_failed');
   const body = await response.json();
@@ -561,7 +562,7 @@ async function passwordGrant(fetchImpl, origin, user) {
   return body.access_token;
 }
 
-async function exchangeClient(fetchImpl, origin, userToken, profile) {
+async function exchangeClient(fetchImpl, origin, userToken, profile, signal) {
   const { verifier, challenge } = pkcePair();
   const state = randomUUID();
   const authorize = new URL('/auth/v1/oauth/authorize', origin);
@@ -573,7 +574,10 @@ async function exchangeClient(fetchImpl, origin, userToken, profile) {
   authorize.searchParams.set('code_challenge', challenge);
   authorize.searchParams.set('code_challenge_method', 'S256');
   if (profile.resource !== undefined) authorize.searchParams.set('resource', profile.resource);
-  const started = await fetchImpl(authorize, { redirect: 'manual' });
+  const started = await fetchImpl(authorize, {
+    redirect: 'manual',
+    ...(signal === undefined ? {} : { signal }),
+  });
   const location = started.headers.get('location');
   if (location === null) throw coded('authorize_failed');
   const authorizationId = new URL(location).searchParams.get('authorization_id');
@@ -588,6 +592,7 @@ async function exchangeClient(fetchImpl, origin, userToken, profile) {
         accept: 'application/json',
       },
       body: '{}',
+      ...(signal === undefined ? {} : { signal }),
     },
   );
   if (!consent.ok) throw coded('consent_failed');
@@ -607,6 +612,7 @@ async function exchangeClient(fetchImpl, origin, userToken, profile) {
     method: 'POST',
     headers: { 'content-type': 'application/x-www-form-urlencoded', accept: 'application/json' },
     body,
+    ...(signal === undefined ? {} : { signal }),
   });
   if (!exchanged.ok) throw coded('exchange_failed');
   const token = await exchanged.json();
@@ -614,8 +620,11 @@ async function exchangeClient(fetchImpl, origin, userToken, profile) {
   return token.access_token;
 }
 
-async function consentHandlerUrl(fetchImpl, authorizationUrl, userToken) {
-  const started = await fetchImpl(authorizationUrl, { redirect: 'manual' });
+async function consentHandlerUrl(fetchImpl, authorizationUrl, userToken, signal) {
+  const started = await fetchImpl(authorizationUrl, {
+    redirect: 'manual',
+    ...(signal === undefined ? {} : { signal }),
+  });
   const location = started.headers.get('location');
   if (location === null) throw coded('authorize_failed');
   const authorizationId = new URL(location).searchParams.get('authorization_id');
@@ -631,6 +640,7 @@ async function consentHandlerUrl(fetchImpl, authorizationUrl, userToken) {
         accept: 'application/json',
       },
       body: '{}',
+      ...(signal === undefined ? {} : { signal }),
     },
   );
   if (!consent.ok) throw coded('consent_failed');
@@ -717,10 +727,623 @@ export async function runHostedController(input = {}, env = process.env) {
   return driveSynthetic(frozen);
 }
 
-async function driveRetained() {
-  // Retained TEST contact stays refused in this writer process. Ariadne runs
-  // the synthetic controller, which is the same native handler and Token B path.
-  throw coded('hosted_execution_refused');
+const SHA = /^[0-9a-f]{40}$/;
+const CLIENT_UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const MEMORY_ID = /^mem_[A-Za-z0-9_-]+$/;
+const SQL_TEXT = /^[A-Za-z0-9_.:@+-]+$/;
+const CREATED_AT = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?[+-]\d{2}:\d{2}$/;
+
+function readJson(filePath, missingCode, invalidCode) {
+  if (typeof filePath !== 'string' || filePath.length === 0) throw coded(missingCode);
+  let text;
+  try {
+    text = readFileSync(filePath, 'utf8');
+  } catch {
+    throw coded(missingCode);
+  }
+  let value;
+  try {
+    value = JSON.parse(text);
+  } catch {
+    throw coded(invalidCode);
+  }
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) {
+    throw coded(invalidCode);
+  }
+  return { text, value };
+}
+
+function requiredString(value) {
+  if (typeof value !== 'string' || value.length === 0) throw coded('manifest_incomplete');
+  return value;
+}
+
+function manifestUuid(value) {
+  if (typeof value !== 'string' || !UUID.test(value)) throw coded('manifest_incomplete');
+  return value;
+}
+
+function sqlLiteral(value) {
+  if (typeof value !== 'string' || !SQL_TEXT.test(value)) throw coded('manifest_incomplete');
+  return `'${value}'`;
+}
+
+export function assertRetainedTarget(supabaseUrl, fetchImpl) {
+  let url;
+  try {
+    url = new URL(supabaseUrl);
+  } catch {
+    throw coded('wrong_target');
+  }
+  const injected = fetchImpl !== undefined;
+  const lowered = supabaseUrl.toLowerCase();
+  if (injected) {
+    if (lowered.includes(HOSTED_PROJECT_REF) || lowered.includes('.supabase.co')) {
+      throw coded('wrong_target');
+    }
+    if (
+      url.protocol !== 'https:' ||
+      (url.hostname !== '127.0.0.1' && url.hostname !== 'localhost')
+    ) {
+      throw coded('wrong_target');
+    }
+    return;
+  }
+  if (url.protocol !== 'https:' || url.hostname !== `${HOSTED_PROJECT_REF}.supabase.co`) {
+    throw coded('wrong_target');
+  }
+}
+
+function loopbackHttp(value, pathname) {
+  let url;
+  try {
+    url = new URL(value);
+  } catch {
+    throw coded('manifest_incomplete');
+  }
+  const lowered = value.toLowerCase();
+  if (lowered.includes(HOSTED_PROJECT_REF) || lowered.includes('.supabase.co')) {
+    throw coded('wrong_target');
+  }
+  if (url.protocol !== 'http:') throw coded('manifest_incomplete');
+  if (url.hostname !== '127.0.0.1' && url.hostname !== 'localhost') {
+    throw coded('manifest_incomplete');
+  }
+  if (url.pathname !== pathname || !/^\d+$/.test(url.port)) throw coded('manifest_incomplete');
+  return url;
+}
+
+function loadRetainedManifest(filePath) {
+  const { text, value } = readJson(filePath, 'manifest_required', 'manifest_incomplete');
+  if (/eyJ|access_token|refresh_token|password|service_role/.test(text)) {
+    throw coded('manifest_incomplete');
+  }
+  if (value.version !== LAB_VERSION) throw coded('manifest_incomplete');
+  if (typeof value.projectRef !== 'string' || value.projectRef.length === 0) {
+    throw coded('manifest_incomplete');
+  }
+  if (value.projectRef !== HOSTED_PROJECT_REF) throw coded('wrong_target');
+  const supabaseUrl = requiredString(value.supabaseUrl);
+  const reviewedHead = requiredString(value.reviewedHead);
+  const reviewedTree = requiredString(value.reviewedTree);
+  if (!SHA.test(reviewedHead) || !SHA.test(reviewedTree)) throw coded('manifest_incomplete');
+  const aClientId = requiredString(value.aClientId);
+  if (!/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(aClientId)) {
+    throw coded('manifest_incomplete');
+  }
+  const bClientId = requiredString(value.bClientId);
+  if (!CLIENT_UUID.test(bClientId) || bClientId === aClientId) throw coded('manifest_incomplete');
+  const agentId = requiredString(value.agentId);
+  if (!/^[A-Za-z0-9_.:-]{1,128}$/.test(agentId)) throw coded('manifest_incomplete');
+  const resourceUrl = loopbackHttp(requiredString(value.resource), '/mcp');
+  const aRedirect = loopbackHttp(requiredString(value.aRedirectUri), '/oauth/callback');
+  const bRedirect = loopbackHttp(requiredString(value.bRedirectUri), '/oauth/downstream/callback');
+  if (resourceUrl.host !== aRedirect.host || resourceUrl.host !== bRedirect.host) {
+    throw coded('manifest_incomplete');
+  }
+  if (!Array.isArray(value.users) || value.users.length !== 2) throw coded('manifest_incomplete');
+  const users = value.users.map((user) => {
+    if (user?.role !== 'baseline' && user?.role !== 'second') throw coded('manifest_incomplete');
+    const email = requiredString(user.email);
+    if (!/^[^\s@]+@[^\s@]+$/.test(email)) throw coded('manifest_incomplete');
+    return { role: user.role, id: manifestUuid(user.id), email };
+  });
+  if (users[0].role === users[1].role || users[0].id === users[1].id) {
+    throw coded('manifest_incomplete');
+  }
+  const fixtures = value.fixtures;
+  if (fixtures === null || typeof fixtures !== 'object' || Array.isArray(fixtures)) {
+    throw coded('manifest_incomplete');
+  }
+  const runId = manifestUuid(fixtures.runId);
+  const deniedPrincipalId = manifestUuid(fixtures.deniedPrincipalId);
+  if (users.some((user) => user.id === deniedPrincipalId)) throw coded('manifest_incomplete');
+  if (!Array.isArray(fixtures.transientClients) || fixtures.transientClients.length === 0) {
+    throw coded('manifest_incomplete');
+  }
+  const transientClients = fixtures.transientClients.map((client) => {
+    const id = manifestUuid(client?.id);
+    if (id === bClientId || (client.state !== 'revoked' && client.state !== 'expired')) {
+      throw coded('manifest_incomplete');
+    }
+    return { id, state: client.state };
+  });
+  if (new Set(transientClients.map((client) => client.id)).size !== transientClients.length) {
+    throw coded('manifest_incomplete');
+  }
+  if (!Array.isArray(fixtures.rows) || fixtures.rows.length < 2) throw coded('manifest_incomplete');
+  const ownerIds = new Set(users.map((user) => user.id));
+  const rows = fixtures.rows.map((row) => {
+    const memoryId = requiredString(row?.memoryId);
+    if (!MEMORY_ID.test(memoryId) || memoryId.length < 26 || memoryId.length > 132) {
+      throw coded('manifest_incomplete');
+    }
+    const workspaceId = requiredString(row.workspaceId);
+    const title = requiredString(row.title);
+    const content = requiredString(row.content);
+    const createdAt = requiredString(row.createdAt);
+    const ownerId = manifestUuid(row.ownerId);
+    if (
+      !SQL_TEXT.test(workspaceId) ||
+      !SQL_TEXT.test(title) ||
+      !SQL_TEXT.test(content) ||
+      !CREATED_AT.test(createdAt) ||
+      !ownerIds.has(ownerId)
+    ) {
+      throw coded('manifest_incomplete');
+    }
+    return { memoryId, workspaceId, ownerId, title, content, createdAt };
+  });
+  if (new Set(rows.map((row) => row.memoryId)).size !== rows.length) {
+    throw coded('manifest_incomplete');
+  }
+  for (const user of users) {
+    if (!rows.some((row) => row.ownerId === user.id)) throw coded('manifest_incomplete');
+  }
+  return {
+    text,
+    sha256: createHash('sha256').update(text).digest('hex'),
+    supabaseUrl,
+    reviewedHead,
+    reviewedTree,
+    aClientId,
+    bClientId,
+    agentId,
+    resource: resourceUrl.toString(),
+    resourcePort: Number(resourceUrl.port),
+    aRedirectUri: aRedirect.toString(),
+    bRedirectUri: bRedirect.toString(),
+    users,
+    fixtures: { runId, deniedPrincipalId, transientClients, rows },
+  };
+}
+
+function assertReviewedHead(manifest) {
+  const head = git(['rev-parse', 'HEAD']);
+  const tree = git(['rev-parse', 'HEAD^{tree}']);
+  if (manifest.reviewedHead !== head || manifest.reviewedTree !== tree) {
+    throw coded('manifest_head_mismatch');
+  }
+}
+
+function loadRetainedCredentials(filePath, users) {
+  const { value } = readJson(filePath, 'credentials_required', 'credentials_incomplete');
+  const publishableKey = value.publishableKey;
+  if (typeof publishableKey !== 'string' || publishableKey.split('.').length === 3) {
+    throw coded('credentials_incomplete');
+  }
+  const keys = value.jwks?.keys;
+  if (!Array.isArray(keys) || keys.length === 0) throw coded('credentials_incomplete');
+  for (const key of keys) {
+    if (key === null || typeof key !== 'object') throw coded('credentials_incomplete');
+    for (const secret of ['d', 'p', 'q', 'dp', 'dq', 'qi', 'k']) {
+      if (Object.hasOwn(key, secret)) throw coded('credentials_incomplete');
+    }
+  }
+  if (!Array.isArray(value.users)) throw coded('credentials_incomplete');
+  const resolved = users.map((user) => {
+    const row = value.users.find((item) => item?.id === user.id);
+    if (typeof row?.password !== 'string' || row.password.length === 0) {
+      throw coded('credentials_incomplete');
+    }
+    return { ...user, password: row.password };
+  });
+  return { publishableKey, jwks: { keys }, users: resolved };
+}
+
+function retainedControlStatements(manifest) {
+  const q = sqlLiteral;
+  const { fixtures } = manifest;
+  const until = '2099-01-01T00:00:00.000Z';
+  const principals = manifest.users
+    .map((user) => `(${q(user.id)}, 'human', 'verified')`)
+    .join(', ');
+  const clients = [
+    `(${q(manifest.bClientId)}, 'active', '${until}')`,
+    ...fixtures.transientClients.map(
+      (client) => `(${q(client.id)}, ${q(client.state)}, '${until}')`,
+    ),
+  ];
+  const memberships = fixtures.rows.map(
+    (row) =>
+      `(${q(row.ownerId)}, ${q(manifest.bClientId)}, ` +
+      `${q(row.workspaceId)}, 'active', '${until}')`,
+  );
+  const grants = fixtures.rows.flatMap((row) =>
+    ['memory:read', 'memory:search'].map(
+      (capability) =>
+        `(${q(row.ownerId)}, ${q(manifest.bClientId)}, ${q(row.workspaceId)}, ` +
+        `${q(capability)}, 'active', '${until}')`,
+    ),
+  );
+  const memories = fixtures.rows.map(
+    (row) =>
+      `(${q(row.memoryId)}, ${q(row.workspaceId)}, ${q(row.title)}, ` +
+      `${q(row.content)}, ${q(row.createdAt)}, 'retained-lab-fixture', ` +
+      `array[${q(`run:${fixtures.runId}`)}]::text[])`,
+  );
+  const memoryIds = [...new Set(fixtures.rows.map((row) => row.memoryId))];
+  const workspaceIds = [...new Set(fixtures.rows.map((row) => row.workspaceId))];
+  const seed = [
+    'insert into policy_lab.principals ' +
+      '(principal_id, principal_kind, identity_eligibility) values ' +
+      `${principals}, (${q(fixtures.deniedPrincipalId)}, 'human', 'denied');`,
+    'insert into policy_lab.clients (client_id, state, valid_until) values ' +
+      `${clients.join(', ')};`,
+    'insert into policy_lab.memberships ' +
+      '(principal_id, client_id, workspace_id, state, valid_until) values ' +
+      `${memberships.join(', ')};`,
+    'insert into policy_lab.capability_grants ' +
+      '(principal_id, client_id, workspace_id, capability, state, valid_until) values ' +
+      `${grants.join(', ')};`,
+    'insert into policy_lab.memories ' +
+      '(memory_id, workspace_id, title, content, created_at, provenance_summary, tags) values ' +
+      `${memories.join(', ')};`,
+  ];
+  const cleanup = [
+    `delete from policy_lab.memories where memory_id in (${memoryIds.map(q).join(', ')});`,
+    'delete from policy_lab.capability_grants where workspace_id in ' +
+      `(${workspaceIds.map(q).join(', ')});`,
+    'delete from policy_lab.memberships where workspace_id in ' +
+      `(${workspaceIds.map(q).join(', ')});`,
+    'delete from policy_lab.clients where client_id in ' +
+      `(${fixtures.transientClients.map((client) => q(client.id)).join(', ')});`,
+    `delete from policy_lab.principals where principal_id = ${q(fixtures.deniedPrincipalId)};`,
+  ];
+  return { seed, cleanup };
+}
+
+function noteToken(token, ledger, sources) {
+  const part = token.split('.')[1];
+  if (part === undefined) return;
+  let payload;
+  try {
+    payload = JSON.parse(Buffer.from(part, 'base64url').toString('utf8'));
+  } catch {
+    return;
+  }
+  for (const key of ['session_id', 'source_session_id']) {
+    const id = payload[key];
+    if (typeof id === 'string' && UUID.test(id) && !ledger.includes(id)) ledger.push(id);
+  }
+  if (typeof payload.source_session_id === 'string' && UUID.test(payload.source_session_id)) {
+    sources.push(payload.source_session_id);
+  }
+}
+
+function reconcileLedger(ledger, sources, grantFacts, users) {
+  const frozen = Object.freeze(ledger.slice());
+  const bound = grantFacts.filter((fact) => fact.event === 'bound');
+  const subs = new Set(users.map((user) => user.id));
+  if (sources.length !== users.length || new Set(sources).size !== sources.length) {
+    throw coded('ledger_unreconciled');
+  }
+  if (bound.length !== users.length) throw coded('ledger_unreconciled');
+  for (const fact of bound) {
+    if (!frozen.includes(fact.sessionId) || sources.includes(fact.sessionId)) {
+      throw coded('ledger_unreconciled');
+    }
+    if (!subs.has(fact.sub)) throw coded('ledger_unreconciled');
+  }
+  if (new Set(bound.map((fact) => fact.sessionId)).size !== bound.length) {
+    throw coded('ledger_unreconciled');
+  }
+  if (new Set(bound.map((fact) => fact.sub)).size !== users.length) {
+    throw coded('ledger_unreconciled');
+  }
+  return frozen;
+}
+
+function rowsFor(manifest, ownerId) {
+  return manifest.fixtures.rows
+    .filter((row) => row.ownerId === ownerId)
+    .slice()
+    .sort((left, right) => right.createdAt.localeCompare(left.createdAt));
+}
+
+async function proveRetained(options) {
+  const { fetchImpl, manifest, listener, users, timeoutMs, signal, ledger, sources, rows } =
+    options;
+  const phases = [];
+  const bindings = [];
+  for (const user of users) {
+    const userToken = await callBounded(timeoutMs, signal, (inner) =>
+      passwordGrant(fetchImpl, manifest.supabaseUrl, user, inner),
+    );
+    phases.push('password_grant');
+    noteToken(userToken, ledger, sources);
+    const tokenA = await callBounded(timeoutMs, signal, (inner) =>
+      exchangeClient(
+        fetchImpl,
+        manifest.supabaseUrl,
+        userToken,
+        {
+          clientId: manifest.aClientId,
+          redirectUri: manifest.aRedirectUri,
+          scope: 'openid',
+          resource: listener.resource,
+        },
+        inner,
+      ),
+    );
+    phases.push('oauth_token_a');
+    noteToken(tokenA, ledger, sources);
+    const opened = await callBounded(timeoutMs, signal, async (inner) => {
+      const response = await mcpRequest(
+        listener.resource,
+        tokenA,
+        {
+          jsonrpc: '2.0',
+          id: 1,
+          method: 'initialize',
+          params: {
+            protocolVersion: '2025-06-18',
+            capabilities: {},
+            clientInfo: { name: 'memory-lab', version: '0.0.0' },
+          },
+        },
+        inner,
+      );
+      return { status: response.status, text: await readResponse(response, inner) };
+    });
+    phases.push('mcp_initialize');
+    let handshake;
+    try {
+      handshake = JSON.parse(opened.text);
+    } catch {
+      throw coded('handshake_missing');
+    }
+    if (opened.status !== 403 || typeof handshake.authorization_url !== 'string') {
+      throw coded('handshake_missing');
+    }
+    const consented = await callBounded(timeoutMs, signal, (inner) =>
+      consentHandlerUrl(fetchImpl, handshake.authorization_url, userToken, inner),
+    );
+    if (consented.code === null || consented.state === null) {
+      throw coded('authorization_code_missing');
+    }
+    const callback = new URL(listener.redirect);
+    callback.searchParams.set('code', consented.code);
+    callback.searchParams.set('state', consented.state);
+    const bound = await callBounded(timeoutMs, signal, async (inner) => {
+      const response = await fetch(callback, { redirect: 'manual', signal: inner });
+      return { status: response.status, text: await readResponse(response, inner) };
+    });
+    if (bound.status !== 200) throw coded('bind_failed');
+    phases.push('handler_bind');
+    bindings.push({ id: user.id, tokenA });
+  }
+  const tool = async (tokenA, name, args) => {
+    const response = await callBounded(timeoutMs, signal, async (inner) => {
+      const upstream = await mcpRequest(
+        listener.resource,
+        tokenA,
+        {
+          jsonrpc: '2.0',
+          id: 1,
+          method: 'tools/call',
+          params: { name, arguments: args },
+        },
+        inner,
+      );
+      return { text: await readResponse(upstream, inner) };
+    });
+    phases.push(`mcp_${name}`);
+    return structuredContent(response.text);
+  };
+  const tag = `run:${manifest.fixtures.runId}`;
+  for (const user of bindings) {
+    const own = rowsFor(manifest, user.id);
+    const record = await tool(user.tokenA, 'memory_get', { id: own[0].memoryId });
+    const getPass = record?.ok === true && record.record?.id === own[0].memoryId;
+    rows.push({
+      id: `${user.id}_get`,
+      executed: true,
+      pass: getPass,
+      reason: getPass ? 'own_record' : 'own_record_missed',
+    });
+    if (!getPass) throw coded('own_record_missed');
+    const listed = await tool(user.tokenA, 'memory_list_recent', {
+      filters: { tags: [tag] },
+      limit: 25,
+    });
+    const ids = (listed?.items ?? []).map((item) => item.id);
+    const listPass = listed?.ok === true && ids.join() === own.map((row) => row.memoryId).join();
+    rows.push({
+      id: `${user.id}_list`,
+      executed: true,
+      pass: listPass,
+      reason: listPass ? 'own_only' : 'list_mismatch',
+    });
+    if (!listPass) throw coded('list_mismatch');
+    const found = await tool(user.tokenA, 'memory_search', {
+      query: own[0].content,
+      filters: { tags: [tag] },
+      limit: 20,
+    });
+    const searchPass =
+      found?.ok === true && found.items?.length === 1 && found.items[0].id === own[0].memoryId;
+    rows.push({
+      id: `${user.id}_search`,
+      executed: true,
+      pass: searchPass,
+      reason: searchPass ? 'own_match' : 'search_mismatch',
+    });
+    if (!searchPass) throw coded('search_mismatch');
+  }
+  const baseline = bindings.find(
+    (user) => user.id === manifest.users.find((u) => u.role === 'baseline').id,
+  );
+  const second = bindings.find((user) => user.id !== baseline.id);
+  const foreignId = rowsFor(manifest, second.id)[0].memoryId;
+  const foreign = await tool(baseline.tokenA, 'memory_get', { id: foreignId });
+  const foreignPass = foreign?.ok === false && foreign.error?.code === 'RESOURCE_UNAVAILABLE';
+  rows.push({
+    id: 'foreign_get_unavailable',
+    executed: true,
+    pass: foreignPass,
+    reason: foreignPass ? 'unavailable' : 'foreign_visible',
+  });
+  if (!foreignPass) throw coded('foreign_visible');
+  const [left, right] = await Promise.all([
+    tool(baseline.tokenA, 'memory_get', { id: rowsFor(manifest, baseline.id)[0].memoryId }),
+    tool(second.tokenA, 'memory_get', { id: foreignId }),
+  ]);
+  const retry = await tool(baseline.tokenA, 'memory_get', {
+    id: rowsFor(manifest, baseline.id)[0].memoryId,
+  });
+  const concurrentPass =
+    left?.record?.id === rowsFor(manifest, baseline.id)[0].memoryId &&
+    right?.record?.id === foreignId &&
+    retry?.record?.id === rowsFor(manifest, baseline.id)[0].memoryId;
+  rows.push({
+    id: 'bounded_concurrent_retry',
+    executed: true,
+    pass: concurrentPass,
+    reason: concurrentPass ? 'cross_user' : 'retry_mismatch',
+  });
+  if (!concurrentPass) throw coded('retry_mismatch');
+  rows.push({
+    id: 'same_user_different_b_client',
+    executed: false,
+    pass: false,
+    label: 'not_executed',
+    reason: 'not_executed',
+  });
+  return phases;
+}
+
+async function driveRetained(input) {
+  const manifest = loadRetainedManifest(input.manifestPath);
+  assertRetainedTarget(manifest.supabaseUrl, input.fetchImpl);
+  assertReviewedHead(manifest);
+  const credentials = loadRetainedCredentials(input.credentialsPath, manifest.users);
+  const fetchImpl = input.fetchImpl ?? globalThis.fetch;
+  const injected = input.fetchImpl !== undefined;
+  const timeoutMs = input.timeoutMs ?? 8000;
+  let release;
+  if (input.acquireLock === true) release = acquireControllerLock();
+  let listener;
+  const ledger = [];
+  const sources = [];
+  const grantFacts = [];
+  const rows = [];
+  try {
+    listener = await startMcpListener({
+      supabaseUrl: manifest.supabaseUrl,
+      publishableKey: credentials.publishableKey,
+      jwks: credentials.jwks,
+      aClientId: manifest.aClientId,
+      bClientId: manifest.bClientId,
+      agentId: manifest.agentId,
+      fetchImpl,
+      stall: 'none',
+      resourcePort: manifest.resourcePort,
+      onGrantFact(fact) {
+        if (
+          fact.event === 'bound' &&
+          typeof fact.sessionId === 'string' &&
+          UUID.test(fact.sessionId) &&
+          !ledger.includes(fact.sessionId)
+        ) {
+          ledger.push(fact.sessionId);
+        }
+        grantFacts.push({
+          event: fact.event,
+          sessionId: fact.sessionId,
+          sub: fact.sub,
+          subjectMismatch: fact.subjectMismatch === true,
+        });
+      },
+    });
+    if (listener.resource !== manifest.resource || listener.redirect !== manifest.bRedirectUri) {
+      throw coded('manifest_incomplete');
+    }
+    const phases = await proveRetained({
+      fetchImpl,
+      manifest,
+      listener,
+      users: credentials.users,
+      timeoutMs,
+      signal: input.signal,
+      ledger,
+      sources,
+      rows,
+    });
+    const sessionLedger = reconcileLedger(ledger, sources, grantFacts, manifest.users);
+    const statements = retainedControlStatements(manifest);
+    const boundFacts = grantFacts.filter((fact) => fact.event === 'bound');
+    return {
+      type: 'receipt',
+      packet: 'ari-memory-read-lab',
+      version: LAB_VERSION,
+      acceptance: false,
+      hostedContact: !injected,
+      executedByWriter: injected,
+      listenerCount: 1,
+      listenerClosed: true,
+      mode: 'hosted',
+      hostedProjectPinned: HOSTED_PROJECT_REF,
+      hostedExecution: injected ? 'retained_fixture' : 'retained_native',
+      provenanceLabel: 'mc1681:jesse_via_warden',
+      d1: 'not_executed',
+      d2: 'not_executed',
+      hookBypass: 'excluded_from_first_hosted_batch',
+      directTokenA: 'excluded_from_first_hosted_batch',
+      adminCredentialUsed: false,
+      credentialsLoaded: true,
+      manifestSha256: manifest.sha256,
+      reviewedHead: manifest.reviewedHead,
+      reviewedTree: manifest.reviewedTree,
+      head: git(['rev-parse', 'HEAD']),
+      tree: git(['rev-parse', 'HEAD^{tree}']),
+      installerSha256: sqlSha256(installerSql()),
+      subjectProvenance: {
+        baselineUserId: manifest.users.find((user) => user.role === 'baseline').id,
+        secondUserId: manifest.users.find((user) => user.role === 'second').id,
+        bClientId: manifest.bClientId,
+        bClientBinding: 'manifest',
+        sessionIds: sessionLedger,
+      },
+      grantFacts: boundFacts.map((fact) => ({
+        event: fact.event,
+        sessionId: fact.sessionId,
+        sub: fact.sub,
+      })),
+      sessionLedger,
+      phases,
+      seedStatements: statements.seed,
+      cleanupStatements: statements.cleanup,
+      rowsPass: rows.every((row) => row.executed === false || row.pass === true),
+      reason: injected ? 'retained_transport_proved' : 'retained_native_completed',
+      cleanupStatus: 'statements_only',
+      sameUserDifferentBClient: 'not_executed',
+      rows,
+    };
+  } finally {
+    await listener?.close?.();
+    release?.();
+  }
 }
 
 async function driveSynthetic(input) {

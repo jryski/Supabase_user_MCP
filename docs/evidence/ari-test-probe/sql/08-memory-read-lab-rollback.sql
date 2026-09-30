@@ -4,13 +4,67 @@
 -- ari.project_ref. There is no DROP SCHEMA CASCADE.
 --
 -- Unknown or new dependencies stop the transaction before any drop.
--- The owned internal manifest is revalidated before any drop: policies,
--- triggers, constraints, columns, indexes, and function bodies. An unknown
--- or drifted object stops the transaction. There is no CASCADE.
+-- The owned internal manifest is revalidated before any drop: policy
+-- target, command, permissive mode, roles, and expression; function
+-- volatility and body; triggers, constraints, columns, and indexes.
+-- Quoted literals stay intact. The same authenticated-select ownership
+-- check runs before any drop. An unknown or drifted object stops the
+-- transaction. There is no CASCADE.
 -- The allowlist is the objects created by sql/08-memory-read-lab.sql.
 -- Fixture rows are not a schema rollback. Delete those by exact run id.
 
 begin;
+
+create or replace function pg_temp.manifest_text(input text)
+returns text
+language plpgsql
+immutable
+as $norm$
+declare
+  index integer := 1;
+  size integer;
+  ch text;
+  output text := '';
+  in_quote boolean := false;
+  pending boolean := false;
+begin
+  if input is null then
+    return '';
+  end if;
+  size := length(input);
+  while index <= size loop
+    ch := substr(input, index, 1);
+    if in_quote then
+      output := output || ch;
+      if ch = '''' then
+        if substr(input, index + 1, 1) = '''' then
+          output := output || '''';
+          index := index + 1;
+        else
+          in_quote := false;
+        end if;
+      end if;
+    elsif ch = '''' then
+      if pending and output <> '' then
+        output := output || ' ';
+      end if;
+      pending := false;
+      in_quote := true;
+      output := output || ch;
+    elsif ch ~ '[[:space:]]' then
+      pending := true;
+    else
+      if pending and output <> '' then
+        output := output || ' ';
+      end if;
+      pending := false;
+      output := output || ch;
+    end if;
+    index := index + 1;
+  end loop;
+  return output;
+end;
+$norm$;
 
 do $pre$
 declare
@@ -45,14 +99,36 @@ begin
     raise exception 'STOP schema version is not %', version;
   end if;
 
+  if exists (
+    select 1
+    from pg_policy as policy
+    join pg_class as relation on relation.oid = policy.polrelid
+    join pg_namespace as namespace on namespace.oid = relation.relnamespace
+    where namespace.nspname = 'policy_lab'
+      and (
+        policy.polcmd <> 'r'
+        or policy.polpermissive is not true
+        or policy.polroles is distinct from array[
+          (select oid from pg_roles where rolname = 'authenticated')
+        ]
+      )
+  ) then
+    raise exception 'STOP owned manifest drift: policy';
+  end if;
+
   select md5(string_agg(
-      policy.polname || '@' || relation.relname || '|' || policy.polcmd::text || '|' ||
-      regexp_replace(
-        lower(replace(pg_get_expr(policy.polqual, policy.polrelid), '::text', '')),
-        '\s+',
-        '',
-        'g'
-      ),
+      policy.polname || '@' || relation.relname
+      || '|' || policy.polcmd::text
+      || '|' || policy.polpermissive::text
+      || '|' || case
+        when policy.polroles = array[0]::oid[] or cardinality(policy.polroles) = 0 then 'public'
+        else (
+          select string_agg(role.rolname, ',' order by role.rolname)
+          from pg_roles as role
+          where role.oid = any (policy.polroles)
+        )
+      end
+      || '|' || pg_temp.manifest_text(pg_get_expr(policy.polqual, policy.polrelid)),
       E'\n' order by policy.polname
     ))
     into owned_policy
@@ -60,7 +136,7 @@ begin
   join pg_class as relation on relation.oid = policy.polrelid
   join pg_namespace as namespace on namespace.oid = relation.relnamespace
   where namespace.nspname = 'policy_lab';
-  if owned_policy is distinct from '7d58c1e9658a37eb7c8615dd9ef7a9a3' then
+  if owned_policy is distinct from '09e17e1afe08f29e7daf0613742c7910' then
     raise exception 'STOP owned manifest drift: policy %', owned_policy;
   end if;
 
@@ -87,12 +163,8 @@ begin
   end if;
 
   select md5(string_agg(
-      constraint_row.conname || ':' || regexp_replace(
-        lower(replace(pg_get_constraintdef(constraint_row.oid), '::text', '')),
-        '\s+',
-        '',
-        'g'
-      ),
+      constraint_row.conname || ':' ||
+      pg_temp.manifest_text(pg_get_constraintdef(constraint_row.oid)),
       '|' order by constraint_row.conname
     ))
     into owned_constraint
@@ -100,15 +172,16 @@ begin
   join pg_class as relation on relation.oid = constraint_row.conrelid
   join pg_namespace as namespace on namespace.oid = relation.relnamespace
   where namespace.nspname = 'policy_lab';
-  if owned_constraint is distinct from '646433b43e50bee6ec1ef515f940e239' then
+  if owned_constraint is distinct from 'e3b651e76ca74fcb9874d6cf5604de97' then
     raise exception 'STOP owned manifest drift: constraint %', owned_constraint;
   end if;
 
   select md5(string_agg(
       namespace.nspname || '.' || procedure.proname || '(' ||
       pg_get_function_identity_arguments(procedure.oid) || ')' || '|' ||
-      md5(regexp_replace(procedure.prosrc, '\s+', '', 'g')) || '|' ||
+      md5(pg_temp.manifest_text(procedure.prosrc)) || '|' ||
       procedure.prosecdef::text || '|' ||
+      procedure.provolatile::text || '|' ||
       coalesce(array_to_string(procedure.proconfig, ','), ''),
       E'\n' order by namespace.nspname, procedure.proname
     ))
@@ -116,7 +189,7 @@ begin
   from pg_proc as procedure
   join pg_namespace as namespace on namespace.oid = procedure.pronamespace
   where namespace.nspname in ('policy_lab', 'memory');
-  if owned_function is distinct from 'f64fe18a01be3488d96ef12964e59233' then
+  if owned_function is distinct from 'a80cf659cfdda35753be1dec29db3968' then
     raise exception 'STOP owned manifest drift: function %', owned_function;
   end if;
 
@@ -213,6 +286,8 @@ begin
   end if;
 end;
 $pre$;
+
+drop function pg_temp.manifest_text(text);
 
 drop function memory.authorized_memory_search_v1(text, text, jsonb, integer, text);
 drop function memory.authorized_memory_list_recent_v1(jsonb, integer, text);

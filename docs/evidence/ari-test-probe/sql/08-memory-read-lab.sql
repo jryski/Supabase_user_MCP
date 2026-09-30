@@ -12,10 +12,11 @@
 -- Owned version: ari-memory-read-lab-v1
 -- A missing pair of schemas is created. An existing pair must already
 -- carry that version and the source-pinned owned manifest: policy
--- target, command, and expression; helper and RPC bodies and attributes;
--- columns, defaults, constraints, indexes, and triggers. Drift stops
--- the transaction. Reentry does not bless it and does not overwrite it.
--- There is no CREATE IF NOT EXISTS.
+-- target, command, permissive mode, roles, and expression; helper and
+-- RPC bodies, volatility, security, and configuration; columns,
+-- defaults, constraints, indexes, and triggers. Expression text keeps
+-- quoted literals intact. Drift stops the transaction. Reentry does
+-- not bless it and does not overwrite it. There is no CREATE IF NOT EXISTS.
 --
 -- Cherry-picked shape only. No access-token hook, no public view, no
 -- audit table, no artifact or storage object, no write capability.
@@ -646,6 +647,57 @@ begin
 end;
 $create$;
 
+create or replace function pg_temp.manifest_text(input text)
+returns text
+language plpgsql
+immutable
+as $norm$
+declare
+  index integer := 1;
+  size integer;
+  ch text;
+  output text := '';
+  in_quote boolean := false;
+  pending boolean := false;
+begin
+  if input is null then
+    return '';
+  end if;
+  size := length(input);
+  while index <= size loop
+    ch := substr(input, index, 1);
+    if in_quote then
+      output := output || ch;
+      if ch = '''' then
+        if substr(input, index + 1, 1) = '''' then
+          output := output || '''';
+          index := index + 1;
+        else
+          in_quote := false;
+        end if;
+      end if;
+    elsif ch = '''' then
+      if pending and output <> '' then
+        output := output || ' ';
+      end if;
+      pending := false;
+      in_quote := true;
+      output := output || ch;
+    elsif ch ~ '[[:space:]]' then
+      pending := true;
+    else
+      if pending and output <> '' then
+        output := output || ' ';
+      end if;
+      pending := false;
+      output := output || ch;
+    end if;
+    index := index + 1;
+  end loop;
+  return output;
+end;
+$norm$;
+
 do $assert$
 declare
   version constant text := 'ari-memory-read-lab-v1';
@@ -761,6 +813,7 @@ begin
     where namespace.nspname = 'policy_lab'
       and (
         policy.polcmd <> 'r'
+        or policy.polpermissive is not true
         or policy.polroles is distinct from array[
           (select oid from pg_roles where rolname = 'authenticated')
         ]
@@ -855,15 +908,22 @@ begin
   end loop;
 
   -- Source-pinned manifest. A match is the reviewed lab. Anything else stops.
-  -- These statements do not CREATE, REPLACE, or ALTER.
+  -- These statements do not CREATE, REPLACE, or ALTER. Quoted literals are
+  -- preserved. Policy roles, permissive mode, and function volatility are
+  -- part of the fingerprint.
   select md5(string_agg(
-      policy.polname || '@' || relation.relname || '|' || policy.polcmd::text || '|' ||
-      regexp_replace(
-        lower(replace(pg_get_expr(policy.polqual, policy.polrelid), '::text', '')),
-        '\s+',
-        '',
-        'g'
-      ),
+      policy.polname || '@' || relation.relname
+      || '|' || policy.polcmd::text
+      || '|' || policy.polpermissive::text
+      || '|' || case
+        when policy.polroles = array[0]::oid[] or cardinality(policy.polroles) = 0 then 'public'
+        else (
+          select string_agg(role.rolname, ',' order by role.rolname)
+          from pg_roles as role
+          where role.oid = any (policy.polroles)
+        )
+      end
+      || '|' || pg_temp.manifest_text(pg_get_expr(policy.polqual, policy.polrelid)),
       E'\n' order by policy.polname
     ))
     into owned_policy
@@ -871,7 +931,7 @@ begin
   join pg_class as relation on relation.oid = policy.polrelid
   join pg_namespace as namespace on namespace.oid = relation.relnamespace
   where namespace.nspname = 'policy_lab';
-  if owned_policy is distinct from '7d58c1e9658a37eb7c8615dd9ef7a9a3' then
+  if owned_policy is distinct from '09e17e1afe08f29e7daf0613742c7910' then
     raise exception 'STOP owned manifest drift: policy %', owned_policy;
   end if;
 
@@ -898,12 +958,8 @@ begin
   end if;
 
   select md5(string_agg(
-      constraint_row.conname || ':' || regexp_replace(
-        lower(replace(pg_get_constraintdef(constraint_row.oid), '::text', '')),
-        '\s+',
-        '',
-        'g'
-      ),
+      constraint_row.conname || ':' ||
+      pg_temp.manifest_text(pg_get_constraintdef(constraint_row.oid)),
       '|' order by constraint_row.conname
     ))
     into owned_constraint
@@ -911,15 +967,16 @@ begin
   join pg_class as relation on relation.oid = constraint_row.conrelid
   join pg_namespace as namespace on namespace.oid = relation.relnamespace
   where namespace.nspname = 'policy_lab';
-  if owned_constraint is distinct from '646433b43e50bee6ec1ef515f940e239' then
+  if owned_constraint is distinct from 'e3b651e76ca74fcb9874d6cf5604de97' then
     raise exception 'STOP owned manifest drift: constraint %', owned_constraint;
   end if;
 
   select md5(string_agg(
       namespace.nspname || '.' || procedure.proname || '(' ||
       pg_get_function_identity_arguments(procedure.oid) || ')' || '|' ||
-      md5(regexp_replace(procedure.prosrc, '\s+', '', 'g')) || '|' ||
+      md5(pg_temp.manifest_text(procedure.prosrc)) || '|' ||
       procedure.prosecdef::text || '|' ||
+      procedure.provolatile::text || '|' ||
       coalesce(array_to_string(procedure.proconfig, ','), ''),
       E'\n' order by namespace.nspname, procedure.proname
     ))
@@ -927,7 +984,7 @@ begin
   from pg_proc as procedure
   join pg_namespace as namespace on namespace.oid = procedure.pronamespace
   where namespace.nspname in ('policy_lab', 'memory');
-  if owned_function is distinct from 'f64fe18a01be3488d96ef12964e59233' then
+  if owned_function is distinct from 'a80cf659cfdda35753be1dec29db3968' then
     raise exception 'STOP owned manifest drift: function %', owned_function;
   end if;
 
@@ -957,5 +1014,7 @@ begin
   end if;
 end;
 $assert$;
+
+drop function pg_temp.manifest_text(text);
 
 commit;

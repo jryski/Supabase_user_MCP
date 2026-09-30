@@ -848,6 +848,25 @@ export async function runLocalLab() {
   });
 }
 
+function takeOption(name) {
+  const index = process.argv.indexOf(name);
+  if (index === -1) return undefined;
+  const value = process.argv[index + 1];
+  if (value === undefined || value.startsWith('--')) return '';
+  return value;
+}
+
+export function hostedPreflight(command, options, env) {
+  const executor = env.ARI_MEMORY_LAB_EXECUTOR === 'ariadne';
+  const url = `${env.ARI_TEST_SUPABASE_URL ?? ''}${env.SUPABASE_URL ?? ''}`;
+  if (url.toLowerCase().includes(HOSTED_PROJECT_REF) && !executor) {
+    throw coded('hosted_execution_refused');
+  }
+  if (command === 'hosted' && !executor) throw coded('hosted_execution_refused');
+  if (command === 'hosted' && !options.manifestPath) throw coded('manifest_required');
+  if (command === 'hosted' && !options.credentialsPath) throw coded('credentials_required');
+}
+
 async function main() {
   const command = process.argv[2] ?? 'plan';
   if (command === 'plan') {
@@ -857,17 +876,18 @@ async function main() {
   if (command === 'hosted' || command === 'hosted-synthetic') {
     let release;
     try {
-      const url = `${process.env.ARI_TEST_SUPABASE_URL ?? ''}${process.env.SUPABASE_URL ?? ''}`;
-      const executor = process.env.ARI_MEMORY_LAB_EXECUTOR === 'ariadne';
-      if (url.toLowerCase().includes(HOSTED_PROJECT_REF) && !executor) {
-        throw coded('hosted_execution_refused');
-      }
-      if (command === 'hosted' && !executor) throw coded('hosted_execution_refused');
+      const manifestPath = takeOption('--manifest');
+      const credentialsPath = takeOption('--credentials');
+      hostedPreflight(command, { manifestPath, credentialsPath }, process.env);
       assertCleanWorktree();
       release = acquireControllerLock();
       const { runHostedController } = await import('./ari-memory-read-lab-hosted.mjs');
       const receipt = await runHostedController(
-        { transport: command === 'hosted' ? 'retained-test' : 'synthetic', acquireLock: false },
+        {
+          transport: command === 'hosted' ? 'retained-test' : 'synthetic',
+          acquireLock: false,
+          ...(command === 'hosted' ? { manifestPath, credentialsPath } : {}),
+        },
         process.env,
       );
       process.stdout.write(`${JSON.stringify(receipt)}\n`);
@@ -891,7 +911,8 @@ async function main() {
   }
   if (command !== 'run') {
     process.stderr.write(
-      'usage: node scripts/ari-memory-read-lab.mjs [plan|run|hosted-synthetic|hosted]\n',
+      'usage: node scripts/ari-memory-read-lab.mjs [plan|run|hosted-synthetic|hosted]\n' +
+        'hosted: node scripts/ari-memory-read-lab.mjs hosted --manifest <reviewed-run-manifest> --credentials <protected-credential-file>\n',
     );
     process.exitCode = 2;
     return;
