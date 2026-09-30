@@ -491,7 +491,7 @@ async function startIssuer(mode) {
       }
       if (req.method === 'GET' && url.pathname === '/rest/v1/ari_probe_marker') {
         seen.marker.push(url.search);
-        if (url.search !== '?select=marker') {
+        if (url.search !== '?select=marker,owner_id') {
           seen.forbidden += 1;
           send(404, JSON.stringify({ error: 'not_found' }));
           return;

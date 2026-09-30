@@ -519,7 +519,7 @@ function createIssuanceTracker(ledger, cursor, signal) {
           }
         })();
         pending.add(run);
-        void run.finally(() => pending.delete(run));
+        void run.finally(() => pending.delete(run)).catch(() => undefined);
         return run;
       };
     },
@@ -1881,10 +1881,10 @@ async function runN6(env, _ledger, reader, timeoutMs, restoreState, ctx) {
     timeoutMs,
     ctx.signal,
   );
+  const hash = hookManifestHash(captured.hookManifest, bound);
   const baselineClientId = captured.hookManifest?.baselineClientId;
   const policy = policySnapshot(captured, env, baselineClientId);
   if (policy === null) throw coded('f1_readback_missing');
-  const hash = hookManifestHash(captured.hookManifest, bound);
   restoreState.hash = hash;
   restoreState.manifest = captured.hookManifest;
   restoreState.policy = policy;
