@@ -121,6 +121,18 @@ test('plan stays closed and false passes stay false', () => {
     bound,
   );
   assert.equal(hash.length, 64);
+  assert.equal(
+    plan.steps.some(
+      (step) => step.includes('GET /auth/v1/user') && step.includes('not an F1 pass'),
+    ),
+    true,
+  );
+  assert.equal(
+    plan.steps.some((step) =>
+      step.includes('not_required only when the run recorded no session id'),
+    ),
+    true,
+  );
   assert.throws(
     () =>
       hookManifestHash({ enabled: true, function: 'ari_probe.custom_access_token_hook' }, bound),
@@ -215,7 +227,26 @@ async function freePort() {
   return port;
 }
 
-async function startIssuer(mode) {
+function laneTimeoutMs(mode, fault) {
+  if (fault === 'sigint_user' || fault === 'sigterm_user') return '20000';
+  if (
+    mode === 'hang-a-marker' ||
+    mode === 'delay_password' ||
+    mode === 'delay_oauth' ||
+    mode === 'delay_rejected_b' ||
+    mode === 'hang_issuance' ||
+    mode === 'stall_token_body' ||
+    mode === 'stall_user_headers' ||
+    mode === 'stall_user_body' ||
+    mode === 'stall_marker_body' ||
+    fault === 'timeout_disable'
+  ) {
+    return '1000';
+  }
+  return '20000';
+}
+
+async function startIssuer(mode, hooks = {}) {
   const { privateKey, publicKey } = await generateKeyPair('ES256', { extractable: true });
   const jwk = await exportJWK(publicKey);
   const jwks = { keys: [{ ...jwk, kid: 'g2-test', alg: 'ES256', use: 'sig' }] };
@@ -535,6 +566,12 @@ async function startIssuer(mode) {
           clientId = '';
         }
         if (mode === 'hang-a-marker' && clientId === A_CLIENT) return;
+        if (mode === 'stall_marker_body' && clientId === A_CLIENT) {
+          res.writeHead(200, { 'content-type': 'application/json', 'cache-control': 'no-store' });
+          res.write('[');
+          hooks.onStall?.();
+          return;
+        }
         if (mode === 'marker_401' && clientId === A_CLIENT) {
           send(401, JSON.stringify({ error: 'unauthorized' }));
           return;
@@ -567,6 +604,17 @@ async function startIssuer(mode) {
         return;
       }
       if (req.method === 'GET' && url.pathname === '/auth/v1/user') {
+        if (mode === 'stall_user_headers' || mode === 'stall_user_body') {
+          if (mode === 'stall_user_body') {
+            res.writeHead(200, {
+              'content-type': 'application/json',
+              'cache-control': 'no-store',
+            });
+            res.write('{"id":');
+          }
+          hooks.onStall?.();
+          return;
+        }
         const user = bearerUser();
         if (user === undefined) {
           send(401, JSON.stringify({ error: 'unauthorized' }));
@@ -602,7 +650,8 @@ async function startIssuer(mode) {
 }
 
 async function drive(mode, gates, fault = 'none') {
-  const issuer = await startIssuer(mode);
+  const hooks = {};
+  const issuer = await startIssuer(mode, hooks);
   const mcpPort = await freePort();
   const mcpResource = `http://127.0.0.1:${mcpPort}/mcp`;
   const head = execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
@@ -633,16 +682,7 @@ async function drive(mode, gates, fault = 'none') {
       ARI_N_GATES_EXECUTE: '1',
       ARI_N_GATES: gates,
       ARI_LANE_B_G5_HEAD: head,
-      ARI_LANE_B_TIMEOUT_MS:
-        mode === 'hang-a-marker' ||
-        mode === 'delay_password' ||
-        mode === 'delay_oauth' ||
-        mode === 'delay_rejected_b' ||
-        mode === 'hang_issuance' ||
-        mode === 'stall_token_body' ||
-        fault === 'timeout_disable'
-          ? '1000'
-          : '20000',
+      ARI_LANE_B_TIMEOUT_MS: laneTimeoutMs(mode, fault),
       ...(fault === 'callback_500' ? { ARI_N_GATES_SYNTHETIC_HTTP_STATUS: '500' } : {}),
       ARI_TEST_PROJECT_REF: 'odbcejsuuqdzhabjmozi',
       ARI_TEST_SUPABASE_URL: issuer.origin,
@@ -661,6 +701,12 @@ async function drive(mode, gates, fault = 'none') {
   });
   const stderr = [];
   proc.stderr.on('data', (chunk) => stderr.push(chunk));
+  hooks.onStall = () => {
+    if (hooks.signaled === true) return;
+    hooks.signaled = true;
+    if (fault === 'sigint_user') proc.kill('SIGINT');
+    else if (fault === 'sigterm_user') proc.kill('SIGTERM');
+  };
   const reader = stdoutLines(proc.stdout);
   const stdoutText = [];
   let receipt;
@@ -736,7 +782,15 @@ async function drive(mode, gates, fault = 'none') {
         new Promise((resolve) => {
           timer = setTimeout(
             () => resolve(null),
-            mode === 'hang-a-marker' || fault === 'timeout_disable' ? 20_000 : 60_000,
+            mode === 'hang-a-marker' ||
+              mode === 'stall_user_headers' ||
+              mode === 'stall_user_body' ||
+              mode === 'stall_marker_body' ||
+              fault === 'timeout_disable' ||
+              fault === 'sigint_user' ||
+              fault === 'sigterm_user'
+              ? 20_000
+              : 60_000,
           );
         }),
       ]);
@@ -924,7 +978,8 @@ test('synthetic packet executes the remaining gates without hosted contact', asy
   assert.equal(receipt.syntheticLoopback, true);
   assert.equal(receipt.rowsPass, true);
   assert.equal(receipt.issuanceStatus, 'resolved');
-  assert.equal(receipt.cleanupStatus, 'not_required');
+  assert.equal(receipt.cleanupStatus, 'confirmed');
+  assert.notEqual(receipt.cleanupStatus, 'not_required');
   assert.equal(receipt.restoreStatus, 'confirmed');
   assert.deepEqual(receipt.unresolvedAttemptIds, []);
   assert.equal(receipt.actualHead, result.head);
@@ -1066,6 +1121,57 @@ test('generic invalid_scope is not an N7 hook-policy pass', async () => {
     n7.subcases.some((row) => row.pass === true),
     false,
   );
+});
+
+function assertHookOffStall(result, label, reason) {
+  assert.equal(result.code, 2, `${label}\n${result.errText}\n${result.outText}`);
+  assert.equal(result.receipt.acceptance, false, label);
+  assert.equal(result.receipt.rowsPass, false, label);
+  assert.equal(result.receipt.reason, reason, label);
+  assert.equal(result.actions.includes('disable_current_hook'), true, label);
+  assert.equal(result.actions.includes('restore_hook_configuration'), true, label);
+  const disableAt = result.actions.indexOf('disable_current_hook');
+  const restoreAt = result.actions.indexOf('restore_hook_configuration');
+  assert.equal(restoreAt > disableAt, true, label);
+  assert.equal(result.receipt.restoreStatus, 'confirmed', label);
+  assert.notEqual(result.receipt.restoreStatus, 'not_required', label);
+  assert.equal(result.receipt.recoveryLocator, undefined, label);
+  assert.equal(result.outText.includes('"id":"f1_denial"'), false, label);
+  const restore = result.messages.find((row) => row.action === 'restore_hook_configuration');
+  assert.equal(restore.hookManifest.function, 'ari_probe.custom_access_token_hook', label);
+  assert.equal(restore.hookManifest.uri.includes('custom_access_token_hook'), true, label);
+  const restoreOut = result.outText.indexOf('"action":"restore_hook_configuration"');
+  const receiptAt = result.outText.indexOf('"type":"receipt"');
+  assert.equal(restoreOut >= 0 && receiptAt > restoreOut, true, label);
+  issuanceCleanedBeforeReceipt(result);
+  const cleaned = new Set(
+    result.messages
+      .filter((row) => row.action === 'cleanup_sessions')
+      .flatMap((row) => row.sessionIds),
+  );
+  assert.equal(result.receipt.sessionLedger.length > 0, true, label);
+  for (const row of result.receipt.sessionLedger) {
+    for (const key of ['passwordSessionId', 'sourceSessionId', 'bSessionId', 'authSessionId']) {
+      if (row[key] !== undefined) assert.equal(cleaned.has(row[key]), true, `${label}:${row[key]}`);
+    }
+  }
+  assert.equal(result.outText.includes(PASSWORD), false, label);
+  assert.equal(result.outText.includes(REFRESH), false, label);
+}
+
+test('stalled hook-off user and marker reads restore without an F1 pass', async () => {
+  const cases = [
+    ['stall_user_headers', 'none', 'orchestration_timeout'],
+    ['stall_user_body', 'none', 'orchestration_timeout'],
+    ['stall_user_headers', 'sigint_user', 'signal_received'],
+    ['stall_user_body', 'sigterm_user', 'signal_received'],
+    ['stall_marker_body', 'none', 'orchestration_timeout'],
+    ['stall_marker_body', 'sigint_user', 'signal_received'],
+  ];
+  for (const [mode, fault, reason] of cases) {
+    const result = await drive(mode, 'N6', fault);
+    assertHookOffStall(result, `${mode}:${fault}`, reason);
+  }
 });
 
 test('N6 restores the saved hook when the marker probe times out', async () => {
@@ -1259,6 +1365,7 @@ test('baseline, same email, wrong subject, and early failure do not delete the b
   assert.equal(early.actions.includes('delete_second_synthetic_user'), false);
   assert.equal(early.seen.emails.length, 0);
   assert.equal(early.receipt.issuanceStatus, 'not_required');
+  assert.equal(early.receipt.cleanupStatus, 'not_required');
 });
 
 function issuanceCleanedBeforeReceipt(result) {

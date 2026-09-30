@@ -283,7 +283,9 @@ export function nGatesPlan() {
       'Cleanup readbacks must be a bijection of the requested session ids. A duplicate or omitted id is not confirmation.',
       'N6: read back the enabled hook and the effective restrictive F1, prove the exact owner marker for the verified owner, arm restoration, then disable only that hook.',
       'Hook-off A is verified with issuer and JWKS before the marker read. HTTP 401, HTTP 403, and HTTP 500 are inconclusive.',
+      'Hook-off GET /auth/v1/user and the N6 marker read include their response bodies in the run timeout and in SIGINT or SIGTERM. A stall after disable still reaches exact restore or a pending or failed recovery receipt, and it is not an F1 pass.',
       'Clean every minted auth session, with sessions and refresh rows at zero, then restore the saved configuration and canary.',
+      'cleanupStatus is confirmed when every recorded session id was cleaned. It is not_required only when the run recorded no session id. failed and unresolved take priority. Per-action cleanup readbacks stay mandatory.',
       'Restore stays armed until the readback hash matches the saved configuration. A failed readback is pending or failed, never not_required.',
       'Stdin JSON carries runId and action. A stale or wrong-action line cannot satisfy cleanup or restore.',
     ],
@@ -334,6 +336,34 @@ function withTimeout(promise, timeoutMs, signal) {
   const racers = [promise, timeout];
   if (signal !== undefined) racers.push(signal.interrupt());
   return Promise.race(racers).finally(() => clearTimeout(timer));
+}
+
+async function callBounded(timeoutMs, signal, work) {
+  const controller = new AbortController();
+  let reason = 'orchestration_timeout';
+  let settled = false;
+  const cancel = () => {
+    reason = 'signal_received';
+    controller.abort();
+  };
+  if (signal !== undefined) signal.onAbort(cancel);
+  const attempt = (async () => {
+    try {
+      const value = await work(controller.signal);
+      if (controller.signal.aborted) throw coded(reason);
+      settled = true;
+      return value;
+    } catch (error) {
+      if (controller.signal.aborted) throw coded(reason);
+      throw error;
+    }
+  })();
+  try {
+    return await withTimeout(attempt, timeoutMs, signal);
+  } finally {
+    if (!settled) controller.abort();
+    if (signal !== undefined) signal.offAbort(cancel);
+  }
 }
 
 function timeoutMsOf(env) {
@@ -655,6 +685,9 @@ function createSignal() {
     },
     onAbort(abort) {
       aborters.add(abort);
+    },
+    offAbort(abort) {
+      aborters.delete(abort);
     },
     dispose() {
       process.off('SIGINT', onSignal);
@@ -1637,7 +1670,7 @@ async function runN2(env, ledger, reader, timeoutMs, ctx) {
   );
 }
 
-async function probeMarker(env, token, timeoutMs) {
+async function probeMarker(env, token, timeoutMs, signal) {
   const target = new URL(MARKER_PATH, new URL(env.ARI_TEST_SUPABASE_URL).origin);
   if (
     target.pathname !== '/rest/v1/ari_probe_marker' ||
@@ -1645,22 +1678,26 @@ async function probeMarker(env, token, timeoutMs) {
   ) {
     throw coded('marker_path_refused');
   }
-  let response;
-  try {
-    response = await fetch(target, {
-      method: 'GET',
-      redirect: 'error',
-      signal: AbortSignal.timeout(timeoutMs),
-      headers: {
-        accept: 'application/json',
-        authorization: `Bearer ${token}`,
-        apikey: env.ARI_TEST_PUBLISHABLE_KEY,
-      },
-    });
-  } catch {
-    throw coded('orchestration_timeout');
-  }
-  return classifyMarkerProbe(response.status, await response.text());
+  return callBounded(timeoutMs, signal, async (abortSignal) => {
+    let response;
+    try {
+      response = await fetch(target, {
+        method: 'GET',
+        redirect: 'error',
+        signal: abortSignal,
+        headers: {
+          accept: 'application/json',
+          authorization: `Bearer ${token}`,
+          apikey: env.ARI_TEST_PUBLISHABLE_KEY,
+        },
+      });
+    } catch (error) {
+      if (abortSignal.aborted) throw error;
+      throw coded('orchestration_timeout');
+    }
+    const text = await response.text();
+    return classifyMarkerProbe(response.status, text);
+  });
 }
 
 const MARKER_PATH = '/rest/v1/ari_probe_marker?select=marker,owner_id';
@@ -1862,25 +1899,29 @@ async function verifyJwt(token, env, checks) {
   return { sessionId, sourceSessionId, sub };
 }
 
-async function liveOwner(env, token, sub) {
-  const response = await fetch(
-    new URL('/auth/v1/user', new URL(env.ARI_TEST_SUPABASE_URL).origin),
-    {
-      method: 'GET',
-      headers: {
-        accept: 'application/json',
-        authorization: `Bearer ${token}`,
-        apikey: env.ARI_TEST_PUBLISHABLE_KEY,
+async function liveOwner(env, token, sub, timeoutMs, signal) {
+  return callBounded(timeoutMs, signal, async (abortSignal) => {
+    const response = await fetch(
+      new URL('/auth/v1/user', new URL(env.ARI_TEST_SUPABASE_URL).origin),
+      {
+        method: 'GET',
+        signal: abortSignal,
+        headers: {
+          accept: 'application/json',
+          authorization: `Bearer ${token}`,
+          apikey: env.ARI_TEST_PUBLISHABLE_KEY,
+        },
       },
-    },
-  );
-  let body = null;
-  try {
-    body = await response.json();
-  } catch {
-    body = null;
-  }
-  return response.status === 200 && body?.id === sub;
+    );
+    let body = null;
+    try {
+      body = await response.json();
+    } catch (error) {
+      if (abortSignal.aborted) throw error;
+      body = null;
+    }
+    return response.status === 200 && body?.id === sub;
+  });
 }
 
 async function restoreHook(reader, state, timeoutMs, signal, bound, env) {
@@ -1969,7 +2010,7 @@ async function runN6(env, _ledger, reader, timeoutMs, restoreState, ctx) {
       if (error?.code !== 'hook_off_unverified') throw error;
       verified = undefined;
     }
-    const probe = await probeMarker(env, issued.accessToken, timeoutMs);
+    const probe = await probeMarker(env, issued.accessToken, timeoutMs, ctx.signal);
     ownerMarker = ownerMarkerHeld(probe, env.ARI_TEST_PROJECT_REF, verified?.sub);
     if (verified !== undefined) owner = { sub: verified.sub, bSessionId: verified.sessionId };
   } finally {
@@ -2030,10 +2071,10 @@ async function runN6(env, _ledger, reader, timeoutMs, restoreState, ctx) {
     if (hookOff.sub !== owner.sub || hookOff.sessionId === owner.bSessionId) {
       throw coded('hook_off_unverified');
     }
-    liveSession = await liveOwner(env, issued.accessToken, owner.sub);
+    liveSession = await liveOwner(env, issued.accessToken, owner.sub, timeoutMs, ctx.signal);
     if (!liveSession) throw coded('hook_off_unverified');
     verified = true;
-    const probe = await probeMarker(env, issued.accessToken, timeoutMs);
+    const probe = await probeMarker(env, issued.accessToken, timeoutMs, ctx.signal);
     denial = probe.denial === true && probe.category === 'rls_empty' && probe.httpStatus === 200;
     rows = probe.rows;
     category = probe.category;
@@ -2234,10 +2275,13 @@ export async function runNGates(env, stdin) {
         cleanupStatus = 'unresolved';
       } else {
         if (ctx.issuance.attempted()) issuanceStatus = 'resolved';
+        const recorded = gateIds(ledger, new Set());
         const leftover = gateIds(ledger, ctx.cleared);
         if (leftover.length > 0) {
           await confirmCleanup(reader, ctx, timeoutMs);
           cleanupStatus = gateIds(ledger, ctx.cleared).length === 0 ? 'confirmed' : 'failed';
+        } else if (recorded.length > 0) {
+          cleanupStatus = 'confirmed';
         }
       }
     } catch {

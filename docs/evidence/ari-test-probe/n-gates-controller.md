@@ -90,6 +90,14 @@ and the role, client, and session claims for that token. HTTP 401, HTTP
 permission denial are inconclusive. Rows showing the marker are not a
 denial. Hook-off A is not sent through User MCP.
 
+The hook-off liveness check is `GET /auth/v1/user` for that verified
+owner. The request and its response body use the run timeout and the
+same SIGINT or SIGTERM interruption as the rest of the packet. The N6
+marker read uses that same bound for its body. A stall after disable
+still requests restore. The saved configuration is either read back
+exactly, or the receipt stays `pending` or `failed` and keeps the
+recovery locator. Neither stall is an F1 pass.
+
 An issuance attempt is resolved only after the token response body is
 fully read and either a real session UUID from that body is on the ledger,
 or the body is a complete pre-issuance denial. A denial is HTTP 400, 401,
@@ -104,6 +112,12 @@ delete baseline sessions, including any ids the controller sends back.
 `cleanupStatus` stays `unresolved`. A late token whose body does arrive
 in full, with a real session UUID, is ledgered and cleaned before the
 receipt.
+
+`cleanupStatus` is `confirmed` when every recorded session id for the
+run already has a confirmed cleanup readback. It is `not_required` only
+when the run recorded no session id that required cleanup. `failed` and
+`unresolved` take priority over both. Per-action cleanup readbacks stay
+mandatory. A final `confirmed` does not replace those readbacks.
 
 Every receipt is written after that finalization. It carries
 `issuanceStatus`, `cleanupStatus`, and `restoreStatus`, and
