@@ -28,30 +28,43 @@ No userinfo, query, or fragment. B must not inherit a default resource.
 
 ## What the controller answers
 
-Every controller line is one JSON object. It carries `runId` and `action`
-copied from the request. A bare `continue`, a stale run id, or the wrong
-action cannot satisfy cleanup or restore. Neither line carries a password,
-bearer, code, or admin key.
+Every controller line is one JSON object. It carries `runId`, `action`, and
+the request `requestId` copied from that action instance. A bare `continue`,
+a stale run id, the wrong action, or a previous cleanup's request id cannot
+satisfy a later cleanup or restore. Neither line carries a password, bearer,
+code, or admin key.
 
 1. `prepare_second_synthetic_user` for N2. Create one run-owned second
-   synthetic user first. Reply with `type: readback` and that user's UUID
-   as `secondUserId`. The packet does not create the user. Keep the
-   reusable baseline user.
+   synthetic user first. Reply with `type: readback`, `createdForRun: true`,
+   that user's email, and that user's UUID as `secondUserId`. The email
+   must be the configured second-user email and must not be the reusable
+   baseline email. The packet does not create the user. It learns the
+   baseline UUID from verified native A and will not authorize deletion
+   when the prepared id, email, or token subject is the baseline or is
+   otherwise unproven. A failure before the first grant does not delete
+   the prepared id.
 2. `cleanup_sessions`. Delete only the listed session ids and their refresh
    rows. Reply with `sessionsRows: 0`, `refreshRows: 0`, and the same
-   `sessionIds`. Do this before deleting the second synthetic user.
-3. `delete_second_synthetic_user` carries `secondUserId` only. Reply with
-   `type: continue` and the same id after that user's sessions are gone.
+   `sessionIds`, each id once. A duplicate, a missing id, an extra id, or
+   a nonzero row count is not confirmation and does not clear an omitted
+   id. Do this before deleting the second synthetic user.
+3. `delete_second_synthetic_user` carries `secondUserId` only after the
+   packet has marked that id deletion-eligible. Reply with `type: continue`
+   and the same id. Do not delete the baseline user.
 4. `capture_hook_manifest`. Reply with the full enabled hook configuration,
-   including URI and settings, the F1 policy name
-   `ari_probe_marker_reject_a_client`, `mappingReady: true`, and
-   `grantsUnchanged: true`. A manifest with only enabled and function is
-   rejected. Project, client, and resource must match this TEST setup.
+   including URI and settings, and the effective F1 readback: restrictive
+   policy `ari_probe_marker_reject_a_client` on `public.ari_probe_marker`
+   for `select` to `authenticated`, the two distinct A client ids, forced
+   RLS, the owner-read policy, the current grants, and the current client
+   mappings. A name plus `mappingReady` or `grantsUnchanged` is not enough.
+   The same readback is compared after disable and after restore. A
+   manifest with only enabled and function is rejected. Project, client,
+   and resource must match this TEST setup.
 5. `disable_current_hook`. The packet arms restoration and writes a local
    recovery file before this line. Disable only the current hook. Reply
    that it is disabled, repeat the saved hook hash and function, and repeat
-   the unchanged F1 policy fields. A malformed, missing, or stale reply
-   still requires restore.
+   the unchanged effective F1 readback. A malformed, missing, or stale reply
+   still requires restore. A name-only or boolean policy reply does not.
 6. `restore_hook_configuration` carries the saved manifest, not only the
    hash. Restore that configuration exactly. Reply with the enabled
    manifest itself. The packet recomputes the hash from that readback.
@@ -61,13 +74,28 @@ bearer, code, or admin key.
 
 N6 passes only when a cryptographically verified hook-off A for the same
 synthetic owner returns HTTP 200 with an empty marker, the owner marker
-was read, the session is live, cleanup and the restored hook both hold,
-and the signed A canary holds. HTTP 401, HTTP 403, HTTP 500, an expired
-token, and a permission denial are inconclusive. Rows showing the marker
-are not a denial. Hook-off A is not sent through User MCP.
+text is exactly `ari-probe-marker-` plus this TEST project ref and its
+`owner_id` is that verified owner, the session is live, the effective F1
+readback is unchanged, cleanup and the restored hook both hold, and the
+signed A canary holds. Verified tokens must carry `exp`, `iat`, `sub`,
+and the role, client, and session claims for that token. HTTP 401, HTTP
+403, HTTP 500, an expired token, a same-format wrong marker, and a
+permission denial are inconclusive. Rows showing the marker are not a
+denial. Hook-off A is not sent through User MCP.
 
-N8 unbound, wrong state, and replay use a legitimate native B code.
-PKCE `invalid_grant` is labeled on its own and is not binding proof.
+If a token request times out or is aborted after it was sent, and no
+session id came back, issuance is `unresolved`. The packet asks for
+`reconcile_unresolved_issuance` for those attempt ids only. That is not
+permission to list or delete baseline sessions. `cleanupStatus` stays
+`unresolved`. A late token that does arrive is ledgered and cleaned
+before the receipt.
+
+N8 callback transport cases stay in the row. They do not pass N8 by
+themselves. The gate also needs a legitimate signed native B that is
+either left unbound or refused at binding, with the real PKCE exchange.
+On a non-loopback issuer those signed-B cases stay `not_executed` and N8
+stays incomplete. PKCE `invalid_grant` is labeled on its own and is not
+binding proof.
 An issuer or service failure is not binding proof. Callback HTTP 500 is
 not a redirect-mismatch pass. After a successful bind, replay must leave
 that binding and session in place. N7 records the consent flow it actually

@@ -22,6 +22,7 @@ import {
   performLoopbackConsent,
   runOpenIdNegative,
 } from '../docs/evidence/ari-test-probe/consent-harness.mjs';
+import { SYNTHETIC_EMAIL } from '../docs/evidence/ari-test-probe/decisions.mjs';
 import { assertIpcHasNoSecrets } from './ari-test-external-client.mjs';
 import {
   controllerGate,
@@ -41,8 +42,9 @@ const GATE_NAMES = Object.freeze({
 const SESSION_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;
 const SHA256 = /^[0-9a-f]{64}$/;
 const SAFE_CODE = /^[a-z0-9_]{1,64}$/;
-const CANARY = /^ari-probe-marker-[a-z0-9]{20}$/u;
+const PROJECT_REF = /^[a-z0-9]{20}$/u;
 const HOOK_FUNCTION = 'ari_probe.custom_access_token_hook';
+const F1_NAME = 'ari_probe_marker_reject_a_client';
 const HOOK_URI = /^(?:pg-functions|https):\/\/[A-Za-z0-9._~:/?#-]{1,180}$/u;
 const HOOK_FIELDS = Object.freeze([
   'agentId',
@@ -187,14 +189,16 @@ export function classifyMarkerProbe(status, bodyText) {
     if (parsed.length === 0) {
       return { ok: true, denial: true, rows: 0, httpStatus: 200, category: 'rls_empty' };
     }
-    const marker = parsed.length === 1 ? parsed[0]?.marker : undefined;
+    const row = parsed.length === 1 ? parsed[0] : undefined;
+    const marker = typeof row?.marker === 'string' ? row.marker : null;
     return {
       ok: true,
       denial: false,
       rows: parsed.length,
       httpStatus: 200,
       category: 'rows',
-      markerMatched: typeof marker === 'string' && CANARY.test(marker),
+      marker,
+      ownerId: safeUuid(row?.owner_id) ?? null,
     };
   }
   return { ok: false, denial: false, rows: null, httpStatus: status, reason: 'inconclusive' };
@@ -274,9 +278,10 @@ export function nGatesPlan() {
       'Baseline A /callback remains the consent-harness profile where that profile is used.',
       'N3 presents one genuine signed A, unmodified, under one local verifier mismatch at a time. Reauthorization stays off.',
       'N7 sends openid for external A and mapped B, both consent branches. Only exchange HTTP 403 openid_scope_refused with no token is a hook-policy pass.',
-      'N8 uses the real callback. Unbound, unknown state, replay, mismatched binding, and redirect mismatch are denials. Cross-user B is N2.',
-      'N2: create one run-owned second synthetic user, type continue, then delete that user after cleanup. The child never receives the password.',
-      'N6: read back the full enabled hook configuration, prove same-owner B can read the marker, arm restoration, then disable only that hook.',
+      'N8 keeps callback transport cases, and passes only with a legitimate signed B that the grant store refuses to bind. Transport evidence alone is incomplete.',
+      'N2: create one run-owned second synthetic user distinct from the verified baseline, then delete that user only after cleanup. The child never receives the password.',
+      'Cleanup readbacks must be a bijection of the requested session ids. A duplicate or omitted id is not confirmation.',
+      'N6: read back the enabled hook and the effective restrictive F1, prove the exact owner marker for the verified owner, arm restoration, then disable only that hook.',
       'Hook-off A is verified with issuer and JWKS before the marker read. HTTP 401, HTTP 403, and HTTP 500 are inconclusive.',
       'Clean every minted auth session, with sessions and refresh rows at zero, then restore the saved configuration and canary.',
       'Restore stays armed until the readback hash matches the saved configuration. A failed readback is pending or failed, never not_required.',
@@ -440,31 +445,116 @@ function markRejected(ledger, sessionId) {
   if (row !== undefined) row.rejected = true;
 }
 
-function sameIdSet(left, right) {
-  if (!Array.isArray(left) || !Array.isArray(right) || left.length !== right.length) return false;
-  const seen = new Set(right);
-  return left.every((id) => seen.has(id));
+export function exactIdBijection(left, right) {
+  const unique = (values) => {
+    if (!Array.isArray(values)) return null;
+    const ids = [];
+    const seen = new Set();
+    for (const value of values) {
+      const id = safeUuid(value);
+      if (id === undefined || seen.has(id)) return null;
+      seen.add(id);
+      ids.push(id);
+    }
+    return ids;
+  };
+  const first = unique(left);
+  const second = unique(right);
+  if (first === null || second === null || first.length !== second.length) return false;
+  const members = new Set(second);
+  return first.every((id) => members.has(id));
 }
 
-function ledgerFetch(ledger, cursor, inner = globalThis.fetch) {
-  return async (input, init) => {
-    const response = await inner(input, init);
-    const method = init?.method ?? 'GET';
-    const url = String(input);
-    if (
-      method === 'POST' &&
-      (url.includes('/oauth/token') || url.includes('grant_type=password'))
-    ) {
-      try {
-        const parsed = await response.clone().json();
-        if (typeof parsed?.access_token === 'string') {
-          noteAccessToken(ledger, cursor.gate, parsed.access_token, url);
+function createIssuanceTracker(ledger, cursor, signal) {
+  const pending = new Set();
+  const controllers = new Set();
+  const attempts = [];
+  const abort = () => {
+    for (const controller of controllers) controller.abort();
+  };
+  signal.onAbort(abort);
+  return {
+    abort,
+    wrap(inner = globalThis.fetch) {
+      return async (input, init) => {
+        const gate = cursor.gate;
+        const controller = new AbortController();
+        controllers.add(controller);
+        const parent = init?.signal;
+        const onParent = () => controller.abort();
+        if (parent !== undefined) {
+          if (parent.aborted) controller.abort();
+          else parent.addEventListener('abort', onParent, { once: true });
         }
-      } catch {
-        // Issuance that does not return a token is not a session id.
+        const url = String(input);
+        const method = init?.method ?? 'GET';
+        const issuance =
+          method === 'POST' &&
+          (url.includes('/oauth/token') || url.includes('grant_type=password'));
+        const attempt = {
+          gate,
+          requestId: freshRequestId(),
+          issuance,
+          sawResponse: false,
+        };
+        if (issuance) attempts.push(attempt);
+        const run = (async () => {
+          try {
+            const response = await inner(input, { ...init, signal: controller.signal });
+            if (issuance) {
+              attempt.sawResponse = true;
+              try {
+                const parsed = await response.clone().json();
+                if (typeof parsed?.access_token === 'string') {
+                  noteAccessToken(ledger, gate, parsed.access_token, url);
+                }
+              } catch {
+                // A definitive response without a token is not a session id.
+              }
+            }
+            return response;
+          } finally {
+            controllers.delete(controller);
+            if (parent !== undefined) parent.removeEventListener('abort', onParent);
+          }
+        })();
+        pending.add(run);
+        void run.finally(() => pending.delete(run));
+        return run;
+      };
+    },
+    async settle(graceMs) {
+      const deadline = Date.now() + graceMs;
+      while (pending.size > 0 && Date.now() < deadline) {
+        const current = [...pending];
+        await Promise.race([
+          Promise.allSettled(current),
+          new Promise((resolve) => {
+            setTimeout(resolve, Math.max(0, deadline - Date.now()));
+          }),
+        ]);
       }
-    }
-    return response;
+      if (pending.size > 0) abort();
+      await Promise.allSettled([...pending]);
+    },
+    attempted() {
+      return attempts.length > 0;
+    },
+    ambiguous() {
+      return attempts.some((row) => row.issuance && row.sawResponse !== true);
+    },
+    unresolvedGates() {
+      return [
+        ...new Set(
+          attempts.filter((row) => row.issuance && row.sawResponse !== true).map((row) => row.gate),
+        ),
+      ];
+    },
+    unresolvedAttemptIds() {
+      return attempts
+        .filter((row) => row.issuance && row.sawResponse !== true)
+        .map((row) => row.requestId);
+    },
   };
 }
 
@@ -502,7 +592,9 @@ function clearRecovery(state) {
 function createSignal() {
   let signaled = false;
   let waiter;
+  const aborters = new Set();
   const onSignal = () => {
+    for (const abort of aborters) abort();
     if (waiter !== undefined) {
       const current = waiter;
       waiter = undefined;
@@ -524,16 +616,37 @@ function createSignal() {
         waiter = () => reject(coded('signal_received'));
       });
     },
+    onAbort(abort) {
+      aborters.add(abort);
+    },
     dispose() {
       process.off('SIGINT', onSignal);
       process.off('SIGTERM', onSignal);
       waiter = undefined;
+      aborters.clear();
     },
   };
 }
 
+function freshRequestId() {
+  const id = randomUUID();
+  if (safeUuid(id) === undefined) throw coded('live_configuration_incomplete');
+  return id;
+}
+
+function assertCorrelated(parsed, action) {
+  if (parsed?.runId !== action.runId || parsed?.action !== action.action) {
+    throw coded('readback_stale');
+  }
+  if (parsed.requestId !== action.requestId || safeUuid(parsed.requestId) === undefined) {
+    throw coded('readback_stale');
+  }
+  if (action.gate !== undefined && parsed.gate !== action.gate) throw coded('readback_stale');
+}
+
 async function pauseForContinue(reader, action, timeoutMs, signal) {
-  writeJson({ type: 'controller_action', ...action });
+  const message = { ...action, requestId: freshRequestId() };
+  writeJson({ type: 'controller_action', ...message });
   const line = await withTimeout(reader.next(), timeoutMs, signal);
   let parsed;
   try {
@@ -543,18 +656,14 @@ async function pauseForContinue(reader, action, timeoutMs, signal) {
     throw coded('readback_malformed');
   }
   assertIpcHasNoSecrets(parsed);
-  if (
-    parsed?.type !== 'continue' ||
-    parsed.runId !== action.runId ||
-    parsed.action !== action.action
-  ) {
-    throw coded('readback_stale');
-  }
+  if (parsed?.type !== 'continue') throw coded('readback_stale');
+  assertCorrelated(parsed, message);
   return parsed;
 }
 
 async function pauseForReadback(reader, action, timeoutMs, signal) {
-  writeJson({ type: 'controller_action', ...action });
+  const message = { ...action, requestId: freshRequestId() };
+  writeJson({ type: 'controller_action', ...message });
   const line = await withTimeout(reader.next(), timeoutMs, signal);
   if (typeof line !== 'string' || line.length === 0) throw coded('readback_required');
   let parsed;
@@ -565,8 +674,7 @@ async function pauseForReadback(reader, action, timeoutMs, signal) {
   }
   assertIpcHasNoSecrets(parsed);
   if (parsed?.type !== 'readback') throw coded('readback_required');
-  if (parsed.runId !== action.runId || parsed.action !== action.action)
-    throw coded('readback_stale');
+  assertCorrelated(parsed, message);
   return parsed;
 }
 
@@ -1143,7 +1251,152 @@ async function runN8(env, _ledger, timeoutMs, ctx) {
   } finally {
     await stopExternalRuntime(replay);
   }
-  return subcaseRow('N8', subcases, 'callback_transport');
+
+  if (!loopbackSupabase(env.ARI_TEST_SUPABASE_URL)) {
+    subcases.push(
+      { id: 'signed_b_unbound', executed: false, pass: false, reason: 'not_executed' },
+      { id: 'signed_b_mismatch', executed: false, pass: false, reason: 'not_executed' },
+    );
+  } else {
+    const unboundCounter = { exchanges: 0 };
+    const counting = countFetch(unboundCounter, ctx.fetch);
+    const unboundSigned = await startExternalRuntime(runtimeEnv, {
+      spawnChild: false,
+      captureDownstreamCode: true,
+      fetch: ctx.fetch,
+    });
+    try {
+      const issuedA = await withTimeout(
+        obtainGrant(unboundSigned, env, 'external_a', {}, counting),
+        timeoutMs,
+        ctx.signal,
+      );
+      const verifiedA = await verifyJwt(issuedA.accessToken, env, {
+        audience: env.ARI_EXTERNAL_MCP_URL,
+        role: 'mcp_ingress',
+        clientId: env.ARI_EXTERNAL_A_CLIENT_ID,
+        agentId: env.ARI_AGENT_ID,
+        requireSource: true,
+      });
+      const opened = await presentOnce(env.ARI_EXTERNAL_MCP_URL, issuedA.accessToken);
+      const before = unboundCounter.exchanges;
+      const issuedB = await withTimeout(
+        obtainGrant(unboundSigned, env, 'downstream_b', {}, counting),
+        timeoutMs,
+        ctx.signal,
+      );
+      const verifiedB = await verifyJwt(issuedB.accessToken, env, {
+        audience: 'authenticated',
+        role: 'authenticated',
+        clientId: env.ARI_DOWNSTREAM_CLIENT_ID,
+        agentId: env.ARI_AGENT_ID,
+      });
+      const again = await presentOnce(env.ARI_EXTERNAL_MCP_URL, issuedA.accessToken);
+      const pass =
+        opened.error === 'downstream_authorization_required' &&
+        unboundCounter.exchanges === before + 1 &&
+        verifiedB.sub === verifiedA.sub &&
+        verifiedB.sessionId !== verifiedA.sessionId &&
+        again.error === 'downstream_authorization_required' &&
+        again.authorizationUrl !== undefined &&
+        unboundSigned.observation.bSessionId === null &&
+        unboundSigned.observation.markerReads === 0;
+      subcases.push({
+        id: 'signed_b_unbound',
+        executed: true,
+        pass,
+        reason: pass ? 'signed_b_not_stored' : 'inconclusive',
+      });
+    } catch (error) {
+      subcases.push({
+        id: 'signed_b_unbound',
+        executed: true,
+        pass: false,
+        reason: safeCode(error?.code ?? 'inconclusive'),
+      });
+    } finally {
+      await stopExternalRuntime(unboundSigned);
+    }
+
+    const mismatchCounter = { exchanges: 0 };
+    const mismatchFacts = [];
+    const mismatchFetch = countFetch(mismatchCounter, async (input, init) => {
+      const url = String(input);
+      if (!url.includes('/oauth/token')) return ctx.fetch(input, init);
+      const headers = new Headers(init?.headers ?? {});
+      headers.set('x-ari-probe-b-claim', 'agent-mismatch');
+      return ctx.fetch(input, { ...init, headers });
+    });
+    const mismatched = await startExternalRuntime(runtimeEnv, {
+      spawnChild: false,
+      fetch: mismatchFetch,
+      onGrantFact(fact) {
+        mismatchFacts.push(fact);
+      },
+    });
+    try {
+      const issued = await withTimeout(
+        obtainGrant(mismatched, env, 'external_a', {}, ctx.fetch),
+        timeoutMs,
+        ctx.signal,
+      );
+      const opened = await presentOnce(env.ARI_EXTERNAL_MCP_URL, issued.accessToken);
+      if (opened.authorizationUrl === undefined) {
+        subcases.push({
+          id: 'signed_b_mismatch',
+          executed: true,
+          pass: false,
+          reason: 'inconclusive',
+        });
+      } else {
+        const before = mismatchCounter.exchanges;
+        await withTimeout(
+          consentUrl(env, opened.authorizationUrl, {}, ctx.fetch),
+          timeoutMs,
+          ctx.signal,
+        );
+        const fact = mismatchFacts.find((row) => row.event === 'exchange_rejected');
+        const pass =
+          fact !== undefined &&
+          fact.subjectMismatch === false &&
+          fact.failureClass === undefined &&
+          safeUuid(fact.sessionId) !== undefined &&
+          mismatchCounter.exchanges === before + 1 &&
+          mismatchFacts.every((row) => row.event !== 'bound') &&
+          mismatched.observation.bSessionId === null &&
+          mismatched.observation.markerReads === 0;
+        subcases.push({
+          id: 'signed_b_mismatch',
+          executed: true,
+          pass,
+          reason: pass ? 'binding_rejected' : 'inconclusive',
+        });
+      }
+    } catch (error) {
+      subcases.push({
+        id: 'signed_b_mismatch',
+        executed: true,
+        pass: false,
+        reason: safeCode(error?.code ?? 'inconclusive'),
+      });
+    } finally {
+      await stopExternalRuntime(mismatched);
+    }
+  }
+  const signed = subcases.filter(
+    (row) => row.id === 'signed_b_unbound' || row.id === 'signed_b_mismatch',
+  );
+  const signedHeld =
+    signed.length === 2 && signed.every((row) => row.executed === true && row.pass === true);
+  const pass = signedHeld && subcases.every((row) => row.pass === true);
+  return {
+    id: 'N8',
+    name: GATE_NAMES.N8,
+    executed: true,
+    pass,
+    label: pass ? 'signed_b_refused' : 'n8_incomplete',
+    subcases,
+  };
 }
 
 function gateIds(ledger, cleared, gate) {
@@ -1175,10 +1428,11 @@ async function confirmCleanup(reader, ctx, timeoutMs, gate) {
   if (readback.sessionsRows !== 0 || readback.refreshRows !== 0) {
     throw coded('cleanup_unconfirmed');
   }
-  if (!Array.isArray(readback.sessionIds) || !sameIdSet(readback.sessionIds, ids)) {
-    throw coded('cleanup_unconfirmed');
+  if (!exactIdBijection(readback.sessionIds, ids)) throw coded('cleanup_unconfirmed');
+  for (const id of ids) {
+    if (!readback.sessionIds.includes(id)) throw coded('cleanup_unconfirmed');
+    ctx.cleared.add(id);
   }
-  for (const id of ids) ctx.cleared.add(id);
   return 'confirmed';
 }
 
@@ -1199,8 +1453,14 @@ async function runN2(env, ledger, reader, timeoutMs, ctx) {
     ctx.signal,
   );
   const secondUserId = safeUuid(prepared.secondUserId);
-  if (secondUserId === undefined) throw coded('second_user_required');
-  ctx.secondUserId = secondUserId;
+  if (
+    secondUserId === undefined ||
+    prepared.createdForRun !== true ||
+    prepared.email !== env.ARI_N2_SECOND_EMAIL ||
+    prepared.email === SYNTHETIC_EMAIL
+  ) {
+    throw coded('second_user_unverified');
+  }
   const runtimeEnv = { ...env, ARI_LANE_B_EXECUTE: '1' };
   const facts = [];
   const runtime = await startExternalRuntime(runtimeEnv, {
@@ -1211,12 +1471,21 @@ async function runN2(env, ledger, reader, timeoutMs, ctx) {
     },
   });
   let crossPass = false;
+  let baselineSub;
+  let crossSubject;
   try {
     const issued = await withTimeout(
       obtainGrant(runtime, env, 'external_a', {}, ctx.fetch),
       timeoutMs,
       ctx.signal,
     );
+    const baseline = await verifyJwt(issued.accessToken, env, {
+      audience: env.ARI_EXTERNAL_MCP_URL,
+      role: 'mcp_ingress',
+      clientId: env.ARI_EXTERNAL_A_CLIENT_ID,
+      agentId: env.ARI_AGENT_ID,
+      requireSource: true,
+    });
     const opened = await presentOnce(env.ARI_EXTERNAL_MCP_URL, issued.accessToken);
     if (opened.authorizationUrl === undefined) throw coded('handshake_missing');
     if (new URL(opened.authorizationUrl).searchParams.get('resource') !== null) {
@@ -1236,6 +1505,8 @@ async function runN2(env, ledger, reader, timeoutMs, ctx) {
       ctx.signal,
     );
     const fact = facts.find((row) => row.subjectMismatch === true);
+    baselineSub = baseline.sub;
+    crossSubject = safeUuid(fact?.sub);
     markRejected(ledger, fact?.sessionId);
     const again = await presentOnce(env.ARI_EXTERNAL_MCP_URL, issued.accessToken);
     const user1Resolved = again.error !== 'downstream_authorization_required';
@@ -1249,7 +1520,7 @@ async function runN2(env, ledger, reader, timeoutMs, ctx) {
       livenessChecks: runtime.observation.livenessChecks,
       markerReads: runtime.observation.markerReads,
       user1Resolved,
-      user1Sub: issued.claims?.sub,
+      user1Sub: baseline.sub,
       secondUserId,
       exchangeError: fact?.failureClass === 'invalid_grant' ? 'invalid_grant' : undefined,
     });
@@ -1289,20 +1560,26 @@ async function runN2(env, ledger, reader, timeoutMs, ctx) {
   } finally {
     await stopExternalRuntime(positive);
   }
+  if (baselineSub !== undefined && secondUserId !== baselineSub && crossSubject === secondUserId) {
+    ctx.deletionEligible = true;
+    ctx.eligibleSecondUserId = secondUserId;
+  }
   await confirmCleanup(reader, ctx, timeoutMs, 'N2');
-  const deleted = await pauseForContinue(
-    reader,
-    {
-      runId: ctx.runId,
-      action: 'delete_second_synthetic_user',
-      gate: 'N2',
-      secondUserId,
-    },
-    timeoutMs,
-    ctx.signal,
-  );
-  if (deleted.secondUserId !== secondUserId) throw coded('readback_stale');
-  ctx.secondDeleted = true;
+  if (ctx.deletionEligible === true && ctx.eligibleSecondUserId !== undefined) {
+    const deleted = await pauseForContinue(
+      reader,
+      {
+        runId: ctx.runId,
+        action: 'delete_second_synthetic_user',
+        gate: 'N2',
+        secondUserId: ctx.eligibleSecondUserId,
+      },
+      timeoutMs,
+      ctx.signal,
+    );
+    if (deleted.secondUserId !== ctx.eligibleSecondUserId) throw coded('readback_stale');
+    ctx.secondDeleted = true;
+  }
   return subcaseRow(
     'N2',
     [
@@ -1325,7 +1602,10 @@ async function runN2(env, ledger, reader, timeoutMs, ctx) {
 
 async function probeMarker(env, token, timeoutMs) {
   const target = new URL(MARKER_PATH, new URL(env.ARI_TEST_SUPABASE_URL).origin);
-  if (target.pathname !== '/rest/v1/ari_probe_marker' || target.search !== '?select=marker') {
+  if (
+    target.pathname !== '/rest/v1/ari_probe_marker' ||
+    target.search !== '?select=marker,owner_id'
+  ) {
     throw coded('marker_path_refused');
   }
   let response;
@@ -1346,7 +1626,127 @@ async function probeMarker(env, token, timeoutMs) {
   return classifyMarkerProbe(response.status, await response.text());
 }
 
-const MARKER_PATH = '/rest/v1/ari_probe_marker?select=marker';
+const MARKER_PATH = '/rest/v1/ari_probe_marker?select=marker,owner_id';
+
+function expectedOwnerMarker(projectRef) {
+  if (typeof projectRef !== 'string' || !PROJECT_REF.test(projectRef)) return null;
+  return `ari-probe-marker-${projectRef}`;
+}
+
+function ownerMarkerHeld(probe, projectRef, ownerId) {
+  const marker = expectedOwnerMarker(projectRef);
+  return (
+    marker !== null &&
+    probe?.rows === 1 &&
+    probe?.httpStatus === 200 &&
+    probe?.marker === marker &&
+    ownerId !== undefined &&
+    probe?.ownerId === ownerId
+  );
+}
+
+function grantRecord(row) {
+  if (row === null || typeof row !== 'object' || Array.isArray(row)) return null;
+  if (typeof row.role !== 'string' || typeof row.privilege !== 'string') return null;
+  if (typeof row.table !== 'string' || typeof row.allowed !== 'boolean') return null;
+  return {
+    allowed: row.allowed,
+    privilege: row.privilege,
+    role: row.role,
+    table: row.table,
+  };
+}
+
+function mappingRecord(row) {
+  if (row === null || typeof row !== 'object' || Array.isArray(row)) return null;
+  if (typeof row.clientId !== 'string' || row.clientId.length === 0) return null;
+  if (typeof row.resource !== 'string' || row.resource.length === 0) return null;
+  if (typeof row.agentId !== 'string' || typeof row.probeLabel !== 'string') return null;
+  return {
+    agentId: row.agentId,
+    clientId: row.clientId,
+    probeLabel: row.probeLabel,
+    resource: row.resource,
+  };
+}
+
+function policySnapshot(readback, env, baselineClientId) {
+  const external = env.ARI_EXTERNAL_A_CLIENT_ID;
+  const agentId = env.ARI_AGENT_ID;
+  const resource = env.ARI_EXTERNAL_MCP_URL;
+  if (typeof baselineClientId !== 'string' || baselineClientId.length === 0) return null;
+  if (typeof external !== 'string' || external.length === 0 || external === baselineClientId) {
+    return null;
+  }
+  if (typeof agentId !== 'string' || typeof resource !== 'string' || resource.length === 0) {
+    return null;
+  }
+  const f1 = readback?.f1;
+  if (f1 === null || typeof f1 !== 'object' || Array.isArray(f1)) return null;
+  if (f1.name !== F1_NAME || f1.schema !== 'public' || f1.table !== 'ari_probe_marker') return null;
+  if (f1.command !== 'select' || f1.kind !== 'restrictive') return null;
+  if (!Array.isArray(f1.roles) || f1.roles.length !== 1 || f1.roles[0] !== 'authenticated') {
+    return null;
+  }
+  if (!Array.isArray(f1.distinctClientIds)) return null;
+  const clients = [...f1.distinctClientIds].sort();
+  const expectedClients = [baselineClientId, external].sort();
+  if (
+    clients.length !== expectedClients.length ||
+    clients.some((id, index) => id !== expectedClients[index])
+  ) {
+    return null;
+  }
+  const rls = readback.rls;
+  if (
+    rls?.schema !== 'public' ||
+    rls?.table !== 'ari_probe_marker' ||
+    rls?.enabled !== true ||
+    rls?.forced !== true
+  ) {
+    return null;
+  }
+  const owner = readback.ownerPolicy;
+  if (
+    owner?.name !== 'ari_probe_marker_owner_read' ||
+    owner?.kind !== 'permissive' ||
+    owner?.command !== 'select' ||
+    owner?.using !== 'auth.uid() = owner_id' ||
+    !Array.isArray(owner?.roles) ||
+    owner.roles.length !== 1 ||
+    owner.roles[0] !== 'authenticated'
+  ) {
+    return null;
+  }
+  if (!Array.isArray(readback.grants)) return null;
+  const grants = readback.grants.map(grantRecord);
+  if (grants.some((row) => row === null)) return null;
+  grants.sort((left, right) => JSON.stringify(left).localeCompare(JSON.stringify(right)));
+  const expectedGrants = [
+    { allowed: false, privilege: 'SELECT', role: 'anon', table: 'public.ari_probe_marker' },
+    { allowed: true, privilege: 'SELECT', role: 'authenticated', table: 'public.ari_probe_marker' },
+    { allowed: false, privilege: 'SELECT', role: 'mcp_ingress', table: 'public.ari_probe_marker' },
+    { allowed: false, privilege: 'SELECT', role: 'public', table: 'public.ari_probe_marker' },
+  ];
+  expectedGrants.sort((left, right) => JSON.stringify(left).localeCompare(JSON.stringify(right)));
+  if (JSON.stringify(grants) !== JSON.stringify(expectedGrants)) return null;
+  if (!Array.isArray(readback.mappings) || readback.mappings.length !== 2) return null;
+  const mappings = readback.mappings.map(mappingRecord);
+  if (mappings.some((row) => row === null)) return null;
+  const baseline = mappings.find((row) => row.probeLabel === 'ari-test-synthetic');
+  const externalRow = mappings.find((row) => row.probeLabel === 'ari-test-external-a');
+  if (baseline === undefined || externalRow === undefined) return null;
+  if (baseline.clientId !== baselineClientId || baseline.agentId !== agentId) return null;
+  if (externalRow.clientId !== external || externalRow.agentId !== agentId) return null;
+  if (externalRow.resource !== resource || baseline.resource === externalRow.resource) return null;
+  return JSON.stringify({
+    baselineResource: baseline.resource,
+    distinctClientIds: expectedClients,
+    externalResource: externalRow.resource,
+    grants,
+    ownerUsing: owner.using,
+  });
+}
 
 function hookBound(env) {
   return {
@@ -1357,14 +1757,6 @@ function hookBound(env) {
   };
 }
 
-function policyHeld(readback) {
-  return (
-    readback?.f1Policy === 'ari_probe_marker_reject_a_client' &&
-    readback?.mappingReady === true &&
-    readback?.grantsUnchanged === true
-  );
-}
-
 async function verifyJwt(token, env, checks) {
   let keys;
   try {
@@ -1373,17 +1765,29 @@ async function verifyJwt(token, env, checks) {
     throw coded('hook_off_unverified');
   }
   const issuer = new URL('/auth/v1', new URL(env.ARI_TEST_SUPABASE_URL).origin).toString();
+  const requiredClaims = ['exp', 'iat', 'sub', 'role', 'client_id', 'session_id'];
+  if (checks.agentId !== null) requiredClaims.push('agent_id');
+  if (checks.requireSource === true) requiredClaims.push('source_session_id');
   let payload;
   try {
     const verified = await jwtVerify(token, keys, {
       issuer,
       audience: checks.audience,
       algorithms: ['ES256', 'RS256', 'EdDSA'],
+      requiredClaims,
     });
     payload = verified.payload;
   } catch {
     throw coded('hook_off_unverified');
   }
+  if (typeof payload.exp !== 'number' || !Number.isSafeInteger(payload.exp)) {
+    throw coded('hook_off_unverified');
+  }
+  if (typeof payload.iat !== 'number' || !Number.isSafeInteger(payload.iat)) {
+    throw coded('hook_off_unverified');
+  }
+  if (payload.exp <= payload.iat) throw coded('hook_off_unverified');
+  if (payload.iat * 1000 > Date.now() + 60_000) throw coded('hook_off_unverified');
   if (payload.role !== checks.role) throw coded('hook_off_unverified');
   if (payload.client_id !== checks.clientId) throw coded('hook_off_unverified');
   if (checks.agentId === null) {
@@ -1427,7 +1831,7 @@ async function liveOwner(env, token, sub) {
   return response.status === 200 && body?.id === sub;
 }
 
-async function restoreHook(reader, state, timeoutMs, signal, bound) {
+async function restoreHook(reader, state, timeoutMs, signal, bound, env) {
   const readback = await pauseForReadback(
     reader,
     {
@@ -1451,7 +1855,7 @@ async function restoreHook(reader, state, timeoutMs, signal, bound) {
     readback.hookEnabled !== true ||
     restored !== state.hash ||
     readback.function !== HOOK_FUNCTION ||
-    !policyHeld(readback)
+    policySnapshot(readback, env, state.baselineClientId) !== state.policy
   ) {
     state.mismatch = true;
     throw coded('hook_restore_mismatch');
@@ -1477,10 +1881,14 @@ async function runN6(env, _ledger, reader, timeoutMs, restoreState, ctx) {
     timeoutMs,
     ctx.signal,
   );
-  if (!policyHeld(captured)) throw coded('f1_readback_missing');
+  const baselineClientId = captured.hookManifest?.baselineClientId;
+  const policy = policySnapshot(captured, env, baselineClientId);
+  if (policy === null) throw coded('f1_readback_missing');
   const hash = hookManifestHash(captured.hookManifest, bound);
   restoreState.hash = hash;
   restoreState.manifest = captured.hookManifest;
+  restoreState.policy = policy;
+  restoreState.baselineClientId = baselineClientId;
   restoreState.projectRef = env.ARI_TEST_PROJECT_REF;
   restoreState.runId = ctx.runId;
   const runtimeEnv = { ...env, ARI_LANE_B_EXECUTE: '1' };
@@ -1510,7 +1918,7 @@ async function runN6(env, _ledger, reader, timeoutMs, restoreState, ctx) {
       verified = undefined;
     }
     const probe = await probeMarker(env, issued.accessToken, timeoutMs);
-    ownerMarker = probe.markerMatched === true && probe.rows === 1 && verified !== undefined;
+    ownerMarker = ownerMarkerHeld(probe, env.ARI_TEST_PROJECT_REF, verified?.sub);
     if (verified !== undefined) owner = { sub: verified.sub, bSessionId: verified.sessionId };
   } finally {
     await stopExternalRuntime(capture);
@@ -1540,7 +1948,7 @@ async function runN6(env, _ledger, reader, timeoutMs, restoreState, ctx) {
     disabled.hookEnabled !== false ||
     disabled.hookHash !== hash ||
     disabled.function !== HOOK_FUNCTION ||
-    !policyHeld(disabled)
+    policySnapshot(disabled, env, restoreState.baselineClientId) !== restoreState.policy
   ) {
     throw coded('hook_disable_mismatch');
   }
@@ -1582,7 +1990,7 @@ async function runN6(env, _ledger, reader, timeoutMs, restoreState, ctx) {
     await stopExternalRuntime(hookOffRuntime);
   }
   const cleaned = await confirmCleanup(reader, ctx, timeoutMs, 'N6');
-  await restoreHook(reader, restoreState, timeoutMs, ctx.signal, bound);
+  await restoreHook(reader, restoreState, timeoutMs, ctx.signal, bound, env);
   const canaryRuntime = await startExternalRuntime(runtimeEnv, {
     spawnChild: false,
     fetch: ctx.fetch,
@@ -1691,14 +2099,17 @@ export async function runNGates(env, stdin) {
   const reader = lineReader(stdin);
   const cursor = { gate: 'N3' };
   const signal = createSignal();
+  const issuance = createIssuanceTracker(ledger, cursor, signal);
   const ctx = {
     runId: randomUUID(),
     cursor,
     ledger,
     cleared: new Set(),
-    fetch: ledgerFetch(ledger, cursor),
+    fetch: issuance.wrap(globalThis.fetch),
     signal,
-    secondUserId: undefined,
+    issuance,
+    deletionEligible: false,
+    eligibleSecondUserId: undefined,
     secondDeleted: false,
   };
   const restoreState = {
@@ -1734,19 +2145,49 @@ export async function runNGates(env, stdin) {
     throw error;
   } finally {
     let cleanupStatus = 'not_required';
+    let issuanceStatus = 'not_required';
     try {
-      const leftover = gateIds(ledger, ctx.cleared);
-      if (leftover.length > 0) {
-        await confirmCleanup(reader, ctx, timeoutMs);
-        cleanupStatus = gateIds(ledger, ctx.cleared).length === 0 ? 'confirmed' : 'failed';
+      await ctx.issuance.settle(Math.min(Math.max(timeoutMs, 3_000), 5_000));
+      const ambiguous = ctx.issuance.ambiguous();
+      if (ambiguous) {
+        issuanceStatus = 'unresolved';
+        await pauseForReadback(
+          reader,
+          {
+            runId: ctx.runId,
+            action: 'reconcile_unresolved_issuance',
+            gate: ctx.cursor.gate,
+            gates: ctx.issuance.unresolvedGates(),
+            attemptIds: ctx.issuance.unresolvedAttemptIds(),
+          },
+          timeoutMs,
+          signal,
+        );
+        const known = gateIds(ledger, ctx.cleared);
+        if (known.length > 0) await confirmCleanup(reader, ctx, timeoutMs);
+        cleanupStatus = 'unresolved';
+      } else {
+        if (ctx.issuance.attempted()) issuanceStatus = 'resolved';
+        const leftover = gateIds(ledger, ctx.cleared);
+        if (leftover.length > 0) {
+          await confirmCleanup(reader, ctx, timeoutMs);
+          cleanupStatus = gateIds(ledger, ctx.cleared).length === 0 ? 'confirmed' : 'failed';
+        }
       }
     } catch {
-      cleanupStatus = 'failed';
+      if (ctx.issuance.ambiguous()) {
+        issuanceStatus = 'unresolved';
+        cleanupStatus = 'unresolved';
+      } else {
+        cleanupStatus = 'failed';
+      }
     }
     if (
-      ctx.secondUserId !== undefined &&
+      ctx.deletionEligible === true &&
+      ctx.eligibleSecondUserId !== undefined &&
       ctx.secondDeleted !== true &&
-      cleanupStatus !== 'failed'
+      cleanupStatus !== 'failed' &&
+      cleanupStatus !== 'unresolved'
     ) {
       try {
         const deleted = await pauseForContinue(
@@ -1755,19 +2196,19 @@ export async function runNGates(env, stdin) {
             runId: ctx.runId,
             action: 'delete_second_synthetic_user',
             gate: 'N2',
-            secondUserId: ctx.secondUserId,
+            secondUserId: ctx.eligibleSecondUserId,
           },
           timeoutMs,
           signal,
         );
-        if (deleted.secondUserId === ctx.secondUserId) ctx.secondDeleted = true;
+        if (deleted.secondUserId === ctx.eligibleSecondUserId) ctx.secondDeleted = true;
       } catch {
         ctx.secondDeleted = false;
       }
     }
     if (restoreState.needed && !restoreState.confirmed) {
       try {
-        await restoreHook(reader, restoreState, timeoutMs, signal, hookBound(env));
+        await restoreHook(reader, restoreState, timeoutMs, signal, hookBound(env), env);
       } catch (restoreError) {
         if (restoreState.mismatch !== true) restoreState.error = safeCode(restoreError?.code);
       }
@@ -1775,6 +2216,7 @@ export async function runNGates(env, stdin) {
     if (thrown !== undefined && thrown !== null && typeof thrown === 'object') {
       thrown.restoreStatus = restoreStatusOf(restoreState);
       thrown.cleanupStatus = cleanupStatus;
+      thrown.issuanceStatus = issuanceStatus;
       if (restoreState.locator !== undefined) thrown.recoveryLocator = restoreState.locator;
       thrown.runId = ctx.runId;
     }
@@ -1825,6 +2267,7 @@ async function main() {
       reason: safeCode(error?.code),
       restoreStatus: safeCode(error?.restoreStatus ?? 'not_required'),
       cleanupStatus: safeCode(error?.cleanupStatus ?? 'not_required'),
+      issuanceStatus: safeCode(error?.issuanceStatus ?? 'not_required'),
       ...(typeof error?.runId === 'string' ? { runId: error.runId } : {}),
       ...(typeof error?.recoveryLocator === 'string'
         ? { recoveryLocator: error.recoveryLocator }

@@ -16,6 +16,7 @@ import {
   callbackUriMismatchPass,
   classifyMarkerProbe,
   crossUserPass,
+  exactIdBijection,
   hookManifestHash,
   n6Pass,
   nGatesPlan,
@@ -138,6 +139,8 @@ test('plan stays closed and false passes stay false', () => {
       ),
     /hook_manifest_unreadable/,
   );
+  assert.equal(exactIdBijection([USER1, USER1], [USER1, USER2]), false);
+  assert.equal(exactIdBijection([USER2, USER1], [USER1, USER2]), true);
   assert.equal(classifyMarkerProbe(401, '{}').reason, 'inconclusive');
   assert.equal(classifyMarkerProbe(403, '{}').denial, false);
   assert.equal(
@@ -366,12 +369,15 @@ async function startIssuer(mode) {
               body.email === SYNTHETIC_EMAIL && body.password === PASSWORD
                 ? { sub: USER1 }
                 : body.email === EMAIL2 && body.password === PASSWORD2
-                  ? { sub: USER2 }
+                  ? { sub: mode === 'wrong_subject' ? USER1 : USER2 }
                   : undefined;
             if (user === undefined) {
               send(400, JSON.stringify({ error: 'invalid_grant' }));
               return;
             }
+            if (mode === 'hang_issuance') return;
+            if (mode === 'delay_password')
+              await new Promise((resolve) => setTimeout(resolve, 1300));
             passwordSerial += 1;
             const sessionId = `77777777-7777-4777-8777-${passwordSerial.toString(16).padStart(12, '0')}`;
             const access = await new SignJWT({ role: 'authenticated', session_id: sessionId })
@@ -432,7 +438,14 @@ async function startIssuer(mode) {
               send(503, JSON.stringify({ error: 'server_error' }));
               return;
             }
+            const mismatch = req.headers['x-ari-probe-b-claim'] === 'agent-mismatch';
             const tokenA = record.clientId === A_CLIENT;
+            if (mode === 'delay_oauth' && tokenA) {
+              await new Promise((resolve) => setTimeout(resolve, 1300));
+            }
+            if (mode === 'delay_rejected_b' && !tokenA && (record.sub ?? USER1) !== USER1) {
+              await new Promise((resolve) => setTimeout(resolve, 1300));
+            }
             const mintedSession = randomUUID();
             const sourceSession = randomUUID();
             const claims = tokenA
@@ -449,7 +462,7 @@ async function startIssuer(mode) {
                   role: 'authenticated',
                   client_id: B_CLIENT,
                   session_id: mintedSession,
-                  agent_id: AGENT,
+                  agent_id: mismatch && !tokenA ? 'other-agent' : AGENT,
                 };
             if (tokenA && hookEnabled) seen.decoySessionIds.push(mintedSession);
             const access = await new SignJWT(claims)
@@ -505,7 +518,19 @@ async function startIssuer(mode) {
           return;
         }
         if (clientId === B_CLIENT) {
-          send(200, JSON.stringify([{ marker: 'ari-probe-marker-odbcejsuuqdzhabjmozi' }]));
+          let subject = USER1;
+          try {
+            subject =
+              JSON.parse(Buffer.from(payload ?? '', 'base64url').toString('utf8')).sub ?? USER1;
+          } catch {
+            subject = USER1;
+          }
+          const marker =
+            mode === 'wrong_marker'
+              ? 'ari-probe-marker-zzzzzzzzzzzzzzzzzzzz'
+              : 'ari-probe-marker-odbcejsuuqdzhabjmozi';
+          const ownerId = mode === 'wrong_owner' ? USER2 : subject;
+          send(200, JSON.stringify([{ marker, owner_id: ownerId }]));
           return;
         }
         send(401, JSON.stringify({ error: 'unauthorized' }));
@@ -579,7 +604,14 @@ async function drive(mode, gates, fault = 'none') {
       ARI_N_GATES: gates,
       ARI_LANE_B_G5_HEAD: head,
       ARI_LANE_B_TIMEOUT_MS:
-        mode === 'hang-a-marker' || fault === 'timeout_disable' ? '1000' : '20000',
+        mode === 'hang-a-marker' ||
+        mode === 'delay_password' ||
+        mode === 'delay_oauth' ||
+        mode === 'delay_rejected_b' ||
+        mode === 'hang_issuance' ||
+        fault === 'timeout_disable'
+          ? '1000'
+          : '20000',
       ...(fault === 'callback_500' ? { ARI_N_GATES_SYNTHETIC_HTTP_STATUS: '500' } : {}),
       ARI_TEST_PROJECT_REF: 'odbcejsuuqdzhabjmozi',
       ARI_TEST_SUPABASE_URL: issuer.origin,
@@ -603,13 +635,66 @@ async function drive(mode, gates, fault = 'none') {
   let receipt;
   const actions = [];
   const messages = [];
-  const policyFields = {
-    f1Policy: 'ari_probe_marker_reject_a_client',
-    mappingReady: true,
-    grantsUnchanged: true,
-  };
+  const evidence = () => ({
+    f1: {
+      name: 'ari_probe_marker_reject_a_client',
+      schema: 'public',
+      table: 'ari_probe_marker',
+      command: 'select',
+      kind: 'restrictive',
+      roles: ['authenticated'],
+      distinctClientIds: ['baseline-a-client', A_CLIENT].sort(),
+    },
+    rls: { schema: 'public', table: 'ari_probe_marker', enabled: true, forced: true },
+    ownerPolicy: {
+      name: 'ari_probe_marker_owner_read',
+      kind: 'permissive',
+      command: 'select',
+      roles: ['authenticated'],
+      using: 'auth.uid() = owner_id',
+    },
+    grants: [
+      { role: 'anon', privilege: 'SELECT', table: 'public.ari_probe_marker', allowed: false },
+      {
+        role: 'authenticated',
+        privilege: 'SELECT',
+        table: 'public.ari_probe_marker',
+        allowed: true,
+      },
+      {
+        role: 'mcp_ingress',
+        privilege: 'SELECT',
+        table: 'public.ari_probe_marker',
+        allowed: false,
+      },
+      { role: 'public', privilege: 'SELECT', table: 'public.ari_probe_marker', allowed: false },
+    ],
+    mappings: [
+      {
+        clientId: 'baseline-a-client',
+        resource: 'https://odbcejsuuqdzhabjmozi.supabase.co/mcp',
+        agentId: AGENT,
+        probeLabel: 'ari-test-synthetic',
+      },
+      {
+        clientId: A_CLIENT,
+        resource: mcpResource,
+        agentId: AGENT,
+        probeLabel: 'ari-test-external-a',
+      },
+    ],
+  });
   const write = (value) => {
     proc.stdin.write(`${JSON.stringify(value)}\n`);
+  };
+  const correlated = (message, fields) => {
+    write({
+      runId: message.runId,
+      action: message.action,
+      requestId: message.requestId,
+      ...(message.gate === undefined ? {} : { gate: message.gate }),
+      ...fields,
+    });
   };
   try {
     while (receipt === undefined) {
@@ -635,28 +720,37 @@ async function drive(mode, gates, fault = 'none') {
         assert.equal(JSON.stringify(message).includes(REFRESH), false);
         if (message.action === 'capture_hook_manifest') {
           if (fault === 'minimal_manifest') {
-            write({
+            correlated(message, {
               type: 'readback',
-              runId: message.runId,
-              action: message.action,
               hookManifest: { enabled: true, function: manifest.function },
-              ...policyFields,
+              ...evidence(),
             });
           } else if (fault === 'foreign_manifest') {
-            write({
+            correlated(message, {
               type: 'readback',
-              runId: message.runId,
-              action: message.action,
               hookManifest: { ...manifest, projectRef: 'other-project-ref' },
-              ...policyFields,
+              ...evidence(),
+            });
+          } else if (fault === 'boolean_policy') {
+            correlated(message, {
+              type: 'readback',
+              hookManifest: manifest,
+              f1Policy: 'ari_probe_marker_reject_a_client',
+              mappingReady: true,
+              grantsUnchanged: true,
+            });
+          } else if (fault === 'altered_f1') {
+            correlated(message, {
+              type: 'readback',
+              hookManifest: manifest,
+              ...evidence(),
+              f1: { ...evidence().f1, kind: 'permissive' },
             });
           } else {
-            write({
+            correlated(message, {
               type: 'readback',
-              runId: message.runId,
-              action: message.action,
               hookManifest: manifest,
-              ...policyFields,
+              ...evidence(),
             });
           }
         } else if (message.action === 'disable_current_hook') {
@@ -675,21 +769,19 @@ async function drive(mode, gates, fault = 'none') {
               hookHash: hash,
               function: manifest.function,
               hookManifest: manifest,
-              ...policyFields,
+              ...evidence(),
             });
           } else if (fault === 'sigint') {
             proc.kill('SIGINT');
           } else if (fault === 'timeout_disable') {
             // Leave the disable readback unanswered so the runner times out armed.
           } else {
-            write({
+            correlated(message, {
               type: 'readback',
-              runId: message.runId,
-              action: message.action,
               hookEnabled: false,
               hookHash: hash,
               function: manifest.function,
-              ...policyFields,
+              ...evidence(),
             });
           }
         } else if (message.action === 'restore_hook_configuration') {
@@ -697,39 +789,45 @@ async function drive(mode, gates, fault = 'none') {
           assert.equal(message.hookManifest.function, manifest.function);
           assert.equal(message.hookManifest.uri, manifest.uri);
           issuer.setHook(true);
-          write({
+          const restored = evidence();
+          if (fault === 'altered_f1_restore') {
+            restored.grants = restored.grants.map((row) =>
+              row.role === 'anon' ? { ...row, allowed: true } : row,
+            );
+          }
+          correlated(message, {
             type: 'readback',
-            runId: message.runId,
-            action: message.action,
             hookEnabled: true,
             hookHash: hash,
             function: manifest.function,
             hookManifest: manifest,
-            ...policyFields,
+            ...restored,
           });
         } else if (message.action === 'cleanup_sessions') {
-          write({
+          const ids = Array.isArray(message.sessionIds) ? message.sessionIds : [];
+          correlated(message, {
             type: 'readback',
-            runId: message.runId,
-            action: message.action,
             sessionsRows: 0,
             refreshRows: 0,
-            sessionIds: message.sessionIds,
+            sessionIds:
+              fault === 'duplicate_cleanup' && ids.length > 1
+                ? Array(ids.length).fill(ids[0])
+                : ids,
           });
         } else if (message.action === 'prepare_second_synthetic_user') {
-          write({
+          correlated(message, {
             type: 'readback',
-            runId: message.runId,
-            action: message.action,
-            secondUserId: USER2,
+            secondUserId: fault === 'baseline_id' || fault === 'early_failure' ? USER1 : USER2,
+            ...(fault === 'early_failure' ? {} : { createdForRun: true }),
+            email: fault === 'same_email' ? SYNTHETIC_EMAIL : EMAIL2,
           });
         } else if (message.action === 'delete_second_synthetic_user') {
-          write({
+          correlated(message, {
             type: 'continue',
-            runId: message.runId,
-            action: message.action,
             secondUserId: message.secondUserId,
           });
+        } else if (message.action === 'reconcile_unresolved_issuance') {
+          correlated(message, { type: 'readback', reconciled: false });
         } else {
           assert.fail(`unhandled ${message.action}`);
         }
@@ -751,6 +849,7 @@ async function drive(mode, gates, fault = 'none') {
       head,
     };
   } finally {
+    issuer.https.closeAllConnections?.();
     issuer.https.close();
   }
 }
@@ -824,7 +923,7 @@ test('synthetic packet executes the remaining gates without hosted contact', asy
   );
   assert.equal(result.seen.forbidden, 0);
   assert.equal(
-    result.seen.marker.every((search) => search === '?select=marker'),
+    result.seen.marker.every((search) => search === '?select=marker,owner_id'),
     true,
   );
   assert.deepEqual(result.actions, [
@@ -1053,4 +1152,118 @@ test('unexpected N7 issuance is not policy proof and stays on the ledger', async
     true,
   );
   assert.equal(result.actions.includes('cleanup_sessions'), true);
+});
+
+test('duplicate cleanup ids are refused and do not delete a user', async () => {
+  const result = await drive('policy', 'N2', 'duplicate_cleanup');
+  assert.equal(result.code, 2);
+  assert.equal(result.receipt.acceptance, false);
+  assert.equal(result.receipt.reason, 'cleanup_unconfirmed');
+  assert.equal(result.receipt.cleanupStatus, 'failed');
+  assert.equal(result.actions.includes('cleanup_sessions'), true);
+  assert.equal(result.actions.includes('delete_second_synthetic_user'), false);
+  assert.equal(
+    result.messages.some((row) => row.secondUserId === USER1),
+    false,
+  );
+});
+
+test('baseline, same email, wrong subject, and early failure do not delete the baseline', async () => {
+  const baseline = await drive('policy', 'N2', 'baseline_id');
+  assert.equal(baseline.code, 2, baseline.errText);
+  assert.equal(baseline.receipt.acceptance, false);
+  assert.equal(baseline.receipt.rowsPass, false);
+  assert.equal(baseline.actions.includes('delete_second_synthetic_user'), false);
+  assert.equal(
+    baseline.messages.some((row) => row.secondUserId === USER1),
+    false,
+  );
+  const sameEmail = await drive('policy', 'N2', 'same_email');
+  assert.equal(sameEmail.code, 2);
+  assert.equal(sameEmail.receipt.reason, 'second_user_unverified');
+  assert.equal(sameEmail.actions.includes('delete_second_synthetic_user'), false);
+  assert.equal(sameEmail.seen.emails.length, 0);
+  const wrongSubject = await drive('wrong_subject', 'N2');
+  assert.equal(wrongSubject.code, 2, wrongSubject.errText);
+  assert.equal(wrongSubject.receipt.rowsPass, false);
+  assert.equal(wrongSubject.actions.includes('delete_second_synthetic_user'), false);
+  const early = await drive('policy', 'N2', 'early_failure');
+  assert.equal(early.code, 2);
+  assert.equal(early.receipt.reason, 'second_user_unverified');
+  assert.equal(early.actions.includes('delete_second_synthetic_user'), false);
+  assert.equal(early.seen.emails.length, 0);
+  assert.equal(early.receipt.issuanceStatus, 'not_required');
+});
+
+function issuanceCleanedBeforeReceipt(result) {
+  const cleanupAt = result.outText.indexOf('"action":"cleanup_sessions"');
+  const receiptAt = result.outText.indexOf('"type":"receipt"');
+  assert.equal(cleanupAt >= 0 && receiptAt > cleanupAt, true);
+  assert.equal(result.receipt.cleanupStatus, 'confirmed');
+  assert.notEqual(result.receipt.cleanupStatus, 'not_required');
+  assert.equal(result.receipt.issuanceStatus, 'resolved');
+  assert.equal(result.actions.includes('delete_second_synthetic_user'), false);
+}
+
+test('late password and oauth issuance are cleaned before the receipt', async () => {
+  const password = await drive('delay_password', 'N3');
+  assert.equal(password.code, 2, password.errText);
+  assert.equal(password.receipt.reason, 'orchestration_timeout');
+  issuanceCleanedBeforeReceipt(password);
+  assert.equal(
+    password.receipt.sessionLedger.some((row) => row.passwordSessionId),
+    true,
+  );
+  const oauth = await drive('delay_oauth', 'N3');
+  assert.equal(oauth.code, 2, oauth.errText);
+  assert.equal(oauth.receipt.reason, 'orchestration_timeout');
+  issuanceCleanedBeforeReceipt(oauth);
+  assert.equal(
+    oauth.receipt.sessionLedger.some((row) => row.sourceSessionId || row.authSessionId),
+    true,
+  );
+});
+
+test('aborted issuance stays unresolved and a late rejected B is cleaned', async () => {
+  const aborted = await drive('hang_issuance', 'N3');
+  assert.equal(aborted.code, 2, aborted.errText);
+  assert.equal(aborted.receipt.issuanceStatus, 'unresolved');
+  assert.equal(aborted.receipt.cleanupStatus, 'unresolved');
+  assert.notEqual(aborted.receipt.cleanupStatus, 'confirmed');
+  assert.notEqual(aborted.receipt.cleanupStatus, 'not_required');
+  assert.equal(aborted.actions.includes('reconcile_unresolved_issuance'), true);
+  assert.equal(aborted.actions.includes('delete_second_synthetic_user'), false);
+  const rejected = await drive('delay_rejected_b', 'N2');
+  assert.equal(rejected.code, 2, rejected.errText);
+  issuanceCleanedBeforeReceipt(rejected);
+  assert.equal(
+    rejected.receipt.sessionLedger.some((row) => row.bSessionId && row.sub === USER2),
+    true,
+  );
+  assert.equal(rejected.actions.includes('delete_second_synthetic_user'), false);
+});
+
+test('wrong marker, name-only policy, and altered F1 cannot pass N6', async () => {
+  for (const mode of ['wrong_marker', 'wrong_owner']) {
+    const result = await drive(mode, 'N6');
+    assert.equal(result.code, 2, mode);
+    assert.equal(result.receipt.acceptance, false);
+    const n6 = result.receipt.rows.find((row) => row.id === 'N6');
+    assert.equal(n6.pass, false, mode);
+    assert.equal(n6.subcases.find((row) => row.id === 'owner_read').pass, false, mode);
+    assert.equal(result.actions.includes('disable_current_hook'), false, mode);
+  }
+  for (const fault of ['boolean_policy', 'altered_f1']) {
+    const result = await drive('policy', 'N6', fault);
+    assert.equal(result.code, 2, fault);
+    assert.equal(result.receipt.reason, 'f1_readback_missing', fault);
+    assert.equal(result.actions.includes('disable_current_hook'), false, fault);
+    assert.equal(result.receipt.restoreStatus, 'not_required', fault);
+  }
+  const restored = await drive('policy', 'N6', 'altered_f1_restore');
+  assert.equal(restored.code, 2);
+  assert.equal(restored.receipt.reason, 'hook_restore_mismatch');
+  assert.equal(restored.receipt.restoreStatus, 'failed');
+  assert.equal(restored.actions.includes('disable_current_hook'), true);
+  assert.equal(restored.actions.includes('restore_hook_configuration'), true);
 });
