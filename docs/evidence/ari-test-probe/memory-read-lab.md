@@ -123,7 +123,7 @@ names `odbcejsuuqdzhabjmozi`.
 
 Ariadne's retained command is:
 
-```
+```bash
 ARI_MEMORY_LAB_EXECUTOR=ariadne node scripts/ari-memory-read-lab.mjs hosted \
   --manifest <reviewed-run-manifest.json> \
   --credentials <protected-credential-file.json>
@@ -148,22 +148,40 @@ nonsecret ids only. The credential file is separate and is not printed. It
 holds the publishable key, the public JWKS, and each user's password.
 A private JWK parameter is refused.
 
-Phases, in order: parse the manifest and credentials; take the shared
-controller lock; reconcile the reviewed head and tree; bind one loopback
-MCP listener at the manifest resource; for each user, password grant, Token
-A exchange, then the handler-driven Token B consent and callback; reconcile
-the immutable session ledger; call `memory_get`, `memory_list_recent`, and
-`memory_search` through that listener; emit seed and cleanup statements;
+`node scripts/ari-memory-read-lab.mjs prepare --manifest <reviewed-run-manifest.json>`
+reads that file and prints the seed and cleanup plan. It does not dial the
+network, does not require the executor, and does not check the worktree.
+The plan is available before any read. It asserts the baseline principals
+and the retained B client already match, and it does not insert them again.
+Membership and grant tuples are deduplicated per principal, client, and
+workspace. An existing row that does not match is a transactional
+`23505` collision. A missing or different baseline row is `baseline_mismatch`.
+Identical rows are preserved on a repeat run.
+
+Phases, in order: parse the manifest and credentials; build that plan; take
+the shared controller lock; reconcile the reviewed head and tree; bind one
+loopback MCP listener at the manifest resource; for each user, password
+grant with the publishable `apikey`, Token A on scope `email` through the
+hosted consent helper (first `approval_post`, later `already_consented_get`),
+then the handler-driven Token B consent; reconcile the password, source, and
+B session ledger; call `memory_get`, `memory_list_recent`, and
+`memory_search` through that listener for both users, including pagination,
+foreign get, owner search, empty foreign search, and cross-user cursors;
 release the lock. Password, token, consent, and MCP calls, including the
 response body, use the same abort deadline as the N-gate marker read.
 The retained path does not open PGlite, does not start a synthetic issuer,
 does not sign tokens, and does not clear sessions. Admin seed and ownership
-projection stay outside the data calls. The receipt's `seedStatements` are
-dependency ordered: principals, clients, memberships, grants, memories.
-`cleanupStatements` reverse that and delete only the run-owned memory,
-workspace, transient-client, and denied-principal keys. They do not delete
-the baseline principals or the retained B client. The read path does not
-execute either list.
+projection stay outside the data calls. `cleanupStatements` delete only the
+proved memory ids and the proved authorization keys. They do not delete by
+workspace string, and they do not delete the baseline principals or the
+retained B client. Token A's fresh `session_id` is a decoy observation.
+It is not a cleanup session. The read path does not execute the plan.
+`cleanupStatus` stays `unresolved` until a separate ownership-before, exact
+deletion, and after-zero receipt. A live attempt that times out, stalls, or
+receives SIGINT or SIGTERM still returns the issued ids and any unresolved
+issuance attempt ids. It does not replace that receipt with
+`hostedContact: false`. Exit 0 requires confirmed cleanup. `acceptance`
+stays false.
 
 An injected fetch may dial only `https://127.0.0.1` or `https://localhost`.
 Any `supabase.co` host, including the hosted ref, is `wrong_target` before

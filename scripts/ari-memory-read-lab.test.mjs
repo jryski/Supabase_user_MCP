@@ -11,17 +11,22 @@ import test from 'node:test';
 import {
   acquireControllerLock,
   assertLocalOnly,
+  BASELINE_ONLY_TOKEN,
   BASELINE_USER_ID,
   HOSTED_PROJECT_REF,
+  HOSTILE_SENTINEL,
+  hostedExitCode,
   hostedPreflight,
   installerSql,
   LOCAL_B_CLIENT_ID,
   openLabDatabase,
   rollbackSql,
   runLocalLab,
+  SECOND_ONLY_TOKEN,
   SECOND_USER_ID,
+  SHARED_TOKEN,
 } from './ari-memory-read-lab.mjs';
-import { runHostedController } from './ari-memory-read-lab-hosted.mjs';
+import { prepareRetainedPlan, runHostedController } from './ari-memory-read-lab-hosted.mjs';
 import { startRetainedTransportFixture } from './ari-memory-read-lab-retained-fixture.mjs';
 
 async function apply(db, sql) {
@@ -408,7 +413,9 @@ async function runCli(args, env) {
   return { code, stdout };
 }
 
-test('retained driver reaches auth and data reads and refuses a bad manifest', async () => {
+test('retained driver reaches auth and data reads and refuses a bad manifest', {
+  concurrency: false,
+}, async () => {
   const hostedSource = await readFile(
     new URL('./ari-memory-read-lab-hosted.mjs', import.meta.url),
     'utf8',
@@ -459,37 +466,68 @@ test('retained driver reaches auth and data reads and refuses a bad manifest', a
   const bClientId = 'a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d';
   const password = 'retained-fixture-password';
   const publishable = 'sb_publishable_retained_fixture_not_a_secret';
+  const runTag = 'run:11111111-1111-4111-8111-111111111111';
+  const retainedMemories = [
+    {
+      id: 'mem_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+      ownerId: baseline,
+      title: 'baseline-new',
+      content: HOSTILE_SENTINEL,
+      createdAt: '2026-09-30T00:00:03+00:00',
+      tags: [runTag],
+    },
+    {
+      id: 'mem_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaac',
+      ownerId: baseline,
+      title: 'baseline-mid',
+      content: BASELINE_ONLY_TOKEN,
+      createdAt: '2026-09-30T00:00:02+00:00',
+      tags: [runTag],
+    },
+    {
+      id: 'mem_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaab',
+      ownerId: baseline,
+      title: 'baseline-old',
+      content: SHARED_TOKEN,
+      createdAt: '2026-09-30T00:00:01+00:00',
+      tags: [runTag],
+    },
+    {
+      id: 'mem_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbc',
+      ownerId: second,
+      title: 'second-new',
+      content: HOSTILE_SENTINEL,
+      createdAt: '2026-09-30T00:00:03+00:00',
+      tags: [runTag],
+    },
+    {
+      id: 'mem_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+      ownerId: second,
+      title: 'second-mid',
+      content: SECOND_ONLY_TOKEN,
+      createdAt: '2026-09-30T00:00:02+00:00',
+      tags: [runTag],
+    },
+    {
+      id: 'mem_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbd',
+      ownerId: second,
+      title: 'second-old',
+      content: SHARED_TOKEN,
+      createdAt: '2026-09-30T00:00:01+00:00',
+      tags: [runTag],
+    },
+  ];
   const fixture = await startRetainedTransportFixture({
     aClientId: 'external-a-client',
     bClientId,
     agentId: 'hook-only-agent',
+    publishableKey: publishable,
+    alreadyConsented: [{ sub: second, clientId: 'external-a-client' }],
     users: [
       { sub: baseline, email: 'baseline@loopback.invalid', password },
       { sub: second, email: 'second@loopback.invalid', password },
     ],
-    memories: [
-      {
-        id: 'mem_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
-        ownerId: baseline,
-        title: 'baseline-new',
-        content: 'retained-baseline-new',
-        createdAt: '2026-09-30T00:00:03+00:00',
-      },
-      {
-        id: 'mem_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaab',
-        ownerId: baseline,
-        title: 'baseline-old',
-        content: 'retained-baseline-old',
-        createdAt: '2026-09-30T00:00:01+00:00',
-      },
-      {
-        id: 'mem_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
-        ownerId: second,
-        title: 'second-row',
-        content: 'retained-second-row',
-        createdAt: '2026-09-30T00:00:02+00:00',
-      },
-    ],
+    memories: retainedMemories,
   });
   const dir = mkdtempSync(join(tmpdir(), 'ari-memory-retained-manifest-'));
   const manifestPath = join(dir, 'manifest.json');
@@ -520,32 +558,14 @@ test('retained driver reaches auth and data reads and refuses a bad manifest', a
         { id: 'c1111111-1111-4111-8111-111111111111', state: 'revoked' },
         { id: 'c2222222-2222-4222-8222-222222222222', state: 'expired' },
       ],
-      rows: [
-        {
-          memoryId: 'mem_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
-          workspaceId: 'ws-retained-baseline',
-          ownerId: baseline,
-          title: 'baseline-new',
-          content: 'retained-baseline-new',
-          createdAt: '2026-09-30T00:00:03+00:00',
-        },
-        {
-          memoryId: 'mem_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaab',
-          workspaceId: 'ws-retained-baseline',
-          ownerId: baseline,
-          title: 'baseline-old',
-          content: 'retained-baseline-old',
-          createdAt: '2026-09-30T00:00:01+00:00',
-        },
-        {
-          memoryId: 'mem_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
-          workspaceId: 'ws-retained-second',
-          ownerId: second,
-          title: 'second-row',
-          content: 'retained-second-row',
-          createdAt: '2026-09-30T00:00:02+00:00',
-        },
-      ],
+      rows: retainedMemories.map((memory) => ({
+        memoryId: memory.id,
+        workspaceId: memory.ownerId === baseline ? 'ws-retained-baseline' : 'ws-retained-second',
+        ownerId: memory.ownerId,
+        title: memory.title,
+        content: memory.content,
+        createdAt: memory.createdAt,
+      })),
     },
   };
   writeFileSync(manifestPath, JSON.stringify(manifest));
@@ -582,8 +602,47 @@ test('retained driver reaches auth and data reads and refuses a bad manifest', a
     assert.equal(receipt.d1, 'not_executed');
     assert.equal(receipt.d2, 'not_executed');
     assert.equal(receipt.adminCredentialUsed, false);
-    assert.equal(receipt.cleanupStatus, 'statements_only');
+    assert.equal(receipt.cleanupStatus, 'unresolved');
+    assert.equal(hostedExitCode(receipt), 2);
+    assert.equal(receipt.issuanceStatus, 'resolved');
     assert.equal(receipt.sameUserDifferentBClient, 'not_executed');
+    assert.deepEqual(receipt.consentFlows.includes('approval_post'), true);
+    assert.deepEqual(receipt.consentFlows.includes('already_consented_get'), true);
+    assert.equal(
+      fixture.authorizeScopes.every((scope) => scope === 'email'),
+      true,
+    );
+    assert.equal(
+      fixture.authorizeScopes.some((scope) => scope.includes('openid')),
+      false,
+    );
+    assert.equal(receipt.sessionLedger.length, 6);
+    assert.equal(receipt.decoySessionIds.length, 2);
+    assert.equal(
+      receipt.decoySessionIds.some((id) => receipt.sessionLedger.includes(id)),
+      false,
+    );
+    assert.equal(
+      receipt.sessionLedger.every((id) => fixture.persistedSessionIds().includes(id)),
+      true,
+    );
+    assert.equal(
+      receipt.decoySessionIds.every((id) => fixture.decoySessionIds().includes(id)),
+      true,
+    );
+    for (const id of [
+      'pagination_complete',
+      'second_pagination_complete',
+      'foreign_get_unavailable',
+      'second_foreign_get_unavailable',
+      'foreign_only_token_positive',
+      'foreign_only_search_empty',
+      'cross_user_cursor_refused',
+      'second_cross_user_cursor_refused',
+    ]) {
+      const row = receipt.rows.find((item) => item.id === id);
+      assert.equal(row?.pass, true, id);
+    }
     const gap = receipt.rows.find((item) => item.id === 'same_user_different_b_client');
     assert.equal(gap.executed, false);
     assert.equal(gap.label, 'not_executed');
@@ -618,32 +677,58 @@ test('retained driver reaches auth and data reads and refuses a bad manifest', a
       fixture.hits.some((item) => item.includes('/consent')),
       true,
     );
-    assert.equal(receipt.seedStatements[0].startsWith('insert into policy_lab.principals'), true);
-    assert.equal(receipt.seedStatements[1].startsWith('insert into policy_lab.clients'), true);
-    assert.equal(receipt.seedStatements[2].startsWith('insert into policy_lab.memberships'), true);
-    assert.equal(
-      receipt.seedStatements[3].startsWith('insert into policy_lab.capability_grants'),
-      true,
+    assert.equal(receipt.seedStatements[0], 'begin;');
+    assert.equal(receipt.seedStatements.at(-1), 'commit;');
+    assert.equal(receipt.authorizationKeys.memberships.length, 2);
+    assert.equal(receipt.authorizationKeys.grants.length, 4);
+    const principalDelete = receipt.cleanupStatements.find((item) =>
+      item.startsWith('delete from policy_lab.principals'),
     );
-    assert.equal(receipt.seedStatements[4].startsWith('insert into policy_lab.memories'), true);
-    assert.equal(receipt.cleanupStatements[0].startsWith('delete from policy_lab.memories'), true);
-    assert.equal(
-      receipt.cleanupStatements[4].startsWith('delete from policy_lab.principals'),
-      true,
+    const clientDelete = receipt.cleanupStatements.find((item) =>
+      item.startsWith('delete from policy_lab.clients'),
     );
+    assert.equal(principalDelete.includes('d3333333-3333-4333-8333-333333333333'), true);
+    assert.equal(principalDelete.includes(baseline), false);
+    assert.equal(principalDelete.includes(second), false);
+    assert.equal(clientDelete.includes(bClientId), false);
     const cleanup = receipt.cleanupStatements.join('\n');
-    assert.equal(cleanup.includes(baseline), false);
-    assert.equal(cleanup.includes(second), false);
-    assert.equal(cleanup.includes(bClientId), false);
+    assert.equal(cleanup.includes('workspace_id in'), false);
     assert.equal(cleanup.includes('mem_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'), true);
-    assert.equal(cleanup.includes('d3333333-3333-4333-8333-333333333333'), true);
     assert.equal(receipt.seedStatements.join('\n').includes(bClientId), true);
+    assert.equal(
+      receipt.seedStatements.join('\n').includes('insert into policy_lab.clients (client_id'),
+      true,
+    );
     const text = JSON.stringify(receipt);
     assert.equal(text.includes(password), false);
     assert.equal(text.includes(publishable), false);
     assert.equal(text.includes('eyJ'), false);
     assert.equal(text.includes('access_token'), false);
     assert.equal(text.includes('service_role'), false);
+    const missingKey = await fixture.fetchImpl(
+      `${fixture.origin}/auth/v1/token?grant_type=password`,
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ email: 'baseline@loopback.invalid', password }),
+      },
+    );
+    assert.equal(missingKey.status, 401);
+    const openidUrl = new URL('/auth/v1/oauth/authorize', fixture.origin);
+    openidUrl.searchParams.set('response_type', 'code');
+    openidUrl.searchParams.set('client_id', 'external-a-client');
+    openidUrl.searchParams.set('redirect_uri', manifest.aRedirectUri);
+    openidUrl.searchParams.set('scope', 'openid');
+    openidUrl.searchParams.set('state', 'openid');
+    openidUrl.searchParams.set('code_challenge', 'a'.repeat(43));
+    openidUrl.searchParams.set('code_challenge_method', 'S256');
+    const openid = await fixture.fetchImpl(openidUrl, {
+      headers: { apikey: publishable },
+      redirect: 'manual',
+    });
+    assert.equal(openid.status, 400);
+    assert.equal(fixture.rejectedApiKey() > 0, true);
+    assert.equal(fixture.openidRefusals() > 0, true);
 
     const calls = [];
     const blockedFetch = async () => {
@@ -704,6 +789,439 @@ test('retained driver reaches auth and data reads and refuses a bad manifest', a
   } finally {
     await fixture.close();
     rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+function hangNthPassword(inner, nth) {
+  let seen = 0;
+  return (input, init = {}) => {
+    const raw =
+      typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url;
+    if (String(raw).includes('grant_type=password')) {
+      seen += 1;
+      if (seen === nth) {
+        return new Promise((_, reject) => {
+          const abort = () => reject(Object.assign(new Error('aborted'), { name: 'AbortError' }));
+          if (init.signal?.aborted) abort();
+          else init.signal?.addEventListener('abort', abort, { once: true });
+        });
+      }
+    }
+    return inner(input, init);
+  };
+}
+
+async function openRetainedLab(memories = undefined) {
+  const baseline = '1928e465-6ab9-439c-9ab8-d7d0c8bba16d';
+  const second = '6f0c2a44-91d4-4e7b-a13c-5d8e7b0a9c22';
+  const bClientId = 'a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d';
+  const password = 'retained-fixture-password';
+  const publishable = 'sb_publishable_retained_fixture_not_a_secret';
+  const runTag = 'run:11111111-1111-4111-8111-111111111111';
+  const retainedMemories =
+    memories ??
+    [
+      [
+        'mem_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+        baseline,
+        'baseline-new',
+        HOSTILE_SENTINEL,
+        '2026-09-30T00:00:03+00:00',
+      ],
+      [
+        'mem_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaac',
+        baseline,
+        'baseline-mid',
+        BASELINE_ONLY_TOKEN,
+        '2026-09-30T00:00:02+00:00',
+      ],
+      [
+        'mem_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaab',
+        baseline,
+        'baseline-old',
+        SHARED_TOKEN,
+        '2026-09-30T00:00:01+00:00',
+      ],
+      [
+        'mem_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbc',
+        second,
+        'second-new',
+        HOSTILE_SENTINEL,
+        '2026-09-30T00:00:03+00:00',
+      ],
+      [
+        'mem_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+        second,
+        'second-mid',
+        SECOND_ONLY_TOKEN,
+        '2026-09-30T00:00:02+00:00',
+      ],
+      [
+        'mem_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbd',
+        second,
+        'second-old',
+        SHARED_TOKEN,
+        '2026-09-30T00:00:01+00:00',
+      ],
+    ].map(([id, ownerId, title, content, createdAt]) => ({
+      id,
+      ownerId,
+      title,
+      content,
+      createdAt,
+      tags: [runTag],
+    }));
+  const fixture = await startRetainedTransportFixture({
+    aClientId: 'external-a-client',
+    bClientId,
+    agentId: 'hook-only-agent',
+    publishableKey: publishable,
+    alreadyConsented: [{ sub: second, clientId: 'external-a-client' }],
+    users: [
+      { sub: baseline, email: 'baseline@loopback.invalid', password },
+      { sub: second, email: 'second@loopback.invalid', password },
+    ],
+    memories: retainedMemories,
+  });
+  const dir = mkdtempSync(join(tmpdir(), 'ari-memory-retained-manifest-'));
+  const manifestPath = join(dir, 'manifest.json');
+  const credentialsPath = join(dir, 'credentials.json');
+  const mcpPort = await reservePort();
+  const rows = [
+    [
+      'mem_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+      baseline,
+      'baseline-new',
+      HOSTILE_SENTINEL,
+      '2026-09-30T00:00:03+00:00',
+    ],
+    [
+      'mem_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaac',
+      baseline,
+      'baseline-mid',
+      BASELINE_ONLY_TOKEN,
+      '2026-09-30T00:00:02+00:00',
+    ],
+    [
+      'mem_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaab',
+      baseline,
+      'baseline-old',
+      SHARED_TOKEN,
+      '2026-09-30T00:00:01+00:00',
+    ],
+    [
+      'mem_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbc',
+      second,
+      'second-new',
+      HOSTILE_SENTINEL,
+      '2026-09-30T00:00:03+00:00',
+    ],
+    [
+      'mem_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+      second,
+      'second-mid',
+      SECOND_ONLY_TOKEN,
+      '2026-09-30T00:00:02+00:00',
+    ],
+    [
+      'mem_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbd',
+      second,
+      'second-old',
+      SHARED_TOKEN,
+      '2026-09-30T00:00:01+00:00',
+    ],
+  ].map(([memoryId, ownerId, title, content, createdAt]) => ({
+    memoryId,
+    workspaceId: ownerId === baseline ? 'ws-retained-baseline' : 'ws-retained-second',
+    ownerId,
+    title,
+    content,
+    createdAt,
+  }));
+  const manifest = {
+    version: 'ari-memory-read-lab-v1',
+    projectRef: HOSTED_PROJECT_REF,
+    supabaseUrl: fixture.origin,
+    reviewedHead: gitValue(['rev-parse', 'HEAD']),
+    reviewedTree: gitValue(['rev-parse', 'HEAD^{tree}']),
+    resource: `http://127.0.0.1:${mcpPort}/mcp`,
+    aClientId: 'external-a-client',
+    bClientId,
+    agentId: 'hook-only-agent',
+    aRedirectUri: `http://127.0.0.1:${mcpPort}/oauth/callback`,
+    bRedirectUri: `http://127.0.0.1:${mcpPort}/oauth/downstream/callback`,
+    users: [
+      { role: 'baseline', id: baseline, email: 'baseline@loopback.invalid' },
+      { role: 'second', id: second, email: 'second@loopback.invalid' },
+    ],
+    fixtures: {
+      runId: '11111111-1111-4111-8111-111111111111',
+      deniedPrincipalId: 'd3333333-3333-4333-8333-333333333333',
+      transientClients: [
+        { id: 'c1111111-1111-4111-8111-111111111111', state: 'revoked' },
+        { id: 'c2222222-2222-4222-8222-222222222222', state: 'expired' },
+      ],
+      rows,
+    },
+  };
+  writeFileSync(manifestPath, JSON.stringify(manifest));
+  writeFileSync(
+    credentialsPath,
+    JSON.stringify({
+      publishableKey: publishable,
+      jwks: fixture.jwks,
+      users: [
+        { id: baseline, password },
+        { id: second, password },
+      ],
+    }),
+  );
+  return {
+    baseline,
+    second,
+    fixture,
+    manifest,
+    manifestPath,
+    credentialsPath,
+    async close() {
+      await fixture.close();
+      rmSync(dir, { recursive: true, force: true });
+    },
+  };
+}
+
+test('retained failures keep issued sessions and refuse a missing row', {
+  concurrency: false,
+}, async () => {
+  const lab = await openRetainedLab();
+  try {
+    const hung = await runHostedController(
+      {
+        transport: 'retained-test',
+        manifestPath: lab.manifestPath,
+        credentialsPath: lab.credentialsPath,
+        fetchImpl: hangNthPassword(lab.fixture.fetchImpl, 2),
+        acquireLock: false,
+        timeoutMs: 400,
+      },
+      { ARI_MEMORY_LAB_EXECUTOR: 'ariadne' },
+    );
+    assert.equal(hung.acceptance, false);
+    assert.equal(hung.hostedContact, false);
+    assert.equal(hung.listenerCount, 1);
+    assert.equal(hung.rowsPass, false);
+    assert.equal(hung.cleanupStatus, 'unresolved');
+    assert.equal(hung.issuanceStatus, 'unresolved');
+    assert.equal(hung.unresolvedAttemptIds.length > 0, true);
+    assert.equal(hung.sessionLedger.length > 0, true);
+    assert.equal(
+      hung.sessionLedger.every((id) => lab.fixture.persistedSessionIds().includes(id)),
+      true,
+    );
+    assert.equal(
+      hung.sessionLedger.some((id) => lab.fixture.decoySessionIds().includes(id)),
+      false,
+    );
+    assert.equal(hostedExitCode(hung), 2);
+    assert.equal(typeof hung.journalLocator, 'string');
+  } finally {
+    await lab.close();
+  }
+  const signaled = await openRetainedLab();
+  try {
+    const holder = {};
+    const pending = runHostedController(
+      {
+        transport: 'retained-test',
+        manifestPath: signaled.manifestPath,
+        credentialsPath: signaled.credentialsPath,
+        fetchImpl: hangNthPassword(signaled.fixture.fetchImpl, 2),
+        acquireLock: false,
+        timeoutMs: 15000,
+        signalHolder: holder,
+      },
+      { ARI_MEMORY_LAB_EXECUTOR: 'ariadne' },
+    );
+    while (holder.trip === undefined) await new Promise((resolve) => setTimeout(resolve, 20));
+    holder.trip();
+    const receipt = await pending;
+    assert.equal(receipt.rowsPass, false);
+    assert.equal(receipt.listenerCount, 1);
+    assert.equal(receipt.issuanceStatus, 'unresolved');
+    assert.equal(receipt.sessionLedger.length > 0, true);
+    assert.equal(receipt.cleanupStatus, 'unresolved');
+    assert.notEqual(receipt.reason, 'hosted_execution_refused');
+  } finally {
+    await signaled.close();
+  }
+  const stalled = await openRetainedLab();
+  try {
+    const receipt = await runHostedController(
+      {
+        transport: 'retained-test',
+        manifestPath: stalled.manifestPath,
+        credentialsPath: stalled.credentialsPath,
+        fetchImpl: stalled.fixture.fetchImpl,
+        acquireLock: false,
+        timeoutMs: 3000,
+        stall: 'body',
+      },
+      { ARI_MEMORY_LAB_EXECUTOR: 'ariadne' },
+    );
+    assert.equal(receipt.reason, 'orchestration_timeout');
+    assert.equal(receipt.rowsPass, false);
+    assert.equal(receipt.sessionLedger.length, 6);
+    assert.equal(receipt.decoySessionIds.length, 2);
+    assert.equal(receipt.cleanupStatus, 'unresolved');
+    assert.equal(receipt.hostedContact, false);
+  } finally {
+    await stalled.close();
+  }
+  const missing = await openRetainedLab(
+    [
+      [
+        'mem_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+        '1928e465-6ab9-439c-9ab8-d7d0c8bba16d',
+        'baseline-new',
+        HOSTILE_SENTINEL,
+        '2026-09-30T00:00:03+00:00',
+      ],
+      [
+        'mem_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaab',
+        '1928e465-6ab9-439c-9ab8-d7d0c8bba16d',
+        'baseline-old',
+        SHARED_TOKEN,
+        '2026-09-30T00:00:01+00:00',
+      ],
+      [
+        'mem_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbc',
+        '6f0c2a44-91d4-4e7b-a13c-5d8e7b0a9c22',
+        'second-new',
+        HOSTILE_SENTINEL,
+        '2026-09-30T00:00:03+00:00',
+      ],
+      [
+        'mem_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+        '6f0c2a44-91d4-4e7b-a13c-5d8e7b0a9c22',
+        'second-mid',
+        SECOND_ONLY_TOKEN,
+        '2026-09-30T00:00:02+00:00',
+      ],
+      [
+        'mem_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbd',
+        '6f0c2a44-91d4-4e7b-a13c-5d8e7b0a9c22',
+        'second-old',
+        SHARED_TOKEN,
+        '2026-09-30T00:00:01+00:00',
+      ],
+    ].map(([id, ownerId, title, content, createdAt]) => ({
+      id,
+      ownerId,
+      title,
+      content,
+      createdAt,
+      tags: ['run:11111111-1111-4111-8111-111111111111'],
+    })),
+  );
+  try {
+    const receipt = await runHostedController(
+      {
+        transport: 'retained-test',
+        manifestPath: missing.manifestPath,
+        credentialsPath: missing.credentialsPath,
+        fetchImpl: missing.fixture.fetchImpl,
+        acquireLock: false,
+      },
+      { ARI_MEMORY_LAB_EXECUTOR: 'ariadne' },
+    );
+    assert.equal(receipt.rowsPass, false);
+    assert.equal(receipt.reason, 'list_mismatch');
+    assert.equal(receipt.sessionLedger.length, 6);
+    const list = receipt.rows.find((row) => row.id === `${missing.baseline}_list`);
+    assert.equal(list.pass, false);
+  } finally {
+    await missing.close();
+  }
+});
+
+test('prepared seed keeps baseline rows across two runs', async () => {
+  const lab = await openRetainedLab();
+  try {
+    const plan = prepareRetainedPlan(lab.manifestPath);
+    assert.equal(plan.network, false);
+    assert.equal(plan.acceptance, false);
+    assert.equal(plan.authorizationKeys.memberships.length, 2);
+    const secondManifest = {
+      ...lab.manifest,
+      fixtures: {
+        ...lab.manifest.fixtures,
+        runId: '22222222-2222-4222-8222-222222222222',
+        rows: lab.manifest.fixtures.rows.map((row) => ({
+          ...row,
+          memoryId: row.memoryId.replace('mem_', 'mem_b'),
+        })),
+      },
+    };
+    const secondPath = join(lab.manifestPath, '..', 'second.json');
+    writeFileSync(secondPath, JSON.stringify(secondManifest));
+    const secondPlan = prepareRetainedPlan(secondPath);
+    const db = await openLabDatabase();
+    const until = '2099-01-01T00:00:00.000Z';
+    const unrelated = 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee';
+    await db.exec(`
+      insert into policy_lab.principals (principal_id, principal_kind, identity_eligibility)
+      values ('${lab.baseline}', 'human', 'verified'), ('${lab.second}', 'human', 'verified');
+      insert into policy_lab.clients (client_id, state, valid_until)
+      values ('${lab.manifest.bClientId}', 'active', '${until}'),
+             ('${unrelated}', 'active', '${until}');
+      insert into policy_lab.memberships
+        (principal_id, client_id, workspace_id, state, valid_until)
+      values ('${lab.baseline}', '${unrelated}', 'ws-retained-baseline', 'active', '${until}');
+    `);
+    await db.exec(plan.seed.join('\n'));
+    await db.exec(plan.seed.join('\n'));
+    const memories = await db.query(`select count(*)::int as count from policy_lab.memories`);
+    const principals = await db.query(
+      `select count(*)::int as count from policy_lab.principals where identity_eligibility = 'verified'`,
+    );
+    const memberships = await db.query(`select count(*)::int as count from policy_lab.memberships`);
+    assert.equal(memories.rows[0].count, 6);
+    assert.equal(principals.rows[0].count, 2);
+    assert.equal(memberships.rows[0].count, 3);
+    await db.exec(plan.cleanup.join('\n'));
+    const after = await db.query(`select count(*)::int as count from policy_lab.memories`);
+    const kept = await db.query(
+      `select count(*)::int as count from policy_lab.memberships where client_id = '${unrelated}'`,
+    );
+    const baselineClient = await db.query(
+      `select count(*)::int as count from policy_lab.clients where client_id = '${lab.manifest.bClientId}'`,
+    );
+    assert.equal(after.rows[0].count, 0);
+    assert.equal(kept.rows[0].count, 1);
+    assert.equal(baselineClient.rows[0].count, 1);
+    assert.equal(principals.rows[0].count, 2);
+    await db.exec(secondPlan.seed.join('\n'));
+    const again = await db.query(`select count(*)::int as count from policy_lab.memories`);
+    const still = await db.query(
+      `select count(*)::int as count from policy_lab.principals where principal_id in ('${lab.baseline}', '${lab.second}')`,
+    );
+    assert.equal(again.rows[0].count, 6);
+    assert.equal(still.rows[0].count, 2);
+    await db.exec('begin');
+    await db.query(
+      `update policy_lab.memberships set state = 'revoked'
+       where principal_id = $1 and client_id = $2 and workspace_id = 'ws-retained-baseline'`,
+      [lab.baseline, lab.manifest.bClientId],
+    );
+    const collision = await apply(
+      db,
+      secondPlan.seed.filter((item) => item !== 'begin;' && item !== 'commit;').join('\n'),
+    );
+    assert.equal(collision.ok, false);
+    assert.equal(collision.code, '23505');
+    await db.close();
+  } finally {
+    await lab.close();
   }
 });
 

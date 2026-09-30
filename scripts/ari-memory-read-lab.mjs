@@ -856,6 +856,14 @@ function takeOption(name) {
   return value;
 }
 
+export function hostedExitCode(receipt) {
+  if (receipt?.type !== 'receipt' || receipt.acceptance !== false) return 2;
+  if (receipt.rowsPass !== true) return 2;
+  if (receipt.cleanupStatus !== 'confirmed') return 2;
+  if (receipt.issuanceStatus === 'unresolved') return 2;
+  return 0;
+}
+
 export function hostedPreflight(command, options, env) {
   const executor = env.ARI_MEMORY_LAB_EXECUTOR === 'ariadne';
   const url = `${env.ARI_TEST_SUPABASE_URL ?? ''}${env.SUPABASE_URL ?? ''}`;
@@ -871,6 +879,29 @@ async function main() {
   const command = process.argv[2] ?? 'plan';
   if (command === 'plan') {
     process.stdout.write(`${JSON.stringify(plan(), null, 2)}\n`);
+    return;
+  }
+  if (command === 'prepare') {
+    try {
+      const manifestPath = takeOption('--manifest');
+      if (!manifestPath) throw coded('manifest_required');
+      const { prepareRetainedPlan } = await import('./ari-memory-read-lab-hosted.mjs');
+      const plan = prepareRetainedPlan(manifestPath);
+      process.stdout.write(`${JSON.stringify(plan)}\n`);
+      if (plan.acceptance !== false || plan.network !== false) process.exitCode = 2;
+    } catch (error) {
+      const failure = {
+        type: 'receipt',
+        packet: 'ari-memory-read-lab',
+        acceptance: false,
+        network: false,
+        hostedContact: false,
+        rowsPass: false,
+        reason: typeof error?.code === 'string' ? error.code : 'child_failed',
+      };
+      process.stdout.write(`${JSON.stringify(failure)}\n`);
+      process.exitCode = 2;
+    }
     return;
   }
   if (command === 'hosted' || command === 'hosted-synthetic') {
@@ -891,7 +922,7 @@ async function main() {
         process.env,
       );
       process.stdout.write(`${JSON.stringify(receipt)}\n`);
-      if (receipt.rowsPass !== true || receipt.acceptance !== false) process.exitCode = 2;
+      if (hostedExitCode(receipt) !== 0) process.exitCode = 2;
     } catch (error) {
       const failure = {
         type: 'receipt',
@@ -911,8 +942,9 @@ async function main() {
   }
   if (command !== 'run') {
     process.stderr.write(
-      'usage: node scripts/ari-memory-read-lab.mjs [plan|run|hosted-synthetic|hosted]\n' +
-        'hosted: node scripts/ari-memory-read-lab.mjs hosted --manifest <reviewed-run-manifest> --credentials <protected-credential-file>\n',
+      'usage: node scripts/ari-memory-read-lab.mjs [plan|run|hosted-synthetic|hosted|prepare]\n' +
+        'hosted: node scripts/ari-memory-read-lab.mjs hosted --manifest <reviewed-run-manifest> --credentials <protected-credential-file>\n' +
+        'prepare: node scripts/ari-memory-read-lab.mjs prepare --manifest <reviewed-run-manifest>\n',
     );
     process.exitCode = 2;
     return;

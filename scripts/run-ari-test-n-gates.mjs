@@ -557,7 +557,7 @@ export function exactIdBijection(left, right) {
   return first.every((id) => members.has(id));
 }
 
-function createIssuanceTracker(ledger, cursor, signal) {
+export function createIssuanceTracker(ledger, cursor, signal) {
   const pending = new Set();
   const controllers = new Set();
   const attempts = [];

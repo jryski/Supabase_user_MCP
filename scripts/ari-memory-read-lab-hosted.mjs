@@ -1,12 +1,18 @@
 import { execFileSync } from 'node:child_process';
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { createServer as createHttpServer } from 'node:http';
 import { createServer as createHttpsServer, request as httpsRequest } from 'node:https';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { exportJWK, generateKeyPair, jwtVerify, SignJWT } from 'jose';
 
+import {
+  buildAuthorizeUrl,
+  createPkce,
+  exchangeNativeCode,
+  performLoopbackConsent,
+} from '../docs/evidence/ari-test-probe/consent-harness.mjs';
 import {
   acquireControllerLock,
   BASELINE_ONLY_TOKEN,
@@ -15,6 +21,7 @@ import {
   cleanup,
   DENIED_PRINCIPAL_ID,
   EXPIRED_CLIENT_ID,
+  FAR_EXPIRY,
   HOSTED_PROJECT_REF,
   HOSTILE_SENTINEL,
   installerSql,
@@ -30,6 +37,7 @@ import {
   seed,
   sqlSha256,
 } from './ari-memory-read-lab.mjs';
+import { createIssuanceTracker } from './run-ari-test-n-gates.mjs';
 
 const A_CLIENT = 'external-a-client';
 const AGENT = 'hook-only-agent';
@@ -549,10 +557,17 @@ function structuredContent(text) {
   return null;
 }
 
-async function passwordGrant(fetchImpl, origin, user, signal) {
+async function passwordGrant(fetchImpl, origin, user, signal, publishableKey) {
+  if (typeof publishableKey !== 'string' || publishableKey.length === 0) {
+    throw coded('publishable_key_required');
+  }
   const response = await fetchImpl(`${origin}/auth/v1/token?grant_type=password`, {
     method: 'POST',
-    headers: { 'content-type': 'application/json', accept: 'application/json' },
+    headers: {
+      'content-type': 'application/json',
+      accept: 'application/json',
+      apikey: publishableKey,
+    },
     body: JSON.stringify({ email: user.email, password: user.password }),
     ...(signal === undefined ? {} : { signal }),
   });
@@ -871,7 +886,7 @@ function loadRetainedManifest(filePath) {
   if (new Set(transientClients.map((client) => client.id)).size !== transientClients.length) {
     throw coded('manifest_incomplete');
   }
-  if (!Array.isArray(fixtures.rows) || fixtures.rows.length < 2) throw coded('manifest_incomplete');
+  if (!Array.isArray(fixtures.rows) || fixtures.rows.length < 6) throw coded('manifest_incomplete');
   const ownerIds = new Set(users.map((user) => user.id));
   const rows = fixtures.rows.map((row) => {
     const memoryId = requiredString(row?.memoryId);
@@ -898,7 +913,9 @@ function loadRetainedManifest(filePath) {
     throw coded('manifest_incomplete');
   }
   for (const user of users) {
-    if (!rows.some((row) => row.ownerId === user.id)) throw coded('manifest_incomplete');
+    if (rows.filter((row) => row.ownerId === user.id).length < 3) {
+      throw coded('manifest_incomplete');
+    }
   }
   return {
     text,
@@ -951,143 +968,647 @@ function loadRetainedCredentials(filePath, users) {
   return { publishableKey, jwks: { keys }, users: resolved };
 }
 
-function retainedControlStatements(manifest) {
+const BASELINE_UNTIL = FAR_EXPIRY;
+
+function uniqueTuples(rows, key) {
+  const seen = new Set();
+  const unique = [];
+  for (const row of rows) {
+    const id = key(row);
+    if (seen.has(id)) continue;
+    seen.add(id);
+    unique.push(row);
+  }
+  return unique;
+}
+
+export function retainedControlPlan(manifest) {
   const q = sqlLiteral;
+  const until = q(BASELINE_UNTIL);
   const { fixtures } = manifest;
-  const until = '2099-01-01T00:00:00.000Z';
-  const principals = manifest.users
-    .map((user) => `(${q(user.id)}, 'human', 'verified')`)
+  const baselineUsers = manifest.users
+    .slice()
+    .sort((left, right) => left.id.localeCompare(right.id));
+  const memberships = uniqueTuples(
+    fixtures.rows.map((row) => ({
+      principalId: row.ownerId,
+      clientId: manifest.bClientId,
+      workspaceId: row.workspaceId,
+      state: 'active',
+      validUntil: BASELINE_UNTIL,
+    })),
+    (row) => `${row.principalId}|${row.clientId}|${row.workspaceId}`,
+  ).sort((left, right) =>
+    `${left.principalId}|${left.workspaceId}`.localeCompare(
+      `${right.principalId}|${right.workspaceId}`,
+    ),
+  );
+  const grants = memberships
+    .flatMap((row) =>
+      ['memory:read', 'memory:search'].map((capability) => ({ ...row, capability })),
+    )
+    .sort((left, right) =>
+      `${left.principalId}|${left.workspaceId}|${left.capability}`.localeCompare(
+        `${right.principalId}|${right.workspaceId}|${right.capability}`,
+      ),
+    );
+  const memories = fixtures.rows
+    .slice()
+    .sort((left, right) => left.memoryId.localeCompare(right.memoryId));
+  const transientClients = fixtures.transientClients
+    .slice()
+    .sort((left, right) => left.id.localeCompare(right.id));
+  const baselineChecks = baselineUsers
+    .map(
+      (user) =>
+        `if (select count(*) from policy_lab.principals where principal_id = ${q(user.id)}::uuid ` +
+        `and principal_kind = 'human' and identity_eligibility = 'verified') <> 1 then ` +
+        `raise exception 'baseline_mismatch' using errcode = 'P0001'; end if;`,
+    )
+    .join(' ');
+  const clientCheck =
+    `if (select count(*) from policy_lab.clients where client_id = ${q(manifest.bClientId)} ` +
+    `and state = 'active' and valid_until = ${until}::timestamptz) <> 1 then ` +
+    `raise exception 'baseline_mismatch' using errcode = 'P0001'; end if;`;
+  const preserve = (table, where, insertSql) =>
+    `if exists (select 1 from ${table} where ${where}) then ` +
+    `raise exception 'unowned_collision' using errcode = '23505'; end if; ${insertSql}`;
+  const deniedWhere =
+    `principal_id = ${q(fixtures.deniedPrincipalId)}::uuid and ` +
+    `(principal_kind is distinct from 'human' or identity_eligibility is distinct from 'denied')`;
+  const deniedInsert =
+    'insert into policy_lab.principals (principal_id, principal_kind, identity_eligibility) ' +
+    `select ${q(fixtures.deniedPrincipalId)}::uuid, 'human', 'denied' ` +
+    'where not exists (select 1 from policy_lab.principals ' +
+    `where principal_id = ${q(fixtures.deniedPrincipalId)}::uuid);`;
+  const clientInserts = transientClients
+    .map((client) => {
+      const where =
+        `client_id = ${q(client.id)} and (state is distinct from ${q(client.state)} ` +
+        `or valid_until is distinct from ${until}::timestamptz)`;
+      const insert =
+        'insert into policy_lab.clients (client_id, state, valid_until) ' +
+        `select ${q(client.id)}, ${q(client.state)}, ${until}::timestamptz ` +
+        `where not exists (select 1 from policy_lab.clients where client_id = ${q(client.id)});`;
+      return preserve('policy_lab.clients', where, insert);
+    })
+    .join(' ');
+  const membershipInserts = memberships
+    .map((row) => {
+      const key =
+        `principal_id = ${q(row.principalId)}::uuid and client_id = ${q(row.clientId)} ` +
+        `and workspace_id = ${q(row.workspaceId)}`;
+      const where = `${key} and (state is distinct from 'active' or valid_until is distinct from ${until}::timestamptz)`;
+      const insert =
+        'insert into policy_lab.memberships ' +
+        '(principal_id, client_id, workspace_id, state, valid_until) ' +
+        `select ${q(row.principalId)}::uuid, ${q(row.clientId)}, ${q(row.workspaceId)}, ` +
+        `'active', ${until}::timestamptz where not exists (select 1 from policy_lab.memberships where ${key});`;
+      return preserve('policy_lab.memberships', where, insert);
+    })
+    .join(' ');
+  const grantInserts = grants
+    .map((row) => {
+      const key =
+        `principal_id = ${q(row.principalId)}::uuid and client_id = ${q(row.clientId)} ` +
+        `and workspace_id = ${q(row.workspaceId)} and capability = ${q(row.capability)}`;
+      const where = `${key} and (state is distinct from 'active' or valid_until is distinct from ${until}::timestamptz)`;
+      const insert =
+        'insert into policy_lab.capability_grants ' +
+        '(principal_id, client_id, workspace_id, capability, state, valid_until) ' +
+        `select ${q(row.principalId)}::uuid, ${q(row.clientId)}, ${q(row.workspaceId)}, ` +
+        `${q(row.capability)}, 'active', ${until}::timestamptz ` +
+        `where not exists (select 1 from policy_lab.capability_grants where ${key});`;
+      return preserve('policy_lab.capability_grants', where, insert);
+    })
+    .join(' ');
+  const memoryInserts = memories
+    .map((row) => {
+      const key = `memory_id = ${q(row.memoryId)}`;
+      const where =
+        `${key} and (workspace_id is distinct from ${q(row.workspaceId)} ` +
+        `or title is distinct from ${q(row.title)} or content is distinct from ${q(row.content)} ` +
+        `or created_at is distinct from ${q(row.createdAt)}::timestamptz)`;
+      const insert =
+        'insert into policy_lab.memories ' +
+        '(memory_id, workspace_id, title, content, created_at, provenance_summary, tags) ' +
+        `select ${q(row.memoryId)}, ${q(row.workspaceId)}, ${q(row.title)}, ${q(row.content)}, ` +
+        `${q(row.createdAt)}::timestamptz, 'retained-lab-fixture', ` +
+        `array[${q(`run:${fixtures.runId}`)}]::text[] ` +
+        `where not exists (select 1 from policy_lab.memories where ${key});`;
+      return preserve('policy_lab.memories', where, insert);
+    })
+    .join(' ');
+  const seedBody =
+    `${baselineChecks} ${clientCheck} ` +
+    `${preserve('policy_lab.principals', deniedWhere, deniedInsert)} ${clientInserts} ` +
+    `${membershipInserts} ${grantInserts} ${memoryInserts}`;
+  const seed = ['begin;', `do $ari$ begin ${seedBody} end $ari$;`, 'commit;'];
+  const membershipKeys = memberships
+    .map((row) => `(${q(row.principalId)}::uuid, ${q(row.clientId)}, ${q(row.workspaceId)})`)
     .join(', ');
-  const clients = [
-    `(${q(manifest.bClientId)}, 'active', '${until}')`,
-    ...fixtures.transientClients.map(
-      (client) => `(${q(client.id)}, ${q(client.state)}, '${until}')`,
-    ),
-  ];
-  const memberships = fixtures.rows.map(
-    (row) =>
-      `(${q(row.ownerId)}, ${q(manifest.bClientId)}, ` +
-      `${q(row.workspaceId)}, 'active', '${until}')`,
-  );
-  const grants = fixtures.rows.flatMap((row) =>
-    ['memory:read', 'memory:search'].map(
-      (capability) =>
-        `(${q(row.ownerId)}, ${q(manifest.bClientId)}, ${q(row.workspaceId)}, ` +
-        `${q(capability)}, 'active', '${until}')`,
-    ),
-  );
-  const memories = fixtures.rows.map(
-    (row) =>
-      `(${q(row.memoryId)}, ${q(row.workspaceId)}, ${q(row.title)}, ` +
-      `${q(row.content)}, ${q(row.createdAt)}, 'retained-lab-fixture', ` +
-      `array[${q(`run:${fixtures.runId}`)}]::text[])`,
-  );
-  const memoryIds = [...new Set(fixtures.rows.map((row) => row.memoryId))];
-  const workspaceIds = [...new Set(fixtures.rows.map((row) => row.workspaceId))];
-  const seed = [
-    'insert into policy_lab.principals ' +
-      '(principal_id, principal_kind, identity_eligibility) values ' +
-      `${principals}, (${q(fixtures.deniedPrincipalId)}, 'human', 'denied');`,
-    'insert into policy_lab.clients (client_id, state, valid_until) values ' +
-      `${clients.join(', ')};`,
-    'insert into policy_lab.memberships ' +
-      '(principal_id, client_id, workspace_id, state, valid_until) values ' +
-      `${memberships.join(', ')};`,
-    'insert into policy_lab.capability_grants ' +
-      '(principal_id, client_id, workspace_id, capability, state, valid_until) values ' +
-      `${grants.join(', ')};`,
-    'insert into policy_lab.memories ' +
-      '(memory_id, workspace_id, title, content, created_at, provenance_summary, tags) values ' +
-      `${memories.join(', ')};`,
-  ];
+  const grantKeys = grants
+    .map(
+      (row) =>
+        `(${q(row.principalId)}::uuid, ${q(row.clientId)}, ${q(row.workspaceId)}, ${q(row.capability)})`,
+    )
+    .join(', ');
+  const memoryIds = memories.map((row) => q(row.memoryId)).join(', ');
+  const transientIds = transientClients.map((client) => q(client.id)).join(', ');
   const cleanup = [
-    `delete from policy_lab.memories where memory_id in (${memoryIds.map(q).join(', ')});`,
-    'delete from policy_lab.capability_grants where workspace_id in ' +
-      `(${workspaceIds.map(q).join(', ')});`,
-    'delete from policy_lab.memberships where workspace_id in ' +
-      `(${workspaceIds.map(q).join(', ')});`,
-    'delete from policy_lab.clients where client_id in ' +
-      `(${fixtures.transientClients.map((client) => q(client.id)).join(', ')});`,
-    `delete from policy_lab.principals where principal_id = ${q(fixtures.deniedPrincipalId)};`,
+    'begin;',
+    `delete from policy_lab.memories where memory_id in (${memoryIds});`,
+    'delete from policy_lab.capability_grants where ' +
+      `(principal_id, client_id, workspace_id, capability) in (${grantKeys});`,
+    'delete from policy_lab.memberships where ' +
+      `(principal_id, client_id, workspace_id) in (${membershipKeys});`,
+    `delete from policy_lab.clients where client_id in (${transientIds});`,
+    `delete from policy_lab.principals where principal_id = ${q(fixtures.deniedPrincipalId)}::uuid;`,
+    'commit;',
   ];
-  return { seed, cleanup };
+  return {
+    seed,
+    cleanup,
+    authorizationKeys: {
+      memberships: memberships.map((row) => ({
+        principalId: row.principalId,
+        clientId: row.clientId,
+        workspaceId: row.workspaceId,
+      })),
+      grants: grants.map((row) => ({
+        principalId: row.principalId,
+        clientId: row.clientId,
+        workspaceId: row.workspaceId,
+        capability: row.capability,
+      })),
+    },
+    baselinePreserved: {
+      principalIds: baselineUsers.map((user) => user.id),
+      bClientId: manifest.bClientId,
+    },
+  };
 }
 
-function noteToken(token, ledger, sources) {
-  const part = token.split('.')[1];
-  if (part === undefined) return;
-  let payload;
+export function prepareRetainedPlan(filePath) {
+  const manifest = loadRetainedManifest(filePath);
+  const plan = retainedControlPlan(manifest);
+  const body = JSON.stringify({
+    seed: plan.seed,
+    cleanup: plan.cleanup,
+    authorizationKeys: plan.authorizationKeys,
+  });
+  return {
+    type: 'preparation',
+    packet: 'ari-memory-read-lab',
+    version: LAB_VERSION,
+    acceptance: false,
+    network: false,
+    manifestSha256: manifest.sha256,
+    reviewedHead: manifest.reviewedHead,
+    reviewedTree: manifest.reviewedTree,
+    planSha256: createHash('sha256').update(body).digest('hex'),
+    ...plan,
+  };
+}
+
+function safeReason(value, fallback) {
+  return typeof value === 'string' && /^[a-z0-9_]{1,64}$/.test(value) ? value : fallback;
+}
+
+function decodePayload(token) {
+  const part = typeof token === 'string' ? token.split('.')[1] : undefined;
+  if (part === undefined) return null;
   try {
-    payload = JSON.parse(Buffer.from(part, 'base64url').toString('utf8'));
+    const payload = JSON.parse(Buffer.from(part, 'base64url').toString('utf8'));
+    if (payload === null || typeof payload !== 'object' || Array.isArray(payload)) return null;
+    return payload;
   } catch {
-    return;
-  }
-  for (const key of ['session_id', 'source_session_id']) {
-    const id = payload[key];
-    if (typeof id === 'string' && UUID.test(id) && !ledger.includes(id)) ledger.push(id);
-  }
-  if (typeof payload.source_session_id === 'string' && UUID.test(payload.source_session_id)) {
-    sources.push(payload.source_session_id);
+    return null;
   }
 }
 
-function reconcileLedger(ledger, sources, grantFacts, users) {
-  const frozen = Object.freeze(ledger.slice());
-  const bound = grantFacts.filter((fact) => fact.event === 'bound');
-  const subs = new Set(users.map((user) => user.id));
-  if (sources.length !== users.length || new Set(sources).size !== sources.length) {
+function observeDecoy(token, decoys) {
+  const payload = decodePayload(token);
+  if (payload === null) return;
+  const sessionId = payload.session_id;
+  const source = payload.source_session_id;
+  if (typeof sessionId !== 'string' || !UUID.test(sessionId)) return;
+  if (typeof source !== 'string' || !UUID.test(source) || sessionId === source) return;
+  if (!decoys.includes(sessionId)) decoys.push(sessionId);
+}
+
+function ownedSessionIds(records) {
+  const ids = [];
+  for (const row of records) {
+    for (const key of ['passwordSessionId', 'sourceSessionId', 'bSessionId']) {
+      const id = row?.[key];
+      if (typeof id === 'string' && UUID.test(id) && !ids.includes(id)) ids.push(id);
+    }
+  }
+  return ids;
+}
+
+function reconcileOwned(records, decoys, grantFacts, users) {
+  const owned = ownedSessionIds(records);
+  if (decoys.some((id) => owned.includes(id))) throw coded('ledger_unreconciled');
+  if (decoys.length !== users.length || new Set(decoys).size !== decoys.length) {
     throw coded('ledger_unreconciled');
   }
+  const bound = grantFacts.filter((fact) => fact.event === 'bound');
   if (bound.length !== users.length) throw coded('ledger_unreconciled');
-  for (const fact of bound) {
-    if (!frozen.includes(fact.sessionId) || sources.includes(fact.sessionId)) {
+  for (const user of users) {
+    const password = records.filter((row) => row.sub === user.id && row.passwordSessionId);
+    const source = records.filter((row) => row.sub === user.id && row.sourceSessionId);
+    const downstream = records.filter((row) => row.sub === user.id && row.bSessionId);
+    if (password.length !== 1 || source.length !== 1 || downstream.length !== 1) {
       throw coded('ledger_unreconciled');
     }
-    if (!subs.has(fact.sub)) throw coded('ledger_unreconciled');
+    const ids = [
+      password[0].passwordSessionId,
+      source[0].sourceSessionId,
+      downstream[0].bSessionId,
+    ];
+    if (new Set(ids).size !== 3 || ids.some((id) => !owned.includes(id))) {
+      throw coded('ledger_unreconciled');
+    }
+    const fact = bound.find((item) => item.sub === user.id);
+    if (
+      fact === undefined ||
+      fact.subjectMismatch === true ||
+      fact.sessionId !== downstream[0].bSessionId
+    ) {
+      throw coded('ledger_unreconciled');
+    }
   }
-  if (new Set(bound.map((fact) => fact.sessionId)).size !== bound.length) {
-    throw coded('ledger_unreconciled');
+  if (new Set(owned).size !== users.length * 3) throw coded('ledger_unreconciled');
+  return Object.freeze(owned);
+}
+
+function createRetainedSignal() {
+  const aborters = new Set();
+  const trip = () => {
+    for (const abort of aborters) abort();
+  };
+  const onInt = () => trip();
+  const onTerm = () => trip();
+  process.on('SIGINT', onInt);
+  process.on('SIGTERM', onTerm);
+  return {
+    onAbort(abort) {
+      aborters.add(abort);
+    },
+    trip,
+    dispose() {
+      process.off('SIGINT', onInt);
+      process.off('SIGTERM', onTerm);
+      aborters.clear();
+    },
+  };
+}
+
+function routeFetch(httpsFetch) {
+  return (input, init = {}) => {
+    const raw =
+      typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url;
+    const url = new URL(raw);
+    if (url.protocol === 'http:') return fetch(input, init);
+    return httpsFetch(input, init);
+  };
+}
+
+function bindSignal(fetchImpl, signal) {
+  return (input, init = {}) => fetchImpl(input, { ...init, signal });
+}
+
+function issuanceStatusOf(issuance) {
+  if (issuance.ambiguous()) return 'unresolved';
+  if (issuance.attempted()) return 'resolved';
+  return 'not_required';
+}
+
+function journalRetained(runId, fields) {
+  const dir = join(tmpdir(), 'ari-memory-retained-journal');
+  mkdirSync(dir, { recursive: true, mode: 0o700 });
+  const name = `${runId}.json`;
+  writeFileSync(
+    join(dir, name),
+    JSON.stringify({
+      packet: 'ari-memory-read-lab',
+      acceptance: false,
+      cleanupTarget: 'password_source_and_b_sessions_only',
+      ...fields,
+    }),
+    { mode: 0o600 },
+  );
+  return name;
+}
+
+async function exchangeEmailClient(options) {
+  const pkce = createPkce();
+  const state = randomUUID();
+  const redirect = new URL(options.redirectUri);
+  const built = buildAuthorizeUrl({
+    authorizeEndpoint: new URL('/auth/v1/oauth/authorize', options.origin).toString(),
+    clientId: options.clientId,
+    redirectUri: options.redirectUri,
+    scopes: ['email'],
+    callbackProfile: 'external_a',
+    expectedOrigin: redirect.origin,
+    requirePort: true,
+    codeChallenge: pkce.codeChallenge,
+    state,
+    resource: options.resource,
+  });
+  if (!built.ok) throw coded(safeReason(built.reason, 'authorize_failed'));
+  let code;
+  const consent = await performLoopbackConsent({
+    fetch: options.fetchImpl,
+    authOrigin: options.origin,
+    authorizationUrl: built.url,
+    publishableKey: options.publishableKey,
+    email: options.user.email,
+    ...(typeof options.user.accessToken === 'string'
+      ? { userAccessToken: options.user.accessToken }
+      : { password: options.user.password }),
+    retainCode(value) {
+      code = value;
+    },
+    retainSession(token) {
+      options.user.accessToken = token;
+    },
+  });
+  if (consent.ok !== true || typeof code !== 'string' || code.length === 0) {
+    throw coded(safeReason(consent.reason, 'consent_failed'));
   }
-  if (new Set(bound.map((fact) => fact.sub)).size !== users.length) {
-    throw coded('ledger_unreconciled');
+  options.consentFlows.push(consent.consentFlow);
+  const exchanged = await exchangeNativeCode({
+    fetch: options.fetchImpl,
+    authOrigin: options.origin,
+    publishableKey: options.publishableKey,
+    clientId: options.clientId,
+    redirectUri: options.redirectUri,
+    code,
+    codeVerifier: pkce.codeVerifier,
+    codeChallenge: pkce.codeChallenge,
+    callbackProfile: 'external_a',
+    expectedOrigin: redirect.origin,
+    requirePort: true,
+    resource: options.resource,
+  });
+  if (typeof exchanged.accessToken !== 'string') {
+    throw coded(safeReason(exchanged.receipt?.reason, 'exchange_failed'));
   }
-  return frozen;
+  return exchanged.accessToken;
+}
+
+async function consentDownstream(options) {
+  const consent = await performLoopbackConsent({
+    fetch: options.fetchImpl,
+    authOrigin: options.origin,
+    authorizationUrl: options.authorizationUrl,
+    publishableKey: options.publishableKey,
+    email: options.user.email,
+    userAccessToken: options.user.accessToken,
+  });
+  if (consent.ok !== true) throw coded(safeReason(consent.reason, 'consent_failed'));
+  options.consentFlows.push(consent.consentFlow);
 }
 
 function rowsFor(manifest, ownerId) {
   return manifest.fixtures.rows
     .filter((row) => row.ownerId === ownerId)
     .slice()
-    .sort((left, right) => right.createdAt.localeCompare(left.createdAt));
+    .sort((left, right) => {
+      const created = right.createdAt.localeCompare(left.createdAt);
+      if (created !== 0) return created;
+      return right.memoryId.localeCompare(left.memoryId);
+    });
+}
+
+function exclusiveRow(manifest, ownerId) {
+  const own = rowsFor(manifest, ownerId);
+  const other = new Set(
+    manifest.fixtures.rows.filter((row) => row.ownerId !== ownerId).map((row) => row.content),
+  );
+  const found = own.find((row) => !other.has(row.content));
+  if (found === undefined) throw coded('manifest_incomplete');
+  return found;
+}
+
+function sharedRow(manifest, ownerId) {
+  const own = rowsFor(manifest, ownerId);
+  const others = manifest.fixtures.rows.filter((row) => row.ownerId !== ownerId);
+  const found = own.find(
+    (row) =>
+      own.filter((item) => item.content === row.content).length === 1 &&
+      others.filter((item) => item.content === row.content).length === 1,
+  );
+  return found ?? own[0];
+}
+
+function pushRequired(rows, id, pass, reason) {
+  rows.push({ id, executed: true, pass, reason });
+  if (!pass) throw coded(reason);
+}
+
+async function proveRetainedMatrix(options) {
+  const { tool, manifest, bindings, rows } = options;
+  const tag = `run:${manifest.fixtures.runId}`;
+  const baseline = bindings.find((user) => user.role === 'baseline');
+  const second = bindings.find((user) => user.role === 'second');
+  const catalogs = [
+    [baseline, rowsFor(manifest, baseline.id), 'baseline'],
+    [second, rowsFor(manifest, second.id), 'second'],
+  ];
+  for (const [user, own, label] of catalogs) {
+    const record = await tool(user.tokenA, 'memory_get', { id: own[0].memoryId });
+    const getPass =
+      record?.ok === true &&
+      record.record?.id === own[0].memoryId &&
+      record.record?.content === own[0].content;
+    pushRequired(rows, `${user.id}_get`, getPass, getPass ? 'own_record' : 'own_record_missed');
+    const listed = await tool(user.tokenA, 'memory_list_recent', {
+      filters: { tags: [tag] },
+      limit: 25,
+    });
+    const ids = (listed?.items ?? []).map((item) => item.id);
+    const expected = own.map((row) => row.memoryId);
+    const listPass =
+      listed?.ok === true &&
+      ids.length === expected.length &&
+      expected.every((id) => ids.includes(id)) &&
+      ids.join() === expected.join();
+    pushRequired(rows, `${user.id}_list`, listPass, listPass ? 'own_only' : 'list_mismatch');
+    const shared = sharedRow(manifest, user.id);
+    const found = await tool(user.tokenA, 'memory_search', {
+      query: shared.content,
+      filters: { tags: [tag] },
+      limit: 20,
+    });
+    const searchPass =
+      found?.ok === true &&
+      found.items?.length === 1 &&
+      found.items[0].id === shared.memoryId &&
+      found.items[0].content === shared.content;
+    pushRequired(
+      rows,
+      `${user.id}_search`,
+      searchPass,
+      searchPass ? 'own_match' : 'search_mismatch',
+    );
+    const pages = [];
+    let cursor;
+    for (let index = 0; index < own.length; index += 1) {
+      const payload = await tool(user.tokenA, 'memory_list_recent', {
+        filters: { tags: [tag] },
+        limit: 1,
+        ...(cursor === undefined ? {} : { cursor }),
+      });
+      if (payload?.ok !== true || payload.items?.length !== 1) throw coded('pagination_incomplete');
+      if (
+        payload.items[0].id !== own[index].memoryId ||
+        payload.items[0].content !== own[index].content
+      ) {
+        throw coded('pagination_incomplete');
+      }
+      pages.push(payload.items[0].id);
+      cursor = payload.nextCursor;
+      if (index < own.length - 1 && typeof cursor !== 'string')
+        throw coded('pagination_incomplete');
+    }
+    const pagePass = cursor === undefined && pages.join() === expected.join();
+    pushRequired(
+      rows,
+      label === 'baseline' ? 'pagination_complete' : 'second_pagination_complete',
+      pagePass,
+      pagePass ? 'complete' : 'pagination_incomplete',
+    );
+  }
+  for (const [user, other, id] of [
+    [baseline, second, 'foreign_get_unavailable'],
+    [second, baseline, 'second_foreign_get_unavailable'],
+  ]) {
+    const foreignId = rowsFor(manifest, other.id)[0].memoryId;
+    const foreign = await tool(user.tokenA, 'memory_get', { id: foreignId });
+    const foreignPass = foreign?.ok === false && foreign.error?.code === 'RESOURCE_UNAVAILABLE';
+    pushRequired(rows, id, foreignPass, foreignPass ? 'unavailable' : 'foreign_visible');
+  }
+  const baselineOnly = exclusiveRow(manifest, baseline.id);
+  const secondOnly = exclusiveRow(manifest, second.id);
+  const ownBaseline = await tool(baseline.tokenA, 'memory_search', {
+    query: baselineOnly.content,
+    filters: { tags: [tag] },
+    limit: 20,
+  });
+  const ownSecond = await tool(second.tokenA, 'memory_search', {
+    query: secondOnly.content,
+    filters: { tags: [tag] },
+    limit: 20,
+  });
+  const positivePass =
+    ownBaseline?.ok === true &&
+    ownBaseline.items?.length === 1 &&
+    ownBaseline.items[0].id === baselineOnly.memoryId &&
+    ownBaseline.items[0].content === baselineOnly.content &&
+    ownSecond?.ok === true &&
+    ownSecond.items?.length === 1 &&
+    ownSecond.items[0].id === secondOnly.memoryId &&
+    ownSecond.items[0].content === secondOnly.content;
+  pushRequired(
+    rows,
+    'foreign_only_token_positive',
+    positivePass,
+    positivePass ? 'owner_found' : 'owner_missed',
+  );
+  const emptyBaseline = await tool(baseline.tokenA, 'memory_search', {
+    query: secondOnly.content,
+    filters: { tags: [tag] },
+    limit: 20,
+  });
+  const emptySecond = await tool(second.tokenA, 'memory_search', {
+    query: baselineOnly.content,
+    filters: { tags: [tag] },
+    limit: 20,
+  });
+  const emptyPass =
+    emptyBaseline?.ok === true &&
+    emptyBaseline.items?.length === 0 &&
+    emptySecond?.ok === true &&
+    emptySecond.items?.length === 0;
+  pushRequired(rows, 'foreign_only_search_empty', emptyPass, emptyPass ? 'empty' : 'foreign_match');
+  for (const [user, other, id] of [
+    [baseline, second, 'cross_user_cursor_refused'],
+    [second, baseline, 'second_cross_user_cursor_refused'],
+  ]) {
+    const firstPage = await tool(user.tokenA, 'memory_list_recent', {
+      filters: { tags: [tag] },
+      limit: 1,
+    });
+    const refused = await tool(other.tokenA, 'memory_list_recent', {
+      filters: { tags: [tag] },
+      limit: 1,
+      cursor: firstPage?.nextCursor,
+    });
+    const cursorPass = refused?.ok === false && refused.error?.code === 'INVALID_REQUEST';
+    pushRequired(rows, id, cursorPass, cursorPass ? 'invalid_cursor' : 'cursor_accepted');
+  }
+  const [left, right] = await Promise.all([
+    tool(baseline.tokenA, 'memory_get', { id: rowsFor(manifest, baseline.id)[0].memoryId }),
+    tool(second.tokenA, 'memory_get', { id: rowsFor(manifest, second.id)[0].memoryId }),
+  ]);
+  const retry = await tool(baseline.tokenA, 'memory_get', {
+    id: rowsFor(manifest, baseline.id)[0].memoryId,
+  });
+  const concurrentPass =
+    left?.record?.id === rowsFor(manifest, baseline.id)[0].memoryId &&
+    left?.record?.content === rowsFor(manifest, baseline.id)[0].content &&
+    right?.record?.id === rowsFor(manifest, second.id)[0].memoryId &&
+    retry?.record?.id === rowsFor(manifest, baseline.id)[0].memoryId;
+  pushRequired(
+    rows,
+    'bounded_concurrent_retry',
+    concurrentPass,
+    concurrentPass ? 'cross_user' : 'retry_mismatch',
+  );
+  rows.push({
+    id: 'same_user_different_b_client',
+    executed: false,
+    pass: false,
+    label: 'not_executed',
+    reason: 'not_executed',
+  });
 }
 
 async function proveRetained(options) {
-  const { fetchImpl, manifest, listener, users, timeoutMs, signal, ledger, sources, rows } =
-    options;
-  const phases = [];
+  const {
+    fetchImpl,
+    manifest,
+    listener,
+    users,
+    timeoutMs,
+    signal,
+    decoys,
+    phases,
+    consentFlows,
+    rows,
+  } = options;
   const bindings = [];
   for (const user of users) {
-    const userToken = await callBounded(timeoutMs, signal, (inner) =>
-      passwordGrant(fetchImpl, manifest.supabaseUrl, user, inner),
-    );
-    phases.push('password_grant');
-    noteToken(userToken, ledger, sources);
+    const profile = { ...user };
     const tokenA = await callBounded(timeoutMs, signal, (inner) =>
-      exchangeClient(
-        fetchImpl,
-        manifest.supabaseUrl,
-        userToken,
-        {
-          clientId: manifest.aClientId,
-          redirectUri: manifest.aRedirectUri,
-          scope: 'openid',
-          resource: listener.resource,
-        },
-        inner,
-      ),
+      exchangeEmailClient({
+        fetchImpl: bindSignal(fetchImpl, inner),
+        origin: manifest.supabaseUrl,
+        publishableKey: options.publishableKey,
+        user: profile,
+        clientId: manifest.aClientId,
+        redirectUri: manifest.aRedirectUri,
+        resource: listener.resource,
+        consentFlows,
+      }),
     );
-    phases.push('oauth_token_a');
-    noteToken(tokenA, ledger, sources);
+    phases.push('password_grant', 'oauth_token_a');
+    observeDecoy(tokenA, decoys);
     const opened = await callBounded(timeoutMs, signal, async (inner) => {
       const response = await mcpRequest(
         listener.resource,
@@ -1116,22 +1637,18 @@ async function proveRetained(options) {
     if (opened.status !== 403 || typeof handshake.authorization_url !== 'string') {
       throw coded('handshake_missing');
     }
-    const consented = await callBounded(timeoutMs, signal, (inner) =>
-      consentHandlerUrl(fetchImpl, handshake.authorization_url, userToken, inner),
+    await callBounded(timeoutMs, signal, (inner) =>
+      consentDownstream({
+        fetchImpl: bindSignal(fetchImpl, inner),
+        origin: manifest.supabaseUrl,
+        publishableKey: options.publishableKey,
+        user: profile,
+        authorizationUrl: handshake.authorization_url,
+        consentFlows,
+      }),
     );
-    if (consented.code === null || consented.state === null) {
-      throw coded('authorization_code_missing');
-    }
-    const callback = new URL(listener.redirect);
-    callback.searchParams.set('code', consented.code);
-    callback.searchParams.set('state', consented.state);
-    const bound = await callBounded(timeoutMs, signal, async (inner) => {
-      const response = await fetch(callback, { redirect: 'manual', signal: inner });
-      return { status: response.status, text: await readResponse(response, inner) };
-    });
-    if (bound.status !== 200) throw coded('bind_failed');
     phases.push('handler_bind');
-    bindings.push({ id: user.id, tokenA });
+    bindings.push({ id: user.id, role: user.role, tokenA });
   }
   const tool = async (tokenA, name, args) => {
     const response = await callBounded(timeoutMs, signal, async (inner) => {
@@ -1151,85 +1668,7 @@ async function proveRetained(options) {
     phases.push(`mcp_${name}`);
     return structuredContent(response.text);
   };
-  const tag = `run:${manifest.fixtures.runId}`;
-  for (const user of bindings) {
-    const own = rowsFor(manifest, user.id);
-    const record = await tool(user.tokenA, 'memory_get', { id: own[0].memoryId });
-    const getPass = record?.ok === true && record.record?.id === own[0].memoryId;
-    rows.push({
-      id: `${user.id}_get`,
-      executed: true,
-      pass: getPass,
-      reason: getPass ? 'own_record' : 'own_record_missed',
-    });
-    if (!getPass) throw coded('own_record_missed');
-    const listed = await tool(user.tokenA, 'memory_list_recent', {
-      filters: { tags: [tag] },
-      limit: 25,
-    });
-    const ids = (listed?.items ?? []).map((item) => item.id);
-    const listPass = listed?.ok === true && ids.join() === own.map((row) => row.memoryId).join();
-    rows.push({
-      id: `${user.id}_list`,
-      executed: true,
-      pass: listPass,
-      reason: listPass ? 'own_only' : 'list_mismatch',
-    });
-    if (!listPass) throw coded('list_mismatch');
-    const found = await tool(user.tokenA, 'memory_search', {
-      query: own[0].content,
-      filters: { tags: [tag] },
-      limit: 20,
-    });
-    const searchPass =
-      found?.ok === true && found.items?.length === 1 && found.items[0].id === own[0].memoryId;
-    rows.push({
-      id: `${user.id}_search`,
-      executed: true,
-      pass: searchPass,
-      reason: searchPass ? 'own_match' : 'search_mismatch',
-    });
-    if (!searchPass) throw coded('search_mismatch');
-  }
-  const baseline = bindings.find(
-    (user) => user.id === manifest.users.find((u) => u.role === 'baseline').id,
-  );
-  const second = bindings.find((user) => user.id !== baseline.id);
-  const foreignId = rowsFor(manifest, second.id)[0].memoryId;
-  const foreign = await tool(baseline.tokenA, 'memory_get', { id: foreignId });
-  const foreignPass = foreign?.ok === false && foreign.error?.code === 'RESOURCE_UNAVAILABLE';
-  rows.push({
-    id: 'foreign_get_unavailable',
-    executed: true,
-    pass: foreignPass,
-    reason: foreignPass ? 'unavailable' : 'foreign_visible',
-  });
-  if (!foreignPass) throw coded('foreign_visible');
-  const [left, right] = await Promise.all([
-    tool(baseline.tokenA, 'memory_get', { id: rowsFor(manifest, baseline.id)[0].memoryId }),
-    tool(second.tokenA, 'memory_get', { id: foreignId }),
-  ]);
-  const retry = await tool(baseline.tokenA, 'memory_get', {
-    id: rowsFor(manifest, baseline.id)[0].memoryId,
-  });
-  const concurrentPass =
-    left?.record?.id === rowsFor(manifest, baseline.id)[0].memoryId &&
-    right?.record?.id === foreignId &&
-    retry?.record?.id === rowsFor(manifest, baseline.id)[0].memoryId;
-  rows.push({
-    id: 'bounded_concurrent_retry',
-    executed: true,
-    pass: concurrentPass,
-    reason: concurrentPass ? 'cross_user' : 'retry_mismatch',
-  });
-  if (!concurrentPass) throw coded('retry_mismatch');
-  rows.push({
-    id: 'same_user_different_b_client',
-    executed: false,
-    pass: false,
-    label: 'not_executed',
-    reason: 'not_executed',
-  });
+  await proveRetainedMatrix({ tool, manifest, bindings, rows });
   return phases;
 }
 
@@ -1238,16 +1677,67 @@ async function driveRetained(input) {
   assertRetainedTarget(manifest.supabaseUrl, input.fetchImpl);
   assertReviewedHead(manifest);
   const credentials = loadRetainedCredentials(input.credentialsPath, manifest.users);
-  const fetchImpl = input.fetchImpl ?? globalThis.fetch;
+  const plan = retainedControlPlan(manifest);
   const injected = input.fetchImpl !== undefined;
   const timeoutMs = input.timeoutMs ?? 8000;
   let release;
   if (input.acquireLock === true) release = acquireControllerLock();
-  let listener;
-  const ledger = [];
-  const sources = [];
+  const sessionRecords = [];
+  const decoys = [];
   const grantFacts = [];
   const rows = [];
+  const phases = [];
+  const consentFlows = [];
+  const cursor = { gate: 'retained' };
+  const signals = createRetainedSignal();
+  if (input.signalHolder !== undefined && input.signalHolder !== null) {
+    input.signalHolder.trip = signals.trip;
+  }
+  const issuance = createIssuanceTracker(sessionRecords, cursor, signals);
+  const fetchImpl = issuance.wrap(routeFetch(input.fetchImpl ?? globalThis.fetch));
+  let listener;
+  let live = false;
+  let receipt;
+  const base = {
+    type: 'receipt',
+    packet: 'ari-memory-read-lab',
+    version: LAB_VERSION,
+    acceptance: false,
+    hostedContact: !injected,
+    executedByWriter: injected,
+    listenerCount: 1,
+    listenerClosed: true,
+    mode: 'hosted',
+    hostedProjectPinned: HOSTED_PROJECT_REF,
+    hostedExecution: injected ? 'retained_fixture' : 'retained_native',
+    provenanceLabel: 'mc1681:jesse_via_warden',
+    d1: 'not_executed',
+    d2: 'not_executed',
+    hookBypass: 'excluded_from_first_hosted_batch',
+    directTokenA: 'excluded_from_first_hosted_batch',
+    adminCredentialUsed: false,
+    credentialsLoaded: true,
+    manifestSha256: manifest.sha256,
+    reviewedHead: manifest.reviewedHead,
+    reviewedTree: manifest.reviewedTree,
+    head: git(['rev-parse', 'HEAD']),
+    tree: git(['rev-parse', 'HEAD^{tree}']),
+    installerSha256: sqlSha256(installerSql()),
+    planSha256: createHash('sha256')
+      .update(
+        JSON.stringify({
+          seed: plan.seed,
+          cleanup: plan.cleanup,
+          authorizationKeys: plan.authorizationKeys,
+        }),
+      )
+      .digest('hex'),
+    seedStatements: plan.seed,
+    cleanupStatements: plan.cleanup,
+    authorizationKeys: plan.authorizationKeys,
+    cleanupStatus: 'unresolved',
+    sameUserDifferentBClient: 'not_executed',
+  };
   try {
     listener = await startMcpListener({
       supabaseUrl: manifest.supabaseUrl,
@@ -1257,17 +1747,9 @@ async function driveRetained(input) {
       bClientId: manifest.bClientId,
       agentId: manifest.agentId,
       fetchImpl,
-      stall: 'none',
+      stall: input.stall ?? 'none',
       resourcePort: manifest.resourcePort,
       onGrantFact(fact) {
-        if (
-          fact.event === 'bound' &&
-          typeof fact.sessionId === 'string' &&
-          UUID.test(fact.sessionId) &&
-          !ledger.includes(fact.sessionId)
-        ) {
-          ledger.push(fact.sessionId);
-        }
         grantFacts.push({
           event: fact.event,
           sessionId: fact.sessionId,
@@ -1279,51 +1761,31 @@ async function driveRetained(input) {
     if (listener.resource !== manifest.resource || listener.redirect !== manifest.bRedirectUri) {
       throw coded('manifest_incomplete');
     }
-    const phases = await proveRetained({
+    live = true;
+    await proveRetained({
       fetchImpl,
       manifest,
       listener,
       users: credentials.users,
       timeoutMs,
       signal: input.signal,
-      ledger,
-      sources,
+      decoys,
+      phases,
+      consentFlows,
       rows,
+      publishableKey: credentials.publishableKey,
     });
-    const sessionLedger = reconcileLedger(ledger, sources, grantFacts, manifest.users);
-    const statements = retainedControlStatements(manifest);
+    const sessionLedger = reconcileOwned(sessionRecords, decoys, grantFacts, manifest.users);
     const boundFacts = grantFacts.filter((fact) => fact.event === 'bound');
-    return {
-      type: 'receipt',
-      packet: 'ari-memory-read-lab',
-      version: LAB_VERSION,
-      acceptance: false,
-      hostedContact: !injected,
-      executedByWriter: injected,
-      listenerCount: 1,
-      listenerClosed: true,
-      mode: 'hosted',
-      hostedProjectPinned: HOSTED_PROJECT_REF,
-      hostedExecution: injected ? 'retained_fixture' : 'retained_native',
-      provenanceLabel: 'mc1681:jesse_via_warden',
-      d1: 'not_executed',
-      d2: 'not_executed',
-      hookBypass: 'excluded_from_first_hosted_batch',
-      directTokenA: 'excluded_from_first_hosted_batch',
-      adminCredentialUsed: false,
-      credentialsLoaded: true,
-      manifestSha256: manifest.sha256,
-      reviewedHead: manifest.reviewedHead,
-      reviewedTree: manifest.reviewedTree,
-      head: git(['rev-parse', 'HEAD']),
-      tree: git(['rev-parse', 'HEAD^{tree}']),
-      installerSha256: sqlSha256(installerSql()),
+    receipt = {
+      ...base,
       subjectProvenance: {
         baselineUserId: manifest.users.find((user) => user.role === 'baseline').id,
         secondUserId: manifest.users.find((user) => user.role === 'second').id,
         bClientId: manifest.bClientId,
         bClientBinding: 'manifest',
         sessionIds: sessionLedger,
+        decoySessionIds: decoys.slice(),
       },
       grantFacts: boundFacts.map((fact) => ({
         event: fact.event,
@@ -1331,19 +1793,60 @@ async function driveRetained(input) {
         sub: fact.sub,
       })),
       sessionLedger,
+      decoySessionIds: decoys.slice(),
+      ledgerReconciled: true,
+      consentFlows: consentFlows.slice(),
       phases,
-      seedStatements: statements.seed,
-      cleanupStatements: statements.cleanup,
       rowsPass: rows.every((row) => row.executed === false || row.pass === true),
       reason: injected ? 'retained_transport_proved' : 'retained_native_completed',
-      cleanupStatus: 'statements_only',
-      sameUserDifferentBClient: 'not_executed',
       rows,
     };
+  } catch (error) {
+    if (!live) throw error;
+    receipt = {
+      ...base,
+      hostedContact: !injected,
+      sessionLedger: ownedSessionIds(sessionRecords),
+      decoySessionIds: decoys.slice(),
+      consentFlows: consentFlows.slice(),
+      phases,
+      rowsPass: false,
+      reason: safeReason(error?.code, 'child_failed'),
+      rows,
+      ledgerReconciled: false,
+    };
   } finally {
+    try {
+      await issuance.settle(50);
+    } catch {
+      // Settle only aborts leftover issuance. The receipt keeps the ids already noted.
+    }
+    if (receipt) {
+      receipt.issuanceStatus = issuanceStatusOf(issuance);
+      receipt.unresolvedAttemptIds = issuance.unresolvedAttemptIds();
+      if (receipt.ledgerReconciled !== true) {
+        receipt.sessionLedger = ownedSessionIds(sessionRecords);
+        receipt.decoySessionIds = decoys.slice();
+      }
+      delete receipt.ledgerReconciled;
+      try {
+        receipt.journalLocator = journalRetained(manifest.fixtures.runId, {
+          cleanupStatus: receipt.cleanupStatus,
+          issuanceStatus: receipt.issuanceStatus,
+          sessionLedger: receipt.sessionLedger,
+          decoySessionIds: receipt.decoySessionIds,
+          unresolvedAttemptIds: receipt.unresolvedAttemptIds,
+          reason: receipt.reason,
+        });
+      } catch {
+        receipt.journalLocator = null;
+      }
+    }
     await listener?.close?.();
+    signals.dispose();
     release?.();
   }
+  return receipt;
 }
 
 async function driveSynthetic(input) {
@@ -1607,6 +2110,19 @@ async function startMcpListener(options) {
   });
   const server = createHttpServer((req, res) => {
     const host = req.headers.host;
+    if (req.method === 'GET') {
+      let pathname = '';
+      try {
+        pathname = new URL(req.url ?? '/', `http://${host ?? '127.0.0.1'}`).pathname;
+      } catch {
+        pathname = '';
+      }
+      if (pathname === '/oauth/callback') {
+        res.writeHead(200, { 'content-type': 'application/json', 'cache-control': 'no-store' });
+        res.end('{"acknowledged":true}');
+        return;
+      }
+    }
     const chunks = [];
     req.on('data', (chunk) => chunks.push(chunk));
     req.on('end', () => {
@@ -1650,7 +2166,13 @@ async function proveHosted({ issuer, listener, manifest, users, rows, stall, gra
   const aRedirect = listener.redirect.replace('/oauth/downstream/callback', '/oauth/callback');
   const bindings = [];
   for (const user of users) {
-    const userToken = await passwordGrant(issuer.fetchImpl, issuer.origin, user);
+    const userToken = await passwordGrant(
+      issuer.fetchImpl,
+      issuer.origin,
+      user,
+      undefined,
+      PUBLISHABLE,
+    );
     const tokenA = await exchangeClient(issuer.fetchImpl, issuer.origin, userToken, {
       clientId: A_CLIENT,
       redirectUri: aRedirect,
