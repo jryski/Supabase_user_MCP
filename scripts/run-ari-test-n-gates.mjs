@@ -1114,7 +1114,7 @@ async function runN8(env, _ledger, timeoutMs, ctx) {
         id: 'accepted_then_replay',
         executed: true,
         pass,
-        reason: pass ? 'replay_rejected' : 'replay_missed',
+        reason: pass ? 'replay_rejected' : safeCode(facts.at(-1)?.failureClass ?? 'replay_missed'),
       });
     }
     const beforeUri = replayCounter.exchanges;

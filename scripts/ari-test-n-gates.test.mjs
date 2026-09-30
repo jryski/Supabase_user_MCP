@@ -1021,7 +1021,15 @@ test('exchange service failure and callback HTTP 500 cannot pass binding or URI'
     n8.subcases.some((row) => row.pass === true && row.reason === 'binding_rejected'),
     false,
   );
-  assert.equal(n8.subcases.find((row) => row.id === 'pkce_invalid_grant').pass, false);
+  assert.equal(n8.subcases.find((row) => row.id === 'accepted_then_replay').pass, false);
+  assert.equal(
+    n8.subcases.find((row) => row.id === 'accepted_then_replay').reason,
+    'service_error',
+  );
+  assert.equal(
+    n8.subcases.find((row) => row.id === 'pkce_invalid_grant').reason,
+    'pkce_invalid_grant',
+  );
   const uri = await drive('policy', 'N8', 'callback_500');
   assert.equal(uri.code, 2);
   const uriRow = uri.receipt.rows
