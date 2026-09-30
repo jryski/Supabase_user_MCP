@@ -14,7 +14,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 
 import { performLoopbackConsent } from '../docs/evidence/ari-test-probe/consent-harness.mjs';
 import { SYNTHETIC_EMAIL } from '../docs/evidence/ari-test-probe/decisions.mjs';
-import { assertIpcHasNoSecrets } from './ari-test-external-client.mjs';
+import { assertIpcHasNoSecrets, sanitizeChildDiagnostic } from './ari-test-external-client.mjs';
 
 const FORBIDDEN = [
   'SUPABASE_SERVICE_ROLE_KEY',
@@ -50,6 +50,89 @@ function coded(code) {
 
 function safeCode(value) {
   return typeof value === 'string' && SAFE_CODE.test(value) ? value : 'child_failed';
+}
+
+function boundedCount(value) {
+  return Number.isSafeInteger(value) && value >= 0 && value <= 1_000_000 ? value : 0;
+}
+
+const DIAGNOSTIC_FAULT = /^(initialize|list|tool):(-32600|-32601|-32602|-32603)$/u;
+
+function loopbackDiagnosticFault(env) {
+  const raw = env.ARI_LANE_B_DIAGNOSTIC_FAULT;
+  const set = typeof raw === 'string' && raw.length > 0;
+  if (!loopbackSupabase(env.ARI_TEST_SUPABASE_URL)) {
+    if (set) throw coded('diagnostic_fault_refused');
+    return undefined;
+  }
+  if (!set) return undefined;
+  const match = DIAGNOSTIC_FAULT.exec(raw);
+  if (match === null) throw coded('diagnostic_fault_refused');
+  return { stage: match[1], rpcCode: Number(match[2]) };
+}
+
+function loopbackLivenessTimeout(env) {
+  const raw = env.ARI_LANE_B_LIVENESS_TIMEOUT_MS;
+  const set = typeof raw === 'string' && raw.length > 0;
+  if (!set) return undefined;
+  if (!loopbackSupabase(env.ARI_TEST_SUPABASE_URL)) throw coded('live_configuration_incomplete');
+  if (!/^\d+$/u.test(raw)) throw coded('live_configuration_incomplete');
+  const value = Number(raw);
+  if (!Number.isSafeInteger(value) || value < 1 || value > 10_000) {
+    throw coded('live_configuration_incomplete');
+  }
+  return value;
+}
+
+function rpcFaultResponse(request, fault, bodyText) {
+  let parsed;
+  try {
+    parsed = JSON.parse(bodyText);
+  } catch {
+    return undefined;
+  }
+  if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) return undefined;
+  const stage =
+    parsed.method === 'initialize'
+      ? 'initialize'
+      : parsed.method === 'tools/list'
+        ? 'list'
+        : parsed.method === 'tools/call'
+          ? 'tool'
+          : undefined;
+  if (stage !== fault.stage) return undefined;
+  let id = null;
+  if (typeof parsed.id === 'number' && Number.isSafeInteger(parsed.id)) id = parsed.id;
+  else if (
+    typeof parsed.id === 'string' &&
+    parsed.id.length > 0 &&
+    parsed.id.length <= 64 &&
+    !JWT_SHAPE.test(parsed.id)
+  ) {
+    id = parsed.id;
+  }
+  const headers = {
+    'content-type': 'application/json',
+    'cache-control': 'no-store',
+  };
+  const session = request.headers.get('mcp-session-id');
+  if (
+    typeof session === 'string' &&
+    session.length > 0 &&
+    session.length <= 128 &&
+    !JWT_SHAPE.test(session) &&
+    !/\s/u.test(session)
+  ) {
+    headers['mcp-session-id'] = session;
+  }
+  return new Response(
+    JSON.stringify({
+      jsonrpc: '2.0',
+      id,
+      error: { code: fault.rpcCode, message: 'request_failed' },
+    }),
+    { status: 200, headers },
+  );
 }
 
 export function controllerPlan() {
@@ -521,7 +604,9 @@ function parentReceipt(env, details) {
     projectRef: env.ARI_TEST_PROJECT_REF,
     passwordSessionId: safeSessionId(details.passwordSessionId),
     sessionLedger: sanitizeLedger(details.sessionLedger),
-    markerReads: details.markerReads,
+    livenessChecks: boundedCount(details.livenessChecks),
+    livenessDenials: boundedCount(details.livenessDenials),
+    markerReads: boundedCount(details.markerReads),
     initialized: details.discoveryInitialize === true,
     toolsListed: details.listTools === true,
     markerCalled: details.markerRead === true,
@@ -583,6 +668,8 @@ export async function startExternalRuntime(env) {
   } catch {
     throw coded('live_configuration_incomplete');
   }
+  const diagnosticFault = loopbackDiagnosticFault(env);
+  const livenessTimeoutMs = loopbackLivenessTimeout(env);
   const childEnv = childEnvironment({
     ...env,
     ARI_EXTERNAL_A_REDIRECT_URI: aRedirect.toString(),
@@ -614,6 +701,15 @@ export async function startExternalRuntime(env) {
       downstreamRedirectUri: bRedirect.toString(),
       enableAriTestMarker: true,
       observation,
+      ...(livenessTimeoutMs === undefined ? {} : { livenessTimeoutMs }),
+      ...(diagnosticFault === undefined
+        ? {}
+        : {
+            async dispatchGate(request) {
+              const bodyText = await request.text();
+              return rpcFaultResponse(request, diagnosticFault, bodyText);
+            },
+          }),
     });
   } catch {
     throw coded('live_configuration_incomplete');
@@ -798,7 +894,12 @@ async function driveExternalSession(runtime, env, stdinReader, probe) {
         throw coded('child_failed');
       }
       assertIpcHasNoSecrets(message);
-      if (message.type === 'error') throw coded(safeCode(message.code));
+      if (message.type === 'error') {
+        const failure = coded(safeCode(message.code));
+        const diagnostic = sanitizeChildDiagnostic(message);
+        if (diagnostic !== undefined) failure.diagnostic = diagnostic;
+        throw failure;
+      }
       return message;
     };
     let checkpoint;
@@ -883,6 +984,8 @@ async function driveExternalSession(runtime, env, stdinReader, probe) {
       pair,
       passwordSessionId,
       markerReads: runtime.observation.markerReads,
+      livenessChecks: runtime.observation.livenessChecks,
+      livenessDenials: runtime.observation.livenessDenials,
       toolNames,
       childEnvNames: finalMessage.childEnvNames,
       details: {
@@ -919,6 +1022,15 @@ async function runFreshPair(env, stdinReader, probe) {
       error.passwordSessionId === undefined
     ) {
       error.passwordSessionId = sessionId;
+    }
+    if (error !== null && typeof error === 'object') {
+      error.livenessChecks = runtime.observation.livenessChecks;
+      error.livenessDenials = runtime.observation.livenessDenials;
+      error.markerReads = runtime.observation.markerReads;
+      if (JWT_SHAPE.test(runtime.session.stderr) || /refresh_token/i.test(runtime.session.stderr)) {
+        error.code = 'ipc_refused_secret';
+        error.diagnostic = undefined;
+      }
     }
     throw error;
   } finally {
@@ -976,6 +1088,8 @@ async function runLaneB(env, stdin) {
       passwordSessionId: positive.passwordSessionId,
       sessionLedger: ledger,
       markerReads: positive.markerReads,
+      livenessChecks: positive.livenessChecks,
+      livenessDenials: positive.livenessDenials,
       toolNames: positive.toolNames,
       childEnvNames: positive.childEnvNames,
       actualHead: gate.actualHead,
@@ -1049,6 +1163,7 @@ async function main() {
       safeSessionId(error?.passwordSessionId) ??
       ledger.find((row) => row.passwordSessionId !== undefined)?.passwordSessionId;
     if (ledger.length > 0 || sessionId !== undefined) {
+      const diagnostic = sanitizeChildDiagnostic(error?.diagnostic);
       const failure = {
         type: 'receipt',
         packet: 'lane-b-external-client',
@@ -1057,8 +1172,12 @@ async function main() {
         executedByWriter: false,
         ...(sessionId !== undefined ? { passwordSessionId: sessionId } : {}),
         sessionLedger: ledger,
+        livenessChecks: boundedCount(error?.livenessChecks),
+        livenessDenials: boundedCount(error?.livenessDenials),
+        markerReads: boundedCount(error?.markerReads),
         rowsPass: false,
         reason: safeCode(error?.code),
+        ...(diagnostic === undefined ? {} : diagnostic),
       };
       assertIpcHasNoSecrets(failure);
       process.stdout.write(`${JSON.stringify(failure)}\n`);

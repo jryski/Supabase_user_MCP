@@ -39,6 +39,226 @@ function safeCode(value) {
   return typeof value === 'string' && SAFE_CODE.test(value) ? value : 'child_failed';
 }
 
+export const DIAGNOSTIC_STAGES = Object.freeze(['initialize', 'liveness', 'list', 'tool']);
+export const DIAGNOSTIC_CATEGORIES = Object.freeze([
+  'rpc_validation',
+  'auth_denial',
+  'service_error',
+  'malformed_response',
+  'false',
+  'timeout',
+]);
+
+function boundedRpcCode(value) {
+  return Number.isSafeInteger(value) && value <= -32000 && value >= -32768 ? value : undefined;
+}
+
+function boundedHttpStatus(value) {
+  return Number.isSafeInteger(value) && value >= 100 && value <= 599 ? value : undefined;
+}
+
+function categoryForRpc(code) {
+  if (code === -32700) return 'malformed_response';
+  if (code === -32600 || code === -32601 || code === -32602) return 'rpc_validation';
+  return 'service_error';
+}
+
+function categoryForHttp(status) {
+  if (status === 401 || status === 403) return 'auth_denial';
+  if (status >= 500) return 'service_error';
+  if (
+    status === 400 ||
+    status === 404 ||
+    status === 406 ||
+    status === 409 ||
+    status === 415 ||
+    status === 422
+  ) {
+    return 'rpc_validation';
+  }
+  return 'malformed_response';
+}
+
+function firstJsonObject(text) {
+  const start = text.indexOf('{');
+  const end = text.lastIndexOf('}');
+  if (start < 0 || end <= start || end - start > 4096) return undefined;
+  try {
+    return JSON.parse(text.slice(start, end + 1));
+  } catch {
+    return undefined;
+  }
+}
+
+function diagnosticFromDenial(parsed) {
+  if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) return undefined;
+  if (parsed.error !== 'downstream_credential_unresolved') return undefined;
+  if (!DIAGNOSTIC_STAGES.includes(parsed.stage)) return undefined;
+  if (!DIAGNOSTIC_CATEGORIES.includes(parsed.category)) return undefined;
+  const diagnostic = { stage: parsed.stage, category: parsed.category };
+  if (parsed.httpStatus !== undefined) {
+    const httpStatus = boundedHttpStatus(parsed.httpStatus);
+    if (httpStatus === undefined) return undefined;
+    diagnostic.httpStatus = httpStatus;
+  }
+  if (parsed.rpcCode !== undefined) {
+    const rpcCode = boundedRpcCode(parsed.rpcCode);
+    if (rpcCode === undefined) return undefined;
+    diagnostic.rpcCode = rpcCode;
+  }
+  return diagnostic;
+}
+
+function walkErrors(error, visit) {
+  const seen = new Set();
+  let current = error;
+  while (
+    current !== undefined &&
+    current !== null &&
+    typeof current === 'object' &&
+    !seen.has(current)
+  ) {
+    seen.add(current);
+    const found = visit(current);
+    if (found !== undefined) return found;
+    current = current.cause;
+  }
+  return undefined;
+}
+
+function embeddedDiagnostic(error) {
+  return walkErrors(error, (current) => {
+    const texts = [];
+    if (typeof current.message === 'string') texts.push(current.message);
+    if (typeof current.data?.text === 'string') texts.push(current.data.text);
+    for (const text of texts) {
+      const diagnostic = diagnosticFromDenial(firstJsonObject(text));
+      if (diagnostic !== undefined) return diagnostic;
+    }
+    return undefined;
+  });
+}
+
+function findRpcCode(error) {
+  return walkErrors(error, (current) => {
+    const direct = boundedRpcCode(current.code);
+    if (direct !== undefined) return direct;
+    const texts = [];
+    if (typeof current.message === 'string') texts.push(current.message);
+    if (typeof current.data?.text === 'string') texts.push(current.data.text);
+    for (const text of texts) {
+      const parsed = firstJsonObject(text);
+      if (parsed === undefined || parsed.error === 'downstream_credential_unresolved') continue;
+      const nested = boundedRpcCode(parsed.error?.code ?? parsed.code);
+      if (nested !== undefined) return nested;
+    }
+    return undefined;
+  });
+}
+
+function findHttpStatus(error) {
+  return walkErrors(error, (current) => {
+    const direct = boundedHttpStatus(current.status);
+    if (direct !== undefined) return direct;
+    const dataStatus = boundedHttpStatus(current.data?.status);
+    if (dataStatus !== undefined) return dataStatus;
+    if (typeof current.message === 'string') {
+      const match = /HTTP (\d{3})/u.exec(current.message);
+      if (match !== null) return boundedHttpStatus(Number(match[1]));
+    }
+    return undefined;
+  });
+}
+
+function isTimeout(error) {
+  return (
+    walkErrors(error, (current) => {
+      if (current.name === 'AbortError' || current.name === 'TimeoutError') return true;
+      if (current.code === 'REQUEST_TIMEOUT' || current.code === 'ABORT_ERR') return true;
+      return undefined;
+    }) === true
+  );
+}
+
+function isMalformed(error) {
+  return (
+    walkErrors(error, (current) => {
+      if (current.name === 'SyntaxError') return true;
+      if (current.code === 'CLIENT_HTTP_UNEXPECTED_CONTENT') return true;
+      return undefined;
+    }) === true
+  );
+}
+
+export function sanitizeChildDiagnostic(value) {
+  if (value === null || typeof value !== 'object') return undefined;
+  const stage = DIAGNOSTIC_STAGES.includes(value.stage) ? value.stage : undefined;
+  const category = DIAGNOSTIC_CATEGORIES.includes(value.category) ? value.category : undefined;
+  if (stage === undefined || category === undefined) return undefined;
+  const diagnostic = { stage, category };
+  if (value.rpcCode !== undefined) {
+    const rpcCode = boundedRpcCode(value.rpcCode);
+    if (rpcCode === undefined) return undefined;
+    diagnostic.rpcCode = rpcCode;
+  }
+  if (value.httpStatus !== undefined) {
+    const httpStatus = boundedHttpStatus(value.httpStatus);
+    if (httpStatus === undefined) return undefined;
+    diagnostic.httpStatus = httpStatus;
+  }
+  return diagnostic;
+}
+
+/**
+ * Bounded stage and category for a child failure. Numeric RPC and HTTP
+ * codes are copied only when they are integers in range. The error message,
+ * response body, URL, and stderr are not copied.
+ */
+export function projectChildFailure(error, stageHint) {
+  if (error?.diagnostic?.reason !== undefined) {
+    const kept = sanitizeChildDiagnostic(error.diagnostic);
+    return {
+      reason: safeCode(error.diagnostic.reason),
+      ...(kept ?? {}),
+    };
+  }
+  const named =
+    typeof error?.code === 'string' && SAFE_CODE.test(error.code) ? error.code : undefined;
+  const embedded = embeddedDiagnostic(error);
+  const rpcCode = embedded?.rpcCode ?? (embedded === undefined ? findRpcCode(error) : undefined);
+  const httpStatus =
+    embedded?.httpStatus ?? (embedded === undefined ? findHttpStatus(error) : undefined);
+  let category = embedded?.category;
+  const stage = embedded?.stage ?? (DIAGNOSTIC_STAGES.includes(stageHint) ? stageHint : undefined);
+  if (category === undefined && rpcCode !== undefined) category = categoryForRpc(rpcCode);
+  if (category === undefined && httpStatus !== undefined) category = categoryForHttp(httpStatus);
+  if (category === undefined && isTimeout(error)) category = 'timeout';
+  if (category === undefined && isMalformed(error)) category = 'malformed_response';
+  return {
+    reason: named ?? 'child_failed',
+    ...(stage === undefined ? {} : { stage }),
+    ...(category === undefined ? {} : { category }),
+    ...(category !== undefined && rpcCode !== undefined ? { rpcCode } : {}),
+    ...(category !== undefined && httpStatus !== undefined ? { httpStatus } : {}),
+  };
+}
+
+function throwProjected(error, stage) {
+  const projected = projectChildFailure(error, stage);
+  const wrapped = coded(safeCode(projected.reason));
+  wrapped.diagnostic = projected;
+  throw wrapped;
+}
+
+function diagnosticIpc(projected) {
+  const safe = sanitizeChildDiagnostic(projected) ?? {};
+  return {
+    type: 'error',
+    code: safeCode(projected?.reason),
+    ...safe,
+  };
+}
+
 export function createExternalPublicPkceProvider(options) {
   let accessToken;
   let tokenIssuer;
@@ -213,7 +433,7 @@ export async function connectExternalClient(options) {
   if (first.error !== undefined) {
     if (!isAuthorizationRedirect(first.error)) {
       await closeOpened(first);
-      throw first.error?.code ? first.error : coded('child_failed');
+      throwProjected(first.error, 'initialize');
     }
     try {
       const code = await provider.takeAuthorizationCode();
@@ -227,7 +447,7 @@ export async function connectExternalClient(options) {
   const downstream = downstreamPayload(second.error);
   await closeOpened(second);
   if (downstream === undefined || !publishDownstreamAuthorization(downstream, options.writeIpc)) {
-    throw second.error?.code ? second.error : coded('child_failed');
+    throwProjected(second.error, 'initialize');
   }
   const bound = JSON.parse(await options.readIpc());
   assertIpcHasNoSecrets(bound);
@@ -237,7 +457,7 @@ export async function connectExternalClient(options) {
   const third = await openClient(options.mcpUrl, provider);
   if (third.error !== undefined) {
     await closeOpened(third);
-    throw third.error?.code ? third.error : coded('downstream_not_bound');
+    throwProjected(third.error, 'initialize');
   }
   return { client: third.client, provider };
 }
@@ -282,8 +502,10 @@ export async function runExternalClientSession(options) {
   const connected = await connectExternalClient(options);
   let client = connected.client;
   let clientAlive = true;
+  let stage = 'list';
   try {
     const listed = await client.listTools();
+    stage = 'tool';
     const names = toolNames(listed);
     const marker = await client.callTool({ name: MARKER_TOOL_NAME, arguments: {} });
     const text = markerText(marker);
@@ -344,6 +566,8 @@ export async function runExternalClientSession(options) {
       type: 'receipt',
       childEnvNames: credentialEnvNames(options.env ?? {}),
     });
+  } catch (error) {
+    throwProjected(error, stage);
   } finally {
     await client?.close().catch(() => undefined);
   }
@@ -470,9 +694,12 @@ async function main() {
     );
     process.stdout.write(`${receipt}\n`);
   } catch (error) {
-    const code = safeCode(error?.code);
+    const projected = error?.diagnostic ?? projectChildFailure(error, undefined);
+    const code = safeCode(projected.reason);
     try {
-      process.stdout.write(`${assertIpcHasNoSecrets({ type: 'error', code })}\n`);
+      process.stdout.write(
+        `${assertIpcHasNoSecrets(diagnosticIpc({ ...projected, reason: code }))}\n`,
+      );
     } catch {
       process.stdout.write(`${JSON.stringify({ type: 'error', code: 'ipc_refused_secret' })}\n`);
     }

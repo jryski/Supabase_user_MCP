@@ -115,6 +115,15 @@ describe('native user MCP read composition', () => {
       }
       return new Response('unexpected', { status: 500 });
     };
+    const observation = {
+      livenessChecks: 0,
+      livenessDenials: 0,
+      markerReads: 0,
+      tokenAOfferedAsB: false,
+      tokenARejectedAsB: false,
+      sourceSessionId: null as string | null,
+      bSessionId: null as string | null,
+    };
     const handler = createNativeUserMcpReadHandler({
       resourceServer: RESOURCE,
       supabaseUrl: SUPABASE_URL,
@@ -126,6 +135,7 @@ describe('native user MCP read composition', () => {
       downstreamClientId: B_CLIENT,
       downstreamRedirectUri: REDIRECT,
       fetch: fetchImpl,
+      observation,
     });
 
     const first = await handler(mcpPost(tokenA));
@@ -172,7 +182,17 @@ describe('native user MCP read composition', () => {
     live = false;
     const denied = await handler(mcpPost(tokenA));
     expect(denied.status).toBe(403);
-    expect(await denied.json()).toEqual({ error: DOWNSTREAM_CREDENTIAL_UNRESOLVED });
+    expect(await denied.json()).toEqual({
+      error: DOWNSTREAM_CREDENTIAL_UNRESOLVED,
+      stage: 'liveness',
+      category: 'false',
+      httpStatus: 200,
+    });
+    expect(observation.livenessChecks).toBe(1);
+    expect(observation.livenessDenials).toBe(1);
+    expect(observation.markerReads).toBe(0);
+    expect(observation.sourceSessionId).toBe(SOURCE);
+    expect(observation.bSessionId).toBe(B_SESSION);
     expect(calls.some((call) => call.url.endsWith('/auth/v1/user'))).toBe(false);
     const liveness = calls.find((call) => call.url.includes('ari_probe_source_session_live_v1'));
     expect(liveness?.authorization).toBe(`Bearer ${tokenB}`);

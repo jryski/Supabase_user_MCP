@@ -21,7 +21,7 @@ import {
   type VerifiedNativeUserPrincipal,
 } from './native-user-mcp.js';
 import { createReadOnlyServer } from './server.js';
-import { probeSourceSessionLive } from './source-session-liveness.js';
+import { classifySourceSessionLiveness } from './source-session-liveness.js';
 
 export { DOWNSTREAM_AUTHORIZATION_REQUIRED, DOWNSTREAM_B_GRANT_PROFILE };
 
@@ -48,6 +48,14 @@ export interface NativeUserMcpReadHandlerConfig {
   readonly livenessTimeoutMs?: number;
   /** In-process counters for the Lane B parent. Never store a bearer here. */
   readonly observation?: LaneBRunObservation;
+  /**
+   * Loopback diagnostic injection. Called only after liveness reports live.
+   * A returned response replaces tool dispatch. It does not skip liveness
+   * and it does not grant a credential.
+   */
+  readonly dispatchGate?: (
+    request: Request,
+  ) => Response | undefined | Promise<Response | undefined>;
 }
 
 export interface LaneBRunObservation {
@@ -73,6 +81,19 @@ function bearerToken(request: Request): string {
 
 function jsonResponse(status: number, body: Readonly<Record<string, unknown>>): Response {
   return new Response(JSON.stringify(body), { status, headers: JSON_HEADERS });
+}
+
+function livenessDenial(result: {
+  readonly category?: string;
+  readonly httpStatus?: number;
+}): Response {
+  const body: Record<string, unknown> = {
+    error: DOWNSTREAM_CREDENTIAL_UNRESOLVED,
+    stage: 'liveness',
+    category: result.category ?? 'service_error',
+  };
+  if (result.httpStatus !== undefined) body.httpStatus = result.httpStatus;
+  return jsonResponse(403, body);
 }
 
 function principalBinding(principal: VerifiedNativeUserPrincipal): DownstreamHandshakePrincipal {
@@ -215,7 +236,7 @@ export function createNativeUserMcpReadHandler(
       return jsonResponse(403, { error: DOWNSTREAM_CREDENTIAL_UNRESOLVED });
     }
     if (observation !== undefined) observation.bSessionId = store.boundSessionId(binding);
-    const live = await probeSourceSessionLive(
+    const liveness = await classifySourceSessionLiveness(
       {
         supabaseUrl: config.supabaseUrl,
         publishableKey: config.publishableKey,
@@ -230,9 +251,13 @@ export function createNativeUserMcpReadHandler(
     );
     if (observation !== undefined) {
       observation.livenessChecks += 1;
-      if (!live) observation.livenessDenials += 1;
+      if (!liveness.live) observation.livenessDenials += 1;
     }
-    if (!live) return jsonResponse(403, { error: DOWNSTREAM_CREDENTIAL_UNRESOLVED });
+    if (!liveness.live) return livenessDenial(liveness);
+    if (config.dispatchGate !== undefined) {
+      const gated = await config.dispatchGate(request.clone());
+      if (gated !== undefined) return gated;
+    }
     return dispatchWithTokenB(request, grant.accessToken);
   };
 

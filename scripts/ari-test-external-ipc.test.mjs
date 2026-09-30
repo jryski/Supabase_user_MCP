@@ -15,6 +15,7 @@ import {
   assertIpcHasNoSecrets,
   createExternalPublicPkceProvider,
   EXTERNAL_CLIENT_PROFILE,
+  projectChildFailure,
   publishDownstreamAuthorization,
 } from './ari-test-external-client.mjs';
 import {
@@ -444,7 +445,7 @@ async function freePort() {
   return port;
 }
 
-async function runSyntheticLaneB(mode) {
+async function runSyntheticLaneB(mode, inject) {
   const plantedToken = 'eyJhbGciOiJFUzI1NiJ9.eyJzdWIiOiJ4In0.sig';
   const plantedPassword = 'synthetic-password-sentinel';
   const refreshSentinel = 'refresh-sentinel-must-not-leak';
@@ -744,7 +745,34 @@ async function runSyntheticLaneB(mode) {
       const chunks = [];
       req.on('data', (chunk) => chunks.push(chunk));
       req.on('end', () => {
+        if (inject?.liveness === 'timeout') return;
         counts.liveness += 1;
+        if (inject?.liveness === 'auth') {
+          send(
+            401,
+            JSON.stringify({
+              leak: refreshSentinel,
+              url: 'https://user:pass@evil.example/hook?code=abc&state=xyz',
+            }),
+          );
+          return;
+        }
+        if (inject?.liveness === 'service') {
+          send(500, JSON.stringify({ leak: refreshSentinel, detail: 'raw-service-body' }));
+          return;
+        }
+        if (inject?.liveness === 'malformed') {
+          send(200, `not-json ${refreshSentinel}`);
+          return;
+        }
+        if (inject?.liveness === 'rpc') {
+          send(400, JSON.stringify({ leak: refreshSentinel, hint: 'raw-validation-body' }));
+          return;
+        }
+        if (inject?.liveness === 'false') {
+          send(200, 'false');
+          return;
+        }
         if (clientId === aClient) counts.markerUsedA = true;
         let sourceSessionId = '';
         try {
@@ -796,6 +824,8 @@ async function runSyntheticLaneB(mode) {
       ARI_LANE_B_EXECUTE: '1',
       ARI_LANE_B_G5_HEAD: head,
       ARI_LANE_B_TIMEOUT_MS: '20000',
+      ...(inject?.fault === undefined ? {} : { ARI_LANE_B_DIAGNOSTIC_FAULT: inject.fault }),
+      ...(inject?.liveness === 'timeout' ? { ARI_LANE_B_LIVENESS_TIMEOUT_MS: '300' } : {}),
       ARI_TEST_PROJECT_REF: 'odbcejsuuqdzhabjmozi',
       ARI_TEST_SUPABASE_URL: `https://127.0.0.1:${httpsPort}`,
       ARI_TEST_PUBLISHABLE_KEY: publishable,
@@ -890,6 +920,11 @@ async function runSyntheticLaneB(mode) {
     const [code] = await exited;
     const errText = Buffer.concat(stderr).toString('utf8');
     const outText = stdoutText.join('\n');
+    if (mode === 'inject') {
+      assert.equal(code, 2, errText);
+      assert.notEqual(receipt, undefined);
+      return { receipt, errText, outText, passwordSessionIds };
+    }
     if (mode === 'abort-n5') {
       assert.equal(code, 2, errText);
       assert.equal(receipt.acceptance, false);
@@ -1071,6 +1106,204 @@ test('failure during N5 keeps positive, N4, and known N5 cleanup ids', {
   timeout: 90_000,
 }, async () => {
   await runSyntheticLaneB('abort-n5');
+});
+
+test('child projection keeps distinct RPC codes and drops raw error text', () => {
+  const invalid = projectChildFailure(
+    Object.assign(new Error('raw-invalid-params-body'), { code: -32602 }),
+    'initialize',
+  );
+  const internal = projectChildFailure(
+    Object.assign(new Error('raw-internal-body'), { code: -32603 }),
+    'list',
+  );
+  assert.equal(invalid.reason, 'child_failed');
+  assert.equal(invalid.stage, 'initialize');
+  assert.equal(invalid.category, 'rpc_validation');
+  assert.equal(invalid.rpcCode, -32602);
+  assert.equal(internal.stage, 'list');
+  assert.equal(internal.category, 'service_error');
+  assert.equal(internal.rpcCode, -32603);
+  assert.notEqual(invalid.category, internal.category);
+  assert.equal(JSON.stringify(invalid).includes('raw-invalid'), false);
+  assert.equal(JSON.stringify(internal).includes('raw-internal'), false);
+  const embedded = projectChildFailure(
+    new Error(
+      'Error POSTing to endpoint (HTTP 403): {"error":"downstream_credential_unresolved","stage":"liveness","category":"false","httpStatus":200,"access_token":"eyJhbGciOiJFUzI1NiJ9.eyJzdWIiOiJ4In0.sig"}',
+    ),
+    'initialize',
+  );
+  assert.equal(embedded.stage, 'liveness');
+  assert.equal(embedded.category, 'false');
+  assert.equal(embedded.httpStatus, 200);
+  assertIpcHasNoSecrets(embedded);
+  assert.equal(JSON.stringify(embedded).includes('eyJ'), false);
+});
+
+test('controller runbook states the Primary Users retained-baseline hygiene rule', () => {
+  const controller = readFileSync(
+    fileURLToPath(new URL('../docs/evidence/ari-test-probe/lane-b-controller.md', import.meta.url)),
+    'utf8',
+  );
+  assert.match(controller, /Primary Users keep the retained baseline/);
+  assert.match(controller, /Each `run` is its own/);
+  assert.match(controller, /Do not reuse a previous run's ledger/);
+  assert.match(controller, /category/);
+  assert.match(controller, /rpcCode/);
+  assert.equal(controller.includes('Principal Users'), false);
+});
+
+function assertDiagnosticReceipt(result, expected, sentinels) {
+  const { receipt, errText, outText } = result;
+  assert.equal(receipt.acceptance, false);
+  assert.equal(receipt.rowsPass, false);
+  assert.equal(receipt.hookInstalled, false);
+  assert.equal(receipt.executedByWriter, false);
+  assert.equal(receipt.reason, 'child_failed');
+  assert.equal(receipt.stage, expected.stage);
+  assert.equal(receipt.category, expected.category);
+  assert.equal(receipt.rpcCode, expected.rpcCode);
+  assert.equal(receipt.httpStatus, expected.httpStatus);
+  assert.equal(receipt.sessionLedger.length, 1);
+  assert.equal(receipt.sessionLedger[0].pair, 'positive');
+  assert.match(receipt.sessionLedger[0].passwordSessionId, /^[0-9a-f-]{36}$/u);
+  assert.match(receipt.sessionLedger[0].sourceSessionId, /^[0-9a-f-]{36}$/u);
+  assert.match(receipt.sessionLedger[0].bSessionId, /^[0-9a-f-]{36}$/u);
+  assert.equal(receipt.passwordSessionId, receipt.sessionLedger[0].passwordSessionId);
+  assert.notEqual(
+    receipt.sessionLedger[0].passwordSessionId,
+    receipt.sessionLedger[0].sourceSessionId,
+  );
+  assert.notEqual(receipt.sessionLedger[0].sourceSessionId, receipt.sessionLedger[0].bSessionId);
+  assert.equal(Number.isInteger(receipt.livenessChecks), true);
+  assert.equal(Number.isInteger(receipt.livenessDenials), true);
+  assert.equal(Number.isInteger(receipt.markerReads), true);
+  assert.equal(receipt.livenessChecks >= expected.minChecks, true);
+  if (expected.denials === 0) assert.equal(receipt.livenessDenials, 0);
+  else assert.equal(receipt.livenessDenials >= expected.denials, true);
+  assert.equal(receipt.markerReads, 0);
+  assert.equal(errText.includes('request_failed'), false);
+  assert.equal(errText.includes('raw-service-body'), false);
+  assert.equal(errText.includes('raw-validation-body'), false);
+  assert.equal(errText.includes('evil.example'), false);
+  const packed = `${outText}\n${errText}\n${JSON.stringify(receipt)}`;
+  for (const sentinel of sentinels) assert.equal(packed.includes(sentinel), false, sentinel);
+  assert.equal(packed.includes('eyJ'), false);
+  assert.equal(JSON.stringify(receipt).includes('Bearer'), false);
+}
+
+test('actual child failures after B stay distinguishable on the parent receipt', {
+  timeout: 240_000,
+}, async () => {
+  const sentinels = [
+    'synthetic-password-sentinel',
+    'refresh-sentinel-must-not-leak',
+    'sb_publishable_parent_only_sentinel',
+    'eyJhbGciOiJFUzI1NiJ9.eyJzdWIiOiJ4In0.sig',
+    'evil.example',
+    'raw-service-body',
+    'raw-validation-body',
+    'request_failed',
+  ];
+  const cases = [
+    {
+      inject: { liveness: 'false' },
+      expected: { stage: 'liveness', category: 'false', httpStatus: 200, minChecks: 1, denials: 1 },
+    },
+    {
+      inject: { liveness: 'auth' },
+      expected: {
+        stage: 'liveness',
+        category: 'auth_denial',
+        httpStatus: 401,
+        minChecks: 1,
+        denials: 1,
+      },
+    },
+    {
+      inject: { liveness: 'service' },
+      expected: {
+        stage: 'liveness',
+        category: 'service_error',
+        httpStatus: 500,
+        minChecks: 1,
+        denials: 1,
+      },
+    },
+    {
+      inject: { liveness: 'malformed' },
+      expected: {
+        stage: 'liveness',
+        category: 'malformed_response',
+        httpStatus: 200,
+        minChecks: 1,
+        denials: 1,
+      },
+    },
+    {
+      inject: { liveness: 'rpc' },
+      expected: {
+        stage: 'liveness',
+        category: 'rpc_validation',
+        httpStatus: 400,
+        minChecks: 1,
+        denials: 1,
+      },
+    },
+    {
+      inject: { liveness: 'timeout' },
+      expected: { stage: 'liveness', category: 'timeout', minChecks: 1, denials: 1 },
+    },
+    {
+      inject: { fault: 'initialize:-32602' },
+      expected: {
+        stage: 'initialize',
+        category: 'rpc_validation',
+        rpcCode: -32602,
+        minChecks: 1,
+        denials: 0,
+      },
+    },
+    {
+      inject: { fault: 'initialize:-32603' },
+      expected: {
+        stage: 'initialize',
+        category: 'service_error',
+        rpcCode: -32603,
+        minChecks: 1,
+        denials: 0,
+      },
+    },
+    {
+      inject: { fault: 'list:-32602' },
+      expected: {
+        stage: 'list',
+        category: 'rpc_validation',
+        rpcCode: -32602,
+        minChecks: 1,
+        denials: 0,
+      },
+    },
+    {
+      inject: { fault: 'tool:-32603' },
+      expected: {
+        stage: 'tool',
+        category: 'service_error',
+        rpcCode: -32603,
+        minChecks: 1,
+        denials: 0,
+      },
+    },
+  ];
+  const seen = [];
+  for (const item of cases) {
+    const result = await runSyntheticLaneB('inject', item.inject);
+    assertDiagnosticReceipt(result, item.expected, sentinels);
+    seen.push(
+      `${result.receipt.stage}:${result.receipt.category}:${result.receipt.rpcCode ?? ''}:${result.receipt.httpStatus ?? ''}`,
+    );
+  }
+  assert.equal(new Set(seen).size, seen.length);
 });
 
 test('cleanup runbook deletes every receipt-linked session and keeps the user', () => {

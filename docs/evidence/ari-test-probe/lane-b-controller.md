@@ -134,8 +134,31 @@ are UUIDs. They are not bearers, tokens, codes, or verifiers. The
 top-level `passwordSessionId` is only the positive pair's password
 session. A failed run still prints a receipt when any safe session id is
 known. That receipt lists every pair ledger accumulated before the abort
-and the known safe ids for the pair that aborted. Cleanup walks the
-ledger, not the single top-level id.
+and the known safe ids for the pair that aborted. Each ledger entry keeps
+every UUID already known for that pair: `passwordSessionId`,
+`sourceSessionId`, and `bSessionId`. Cleanup walks the ledger, not the
+single top-level id.
+
+When the child can classify the failure, the same receipt adds `stage`
+(`initialize`, `liveness`, `list`, or `tool`), `category`
+(`rpc_validation`, `auth_denial`, `service_error`, `malformed_response`,
+`false`, or `timeout`), and a bounded integer `rpcCode` or `httpStatus`
+when one was valid. `livenessChecks`, `livenessDenials`, and `markerReads`
+are counts from the pair that failed. `reason` may stay `child_failed`
+while `category` and the numeric code still differ. The receipt does not
+include the response body, the error text, stderr, a URL, a token, an
+authorization code, `state`, or a verifier. This projection is a local
+diagnostic. It is not a hosted root cause and not a pass.
+
+## Per-run hygiene
+
+Primary Users keep the retained baseline: the `ari-test-synthetic` client
+row, the synthetic user, the marker fixture, `mcp_ingress`, and any
+`auth.sessions` row this run's receipt does not name. Each `run` is its own
+cleanup set. Delete only UUIDs on that run's `sessionLedger`, including
+ids a failure receipt already knew. Do not reuse a previous run's ledger as
+this run's cleanup set, and do not delete the retained baseline to make a
+later run look empty.
 
 The CLI never reads a bearer from stdin. After P5 it prints a
 `controller_action` and waits for one stdin line whose text is exactly
@@ -165,7 +188,11 @@ Without `ARI_LANE_B_EXECUTE=1`, `run` exits 2 and prints
 
 This proves the CLI entrypoints call the SDK and the loopback handler. It
 does not contact `odbcejsuuqdzhabjmozi`. It is not G5 re-PASS and not
-acceptance. The hook is not installed.
+acceptance. The hook is not installed. The synthetic process test injects
+failures after B is bound and checks that the parent receipt keeps those
+categories apart. Do not set `ARI_LANE_B_DIAGNOSTIC_FAULT` or
+`ARI_LANE_B_LIVENESS_TIMEOUT_MS` for a hosted launch. A non-loopback URL
+refuses the fault. Those variables are not copied to the child.
 
 ```bash
 npm run build
