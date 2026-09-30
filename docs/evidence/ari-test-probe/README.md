@@ -201,9 +201,11 @@ Do not drop the synthetic user, the marker fixture, or `mcp_ingress` in
 that rollback.
 
 Reviewed session cleanup, after a controller run, is
-`oauth-session-cleanup.md`. It deletes one `auth.sessions` row by
-`source_session_id` on TEST only. It is not executed from this branch and
-it is not a revocation receipt.
+`oauth-session-cleanup.md`. It deletes every receipt-linked password, A
+source, and B `auth.sessions` row, and the refresh rows for those ids, on
+TEST only. It leaves the synthetic user and any baseline session the
+receipt does not name. It is not executed from this branch and it is not a
+revocation receipt.
 
 ## Loopback consent harness
 

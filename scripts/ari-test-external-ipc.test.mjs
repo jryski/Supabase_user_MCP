@@ -93,6 +93,7 @@ test('plan prints controller steps and run stays closed', async () => {
   assert.match(plan.steps.join('\n'), /STOP AND REPORT/);
   assert.match(plan.steps.join('\n'), /first-party session/);
   assert.match(plan.steps.join('\n'), /fresh A\/B pair/);
+  assert.match(plan.steps.join('\n'), /sessionLedger/);
   assert.match(plan.steps.join('\n'), /npm run build/);
   assert.match(plan.rollback.join('\n'), /ari-test-external-a/);
   assert.equal(controllerGate({}).ok, false);
@@ -443,7 +444,7 @@ async function freePort() {
   return port;
 }
 
-test('CLI run completes SDK OAuth, B bind, and the marker call', { timeout: 90_000 }, async () => {
+async function runSyntheticLaneB(mode) {
   const plantedToken = 'eyJhbGciOiJFUzI1NiJ9.eyJzdWIiOiJ4In0.sig';
   const plantedPassword = 'synthetic-password-sentinel';
   const refreshSentinel = 'refresh-sentinel-must-not-leak';
@@ -496,7 +497,11 @@ test('CLI run completes SDK OAuth, B bind, and the marker call', { timeout: 90_0
   const revokedSources = new Set();
   const revokedBSessions = new Set();
   let passwordToken = '';
-  const passwordSessionId = '66666666-6666-4666-8666-666666666666';
+  const passwordSessionIds = [
+    '66666666-6666-4666-8666-666666666661',
+    '66666666-6666-4666-8666-666666666662',
+    '66666666-6666-4666-8666-666666666663',
+  ];
   const mcpPort = await freePort();
   const mcpResource = `http://127.0.0.1:${mcpPort}/mcp`;
   const https = createHttpsServer({ cert: ca, key: readFileSync(keyPath) }, (req, res) => {
@@ -625,9 +630,14 @@ test('CLI run completes SDK OAuth, B bind, and the marker call', { timeout: 90_0
             send(400, JSON.stringify({ error: 'invalid_grant' }));
             return;
           }
+          const sessionId = passwordSessionIds[counts.passwordLogins];
+          if (sessionId === undefined) {
+            send(500, JSON.stringify({ error: 'too_many_logins' }));
+            return;
+          }
           passwordToken = await new SignJWT({
             role: 'authenticated',
-            session_id: passwordSessionId,
+            session_id: sessionId,
           })
             .setProtectedHeader({ alg: 'ES256', kid: 'g2-test', typ: 'JWT' })
             .setSubject(sub)
@@ -789,7 +799,9 @@ test('CLI run completes SDK OAuth, B bind, and the marker call', { timeout: 90_0
   proc.stderr.on('data', (chunk) => stderr.push(chunk));
   const exited = once(proc, 'exit');
   const reader = stdoutLines(proc.stdout);
+  const stdoutText = [];
   let receipt;
+  let abortedN5;
   try {
     while (receipt === undefined) {
       let timer;
@@ -801,8 +813,15 @@ test('CLI run completes SDK OAuth, B bind, and the marker call', { timeout: 90_0
       ]);
       clearTimeout(timer);
       assert.notEqual(line, null, Buffer.concat(stderr).toString('utf8'));
+      stdoutText.push(line);
       const message = JSON.parse(line);
       if (message.type === 'controller_action') {
+        if (mode === 'abort-n5' && message.action === 'revoke_b_session') {
+          assert.equal(message.pair, 'n5');
+          abortedN5 = message;
+          proc.stdin.end();
+          continue;
+        }
         assert.equal(message.authorizationUrl, undefined);
         assert.equal(message.code, undefined);
         assert.match(message.source_session_id, /^[0-9a-f-]{36}$/u);
@@ -854,7 +873,43 @@ test('CLI run completes SDK OAuth, B bind, and the marker call', { timeout: 90_0
     }
     const [code] = await exited;
     const errText = Buffer.concat(stderr).toString('utf8');
-    const outText = JSON.stringify(receipt);
+    const outText = stdoutText.join('\n');
+    if (mode === 'abort-n5') {
+      assert.equal(code, 2, errText);
+      assert.equal(receipt.acceptance, false);
+      assert.equal(receipt.rowsPass, false);
+      assert.equal(receipt.hookInstalled, false);
+      assert.equal(receipt.executedByWriter, false);
+      assert.equal(receipt.reason, 'stdin_refused');
+      assert.deepEqual(
+        receipt.sessionLedger.map((row) => row.pair),
+        ['positive', 'n4', 'n5'],
+      );
+      const ledgerPasswordIds = receipt.sessionLedger.map((row) => row.passwordSessionId);
+      const ledgerSourceIds = receipt.sessionLedger.map((row) => row.sourceSessionId);
+      const ledgerBIds = receipt.sessionLedger.map((row) => row.bSessionId);
+      assert.deepEqual(ledgerPasswordIds, passwordSessionIds);
+      assert.equal(new Set(ledgerPasswordIds).size, 3);
+      assert.equal(new Set(ledgerSourceIds).size, 3);
+      assert.equal(new Set(ledgerBIds).size, 3);
+      assert.equal(receipt.sessionLedger[2].sourceSessionId, abortedN5.source_session_id);
+      assert.equal(receipt.sessionLedger[2].bSessionId, abortedN5.b_session_id);
+      assert.notEqual(ledgerPasswordIds[0], ledgerPasswordIds[1]);
+      assert.notEqual(ledgerSourceIds[0], ledgerSourceIds[1]);
+      assert.notEqual(ledgerSourceIds[1], ledgerSourceIds[2]);
+      assert.notEqual(ledgerBIds[0], ledgerBIds[1]);
+      assert.notEqual(ledgerBIds[1], ledgerBIds[2]);
+      assert.equal(outText.includes(plantedToken), false);
+      assert.equal(outText.includes(plantedPassword), false);
+      assert.equal(outText.includes(refreshSentinel), false);
+      assert.equal(outText.includes(publishable), false);
+      assert.equal(outText.includes('eyJ'), false);
+      assert.equal(errText.includes(plantedToken), false);
+      assert.equal(errText.includes(plantedPassword), false);
+      assert.equal(errText.includes(refreshSentinel), false);
+      assert.equal(JSON.stringify(receipt).includes('Bearer'), false);
+      return;
+    }
     assert.equal(code, 0, errText);
     assert.equal(receipt.acceptance, false);
     assert.equal(receipt.hostedContact, false);
@@ -867,7 +922,8 @@ test('CLI run completes SDK OAuth, B bind, and the marker call', { timeout: 90_0
     assert.equal(receipt.downstreamBound, true);
     assert.equal(receipt.externalAuthorizationCompleted, true);
     assert.equal(receipt.toolNames.includes('ari_test_marker_get'), true);
-    assert.equal(receipt.passwordSessionId, passwordSessionId);
+    assert.equal(receipt.passwordSessionId, passwordSessionIds[0]);
+    assert.equal(outText.includes('eyJ'), false);
     assert.equal(receipt.rowsPass, true);
     assert.equal(receipt.markerReads, 1);
     assert.equal(receipt.actualHead, head);
@@ -894,6 +950,28 @@ test('CLI run completes SDK OAuth, B bind, and the marker call', { timeout: 90_0
     assert.equal(byId.P1.sourceSessionId, byId.P5.sourceSessionId);
     assert.equal(byId.N1.sourceSessionId, byId.P5.sourceSessionId);
     assert.equal(byId.N1.bSessionId, byId.P5.bSessionId);
+    assert.deepEqual(
+      receipt.sessionLedger.map((row) => row.pair),
+      ['positive', 'n4', 'n5'],
+    );
+    const ledgerPasswordIds = receipt.sessionLedger.map((row) => row.passwordSessionId);
+    const ledgerSourceIds = receipt.sessionLedger.map((row) => row.sourceSessionId);
+    const ledgerBIds = receipt.sessionLedger.map((row) => row.bSessionId);
+    assert.deepEqual(ledgerPasswordIds, passwordSessionIds);
+    assert.equal(new Set(ledgerPasswordIds).size, 3);
+    assert.equal(new Set(ledgerSourceIds).size, 3);
+    assert.equal(new Set(ledgerBIds).size, 3);
+    assert.equal(receipt.sessionLedger[0].sourceSessionId, byId.P5.sourceSessionId);
+    assert.equal(receipt.sessionLedger[0].bSessionId, byId.P5.bSessionId);
+    assert.equal(receipt.sessionLedger[1].sourceSessionId, byId.N4.sourceSessionId);
+    assert.equal(receipt.sessionLedger[1].bSessionId, byId.N4.bSessionId);
+    assert.equal(receipt.sessionLedger[2].sourceSessionId, byId.N5.sourceSessionId);
+    assert.equal(receipt.sessionLedger[2].bSessionId, byId.N5.bSessionId);
+    for (const row of receipt.sessionLedger) {
+      assert.notEqual(row.passwordSessionId, row.sourceSessionId);
+      assert.notEqual(row.passwordSessionId, row.bSessionId);
+      assert.notEqual(row.sourceSessionId, row.bSessionId);
+    }
     assert.equal(revokedSources.has(byId.N4.sourceSessionId), true);
     assert.equal(revokedBSessions.has(byId.N4.bSessionId), false);
     assert.equal(revokedBSessions.has(byId.N5.bSessionId), true);
@@ -966,4 +1044,38 @@ test('CLI run completes SDK OAuth, B bind, and the marker call', { timeout: 90_0
     await new Promise((resolve) => https.close(() => resolve()));
     rmSync(dir, { recursive: true, force: true });
   }
+}
+
+test('CLI run completes SDK OAuth, B bind, and the marker call', { timeout: 90_000 }, async () => {
+  await runSyntheticLaneB('success');
+});
+
+test('failure during N5 keeps positive, N4, and known N5 cleanup ids', {
+  timeout: 90_000,
+}, async () => {
+  await runSyntheticLaneB('abort-n5');
+});
+
+test('cleanup runbook deletes every receipt-linked session and keeps the user', () => {
+  const cleanup = readFileSync(
+    fileURLToPath(
+      new URL('../docs/evidence/ari-test-probe/oauth-session-cleanup.md', import.meta.url),
+    ),
+    'utf8',
+  );
+  assert.match(cleanup, /sessionLedger/);
+  assert.match(cleanup, /positive\.passwordSessionId/);
+  assert.match(cleanup, /positive\.sourceSessionId/);
+  assert.match(cleanup, /positive\.bSessionId/);
+  assert.match(cleanup, /n4\.passwordSessionId/);
+  assert.match(cleanup, /n4\.sourceSessionId/);
+  assert.match(cleanup, /n4\.bSessionId/);
+  assert.match(cleanup, /n5\.passwordSessionId/);
+  assert.match(cleanup, /n5\.sourceSessionId/);
+  assert.match(cleanup, /n5\.bSessionId/);
+  assert.match(cleanup, /reads zero/);
+  assert.match(cleanup, /baseline `auth\.sessions`/);
+  assert.match(cleanup, /Not executed from this branch/);
+  assert.match(cleanup, /not a revocation receipt/);
+  assert.match(cleanup, /user_rows` must still be 1/);
 });

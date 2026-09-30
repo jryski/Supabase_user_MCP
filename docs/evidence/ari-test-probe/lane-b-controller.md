@@ -119,8 +119,17 @@ then GETs `redirect_url` so the code lands on the loopback callback.
 
 `ARI_TEST_SYNTHETIC_PASSWORD` stays in the parent environment. It is not
 copied to the child, not written to stdout or stderr, and not read from
-stdin. The receipt carries `passwordSessionId` for cleanup. That id is not
-a bearer.
+stdin. Each fresh pair password-logs in once and reuses that password
+session for the A consent and the B consent. A successful run therefore
+creates three password sessions. When a pair reaches P5, the parent
+appends one `sessionLedger` entry: `pair` (`positive`, `n4`, or `n5`),
+`passwordSessionId`, `sourceSessionId`, and `bSessionId`. Those values
+are UUIDs. They are not bearers, tokens, codes, or verifiers. The
+top-level `passwordSessionId` is only the positive pair's password
+session. A failed run still prints a receipt when any safe session id is
+known. That receipt lists every pair ledger accumulated before the abort
+and the known safe ids for the pair that aborted. Cleanup walks the
+ledger, not the single top-level id.
 
 The CLI never reads a bearer from stdin. After P5 it prints a
 `controller_action` and waits for one stdin line whose text is exactly
@@ -369,8 +378,13 @@ marker row, or `mcp_ingress`.
 
 N4 and N5 deletion during `run` is the readback above: one target session,
 a zero-row session and refresh readback, and the opposite session still
-live. Leftover fixture cleanup for a real A `source_session_id` stays in
-`oauth-session-cleanup.md`. Do not delete the decoy `session_id` claim. That
-value is not an `auth.sessions` row. `passwordSessionId` on the receipt is
-the synthetic password-grant session created for consent. Clean that session
-up on TEST only. It is not Token A and not a bearer.
+live. After `run`, finish cleanup from `oauth-session-cleanup.md`. Delete
+and read back every receipt-linked password session, A source session, and
+B session, including each one's refresh rows. If you already typed
+`continue` for N4, `n4.sourceSessionId` is already gone and reads zero. If
+you already typed `continue` for N5, `n5.bSessionId` is already gone and
+reads zero. Those zeros are expected. Keep cleaning the other ledger ids.
+Leave the synthetic user, the marker fixture, `mcp_ingress`, and any
+baseline `auth.sessions` row the receipt does not name. Do not delete the
+decoy `session_id` claim. That value is not an `auth.sessions` row. Ledger
+ids are not Token A and not bearers.

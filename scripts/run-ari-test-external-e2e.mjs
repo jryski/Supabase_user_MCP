@@ -69,6 +69,7 @@ export function controllerPlan() {
       'Register external A and TEST-only public PKCE B out of band. No client secret. No openid. No DCR.',
       'N4 is A source-session revocation on a fresh A/B pair. N5 is B-session revocation on a different fresh A/B pair and uses a first-party session. Never run N5 after N4 on the same source session.',
       'After P1–P5 and N1 on the positive pair, start one fresh pair for N4 only, then another fresh pair for N5 only.',
+      'Each fresh pair records passwordSessionId, sourceSessionId, and bSessionId on sessionLedger when it reaches P5. Cleanup deletes every id on that ledger.',
       'Keep B live during N4. Keep the A source live during N5. Opposite-state contamination fails that row.',
       'N2, N3, N6, N7, and N8 are not executed by this run.',
       'F1 in sql/06 covers public.ari_probe_marker only. That case is N6 and is not executed here.',
@@ -428,6 +429,73 @@ function safeSha(value) {
   return typeof value === 'string' && SHA40.test(value) ? value : undefined;
 }
 
+const PAIR_LABEL = /^(positive|n4|n5)$/u;
+
+function safeSessionId(value) {
+  return typeof value === 'string' && SESSION_ID.test(value) ? value : undefined;
+}
+
+function ledgerIds(ids) {
+  const entry = {};
+  const passwordSessionId = safeSessionId(ids?.passwordSessionId);
+  const sourceSessionId = safeSessionId(ids?.sourceSessionId);
+  const bSessionId = safeSessionId(ids?.bSessionId);
+  if (passwordSessionId !== undefined) entry.passwordSessionId = passwordSessionId;
+  if (sourceSessionId !== undefined) entry.sourceSessionId = sourceSessionId;
+  if (bSessionId !== undefined) entry.bSessionId = bSessionId;
+  return entry;
+}
+
+function recordPairLedger(ledger, label, ids) {
+  if (!Array.isArray(ledger) || typeof label !== 'string' || !PAIR_LABEL.test(label)) return;
+  const safe = ledgerIds(ids);
+  if (Object.keys(safe).length === 0) return;
+  const existing = ledger.find((row) => row.pair === label);
+  if (existing === undefined) {
+    ledger.push({ pair: label, ...safe });
+    return;
+  }
+  Object.assign(existing, safe);
+}
+
+function knownPairIds(runtime) {
+  return {
+    passwordSessionId: runtime?.secrets?.passwordSessionId,
+    sourceSessionId: runtime?.observation?.sourceSessionId,
+    bSessionId: runtime?.observation?.bSessionId,
+  };
+}
+
+function sanitizeLedger(value) {
+  if (!Array.isArray(value)) return [];
+  const out = [];
+  for (const row of value) {
+    if (row === null || typeof row !== 'object') continue;
+    const pair = row.pair;
+    if (typeof pair !== 'string' || !PAIR_LABEL.test(pair)) continue;
+    const safe = ledgerIds(row);
+    if (Object.keys(safe).length === 0) continue;
+    out.push({ pair, ...safe });
+  }
+  return out;
+}
+
+function ledgerReady(ledger) {
+  const labels = ['positive', 'n4', 'n5'];
+  if (ledger.length !== labels.length) return false;
+  return labels.every((label, index) => {
+    const row = ledger[index];
+    if (row?.pair !== label) return false;
+    const ids = [row.passwordSessionId, row.sourceSessionId, row.bSessionId];
+    return ids.every((id) => safeSessionId(id) !== undefined) && new Set(ids).size === ids.length;
+  });
+}
+
+function distinctAcrossPairs(ledger, key) {
+  const ids = ledger.map((row) => row[key]);
+  return ids.every((id) => safeSessionId(id) !== undefined) && new Set(ids).size === ids.length;
+}
+
 function parentReceipt(env, details) {
   const toolNames = Array.isArray(details.toolNames)
     ? details.toolNames.filter(
@@ -451,7 +519,8 @@ function parentReceipt(env, details) {
     actualHead: safeSha(details.actualHead),
     reviewedHead: safeSha(details.reviewedHead),
     projectRef: env.ARI_TEST_PROJECT_REF,
-    passwordSessionId: details.passwordSessionId,
+    passwordSessionId: safeSessionId(details.passwordSessionId),
+    sessionLedger: sanitizeLedger(details.sessionLedger),
     markerReads: details.markerReads,
     initialized: details.discoveryInitialize === true,
     toolsListed: details.listTools === true,
@@ -754,6 +823,11 @@ async function driveExternalSession(runtime, env, stdinReader, probe) {
     if (priorSourceSessionIds.includes(pair.sourceSessionId)) {
       throw coded('negative_pair_reused');
     }
+    recordPairLedger(probe.ledger, probe.pairLabel, {
+      passwordSessionId: runtime.secrets.passwordSessionId,
+      sourceSessionId: pair.sourceSessionId,
+      bSessionId: pair.bSessionId,
+    });
     const probeRevocation = async (id, action) => {
       writeJson(process.stdout, {
         type: 'controller_action',
@@ -836,9 +910,10 @@ async function runFreshPair(env, stdinReader, probe) {
   try {
     return await driveExternalSession(runtime, env, stdinReader, probe);
   } catch (error) {
-    const sessionId = runtime?.secrets?.passwordSessionId;
+    recordPairLedger(probe.ledger, probe.pairLabel, knownPairIds(runtime));
+    const sessionId = safeSessionId(runtime?.secrets?.passwordSessionId);
     if (
-      typeof sessionId === 'string' &&
+      sessionId !== undefined &&
       error !== null &&
       typeof error === 'object' &&
       error.passwordSessionId === undefined
@@ -861,22 +936,36 @@ async function runLaneB(env, stdin) {
   const gate = controllerGate(env);
   if (!gate.ok) throw coded(gate.reason);
   const stdinReader = lineReader(stdin);
-  let passwordSessionId;
+  const sessionLedger = [];
   try {
     const positive = await runFreshPair(env, stdinReader, {
       negative: null,
       priorSourceSessionIds: [],
+      pairLabel: 'positive',
+      ledger: sessionLedger,
     });
-    passwordSessionId = positive.passwordSessionId;
     const n4 = await runFreshPair(env, stdinReader, {
       negative: 'N4',
       priorSourceSessionIds: [],
+      pairLabel: 'n4',
+      ledger: sessionLedger,
     });
     const n5 = await runFreshPair(env, stdinReader, {
       negative: 'N5',
       priorSourceSessionIds: [n4.pair.sourceSessionId],
+      pairLabel: 'n5',
+      ledger: sessionLedger,
     });
     if (!distinctPairs(positive.pair, n4.pair, n5.pair)) throw coded('negative_pair_reused');
+    const ledger = sanitizeLedger(sessionLedger);
+    if (
+      !ledgerReady(ledger) ||
+      !distinctAcrossPairs(ledger, 'passwordSessionId') ||
+      !distinctAcrossPairs(ledger, 'sourceSessionId') ||
+      !distinctAcrossPairs(ledger, 'bSessionId')
+    ) {
+      throw coded('session_ledger_incomplete');
+    }
     const receipt = parentReceipt(env, {
       ...positive.details,
       aSourceRevoked: n4.pass,
@@ -885,6 +974,7 @@ async function runLaneB(env, stdin) {
       n4Pair: n4.pair,
       n5Pair: n5.pair,
       passwordSessionId: positive.passwordSessionId,
+      sessionLedger: ledger,
       markerReads: positive.markerReads,
       toolNames: positive.toolNames,
       childEnvNames: positive.childEnvNames,
@@ -894,15 +984,16 @@ async function runLaneB(env, stdin) {
     assertIpcHasNoSecrets(receipt);
     if (receipt.actualHead !== receipt.reviewedHead) throw coded('g5_head_mismatch');
     if (receipt.rowsPass !== true) throw coded('lane_b_row_failed');
+    if (receipt.sessionLedger.length !== 3) throw coded('session_ledger_incomplete');
     return receipt;
   } catch (error) {
-    if (
-      passwordSessionId !== undefined &&
-      error !== null &&
-      typeof error === 'object' &&
-      error.passwordSessionId === undefined
-    ) {
-      error.passwordSessionId = passwordSessionId;
+    if (error !== null && typeof error === 'object') {
+      const ledger = sanitizeLedger(sessionLedger);
+      error.sessionLedger = ledger;
+      if (safeSessionId(error.passwordSessionId) === undefined) {
+        const retained = ledger.find((row) => row.passwordSessionId !== undefined);
+        if (retained !== undefined) error.passwordSessionId = retained.passwordSessionId;
+      }
     }
     throw error;
   } finally {
@@ -953,15 +1044,19 @@ async function main() {
     const receipt = await runLaneB(process.env, process.stdin);
     process.stdout.write(`${JSON.stringify(receipt)}\n`);
   } catch (error) {
-    const sessionId = error?.passwordSessionId;
-    if (typeof sessionId === 'string' && SESSION_ID.test(sessionId)) {
+    const ledger = sanitizeLedger(error?.sessionLedger);
+    const sessionId =
+      safeSessionId(error?.passwordSessionId) ??
+      ledger.find((row) => row.passwordSessionId !== undefined)?.passwordSessionId;
+    if (ledger.length > 0 || sessionId !== undefined) {
       const failure = {
         type: 'receipt',
         packet: 'lane-b-external-client',
         acceptance: false,
         hookInstalled: false,
         executedByWriter: false,
-        passwordSessionId: sessionId,
+        ...(sessionId !== undefined ? { passwordSessionId: sessionId } : {}),
+        sessionLedger: ledger,
         rowsPass: false,
         reason: safeCode(error?.code),
       };
