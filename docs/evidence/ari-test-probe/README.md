@@ -90,6 +90,9 @@ for the same `sub`. No `service_role` key is accepted in the probe shell.
 | `sql/05-source-session-liveness.sql` | Lane B. Controller only, after G5. Not this agent. |
 | `sql/06-ingress-client-rls.sql` | Lane B F1 on the marker table only. Not this agent. |
 | `sql/07-downstream-and-external-a.sql` | Lane B additive B and external A mapping. External A `mcp_resource` is the fixed constant `http://127.0.0.1:8788/mcp`. Baseline A keeps the hosted TEST `/mcp` URL. Does not replace `sql/03`. Not this agent. |
+| `sql/08-memory-read-lab.sql` | TEST-only retained memory-read lab. Local synthetic runner only until Ariadne applies it. Not this agent on hosted TEST. |
+| `memory-read-lab.md` | Install, exposure delta, cleanup, and the hosted first-round contract. `acceptance` stays false. |
+| `memory-create-only-design.md` | Design only. No write tool, write RPC, or write grant. |
 | `lane-b-controller.md` | Later G5 and live steps. Not executed from this branch. |
 | `n-gates-controller.md` | Remaining N3, N7, N8, N2, and N6 packet. Local until Ariadne runs it. Not acceptance. |
 | `sql/02-hook-for-ariadne.sql` | Do not apply. Superseded by `sql/04`. |
