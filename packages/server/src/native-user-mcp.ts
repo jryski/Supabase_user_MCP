@@ -157,6 +157,8 @@ function invalidConfig(): never {
 }
 
 const ADAPTER_AUTH_ERROR = 'invalid_token' as const;
+const LIBRARY_AUTHORIZATION_UNAVAILABLE = 'authorization_unavailable' as const;
+const LIBRARY_INVALID_REQUEST = 'invalid_request' as const;
 const LIBRARY_ERROR_CODE_HEADER = 'x-supabase-server-error';
 
 function jsonResponse(status: number, error: string): Response {
@@ -166,37 +168,44 @@ function jsonResponse(status: number, error: string): Response {
   });
 }
 
-function isAdapterAuthBody(body: string): boolean {
-  try {
-    const parsed = JSON.parse(body) as unknown;
-    if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) return false;
-    const record = parsed as Record<string, unknown>;
-    return Object.keys(record).length === 1 && record.error === ADAPTER_AUTH_ERROR;
-  } catch {
-    return false;
+function normalizedLibraryError(status: number): string {
+  if (status === 401) return ADAPTER_AUTH_ERROR;
+  if (status >= 500 && status <= 599) return LIBRARY_AUTHORIZATION_UNAVAILABLE;
+  return LIBRARY_INVALID_REQUEST;
+}
+
+function stripLibraryErrorHeaders(headers: Headers): Headers {
+  const next = new Headers(headers);
+  next.delete('content-length');
+  next.delete(LIBRARY_ERROR_CODE_HEADER);
+  const exposed = next.get('access-control-expose-headers');
+  if (exposed !== null) {
+    const kept = exposed
+      .split(',')
+      .map((name) => name.trim())
+      .filter((name) => name.length > 0 && name.toLowerCase() !== LIBRARY_ERROR_CODE_HEADER);
+    if (kept.length === 0) next.delete('access-control-expose-headers');
+    else next.set('access-control-expose-headers', kept.join(', '));
   }
+  next.set('content-type', 'application/json');
+  next.set('cache-control', 'no-store');
+  return next;
 }
 
 /**
- * `@supabase/server` 1.7.2 still returns `{ code, message }` on auth failure
- * when `errors.detailed` is false, including the `[@supabase/server]` message
- * prefix, and sets `x-supabase-server-error`. Map every such 401 onto the
- * adapter body `{ error: "invalid_token" }`.
+ * `@supabase/server` marks each direct error with `x-supabase-server-error`.
+ * `errors.detailed: false` still leaves `code`, `message`, and sometimes
+ * `hint` / `docs` / `details` on the wire. Rewrite only responses that carry
+ * that header. Keep the status class: 401 stays `{ error: "invalid_token" }`,
+ * 5xx stays `{ error: "authorization_unavailable" }` at the same status, and
+ * every other library status stays that status with
+ * `{ error: "invalid_request" }`. Responses without the header are unchanged.
  */
-async function normalizeLibraryAuthFailure(response: Response): Promise<Response> {
-  if (response.status !== 401) return response;
-  const body = await response.text();
-  if (isAdapterAuthBody(body)) {
-    return new Response(body, { status: 401, headers: response.headers });
-  }
-  const headers = new Headers(response.headers);
-  headers.delete('content-length');
-  headers.delete(LIBRARY_ERROR_CODE_HEADER);
-  headers.set('content-type', 'application/json');
-  headers.set('cache-control', 'no-store');
-  return new Response(JSON.stringify({ error: ADAPTER_AUTH_ERROR }), {
-    status: 401,
-    headers,
+function normalizeLibraryAuthFailure(response: Response): Response {
+  if (!response.headers.has(LIBRARY_ERROR_CODE_HEADER)) return response;
+  return new Response(JSON.stringify({ error: normalizedLibraryError(response.status) }), {
+    status: response.status,
+    headers: stripLibraryErrorHeaders(response.headers),
   });
 }
 

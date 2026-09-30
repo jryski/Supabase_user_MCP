@@ -376,6 +376,196 @@ describe('native user MCP adapter', () => {
     await expectInvalidToken(await dispatched(mcpPost(sameSession)), sameSession);
   });
 
+  it('normalizes direct 500 JWKS fetch and config failures without library detail', async () => {
+    const fetchSentinel = 'mc1585-jwks-fetch-sentinel';
+    const outageSentinel = 'mc1585-jwks-outage-sentinel';
+    const configSentinel = 'mc1585-jwks-config-sentinel';
+    const { privateKey } = await es256Jwks();
+    const token = await signToken(privateKey);
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async (input) => {
+      const url = typeof input === 'string' || input instanceof URL ? String(input) : input.url;
+      if (url.endsWith('/throw')) throw new Error(fetchSentinel);
+      if (url.endsWith('/outage')) {
+        const body = JSON.stringify({
+          code: 'JWKS_FETCH_FAILED',
+          message: `[@supabase/server] ${outageSentinel}`,
+          hint: outageSentinel,
+          docs: 'https://github.com/supabase/server/blob/main/docs/error-handling.md#jwks_fetch_failed',
+          details: { body: outageSentinel },
+        });
+        return new Response(body, {
+          status: 500,
+          headers: {
+            'content-type': 'application/json',
+            'content-length': '424242',
+            'x-upstream-detail': outageSentinel,
+          },
+        });
+      }
+      return new Response(configSentinel, {
+        status: 200,
+        headers: { 'content-type': 'text/plain', 'x-upstream-detail': configSentinel },
+      });
+    };
+    try {
+      const cases = [
+        ['https://jwks.loopback.invalid/throw', fetchSentinel],
+        ['https://jwks.loopback.invalid/outage', outageSentinel],
+        ['https://jwks.loopback.invalid/config', configSentinel],
+      ] as const;
+      for (const [jwks, sentinel] of cases) {
+        const handler = handlerFor(new URL(jwks));
+        const response = await handler(mcpPost(token));
+        expect(response.status).toBe(500);
+        const body = await response.text();
+        expect(JSON.parse(body)).toEqual({ error: 'authorization_unavailable' });
+        expect(Object.keys(JSON.parse(body))).toEqual(['error']);
+        const wire = `${body}\n${[...response.headers.entries()]
+          .map(([name, value]) => `${name}: ${value}`)
+          .join('\n')}`;
+        expect(wire).not.toContain(sentinel);
+        expect(wire).not.toContain('[@supabase/server]');
+        expect(wire).not.toContain('JWKS_FETCH_FAILED');
+        expect(wire).not.toContain('github.com/supabase/server');
+        expect(wire.toLowerCase()).not.toContain('x-supabase-server-error');
+        expect(response.headers.get('content-length')).not.toBe('424242');
+        expect(body).not.toContain('"code"');
+        expect(body).not.toContain('"message"');
+        expect(body).not.toContain('"hint"');
+        expect(body).not.toContain('"docs"');
+        expect(body).not.toContain('"details"');
+      }
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it('normalizes a direct 503 pool-style library error and leaves headerless responses untouched', async () => {
+    const sentinel = 'mc1585-pool-503-sentinel';
+    const { privateKey, jwks } = await es256Jwks();
+    const agent = 'hook-only-agent';
+    const source = '55555555-5555-4555-8555-555555555555';
+    const token = await new SignJWT({
+      role: MCP_INGRESS_ROLE,
+      client_id: CLIENT,
+      session_id: '44444444-4444-4444-8444-444444444444',
+      source_session_id: source,
+      agent_id: agent,
+    })
+      .setProtectedHeader({ alg: 'ES256', kid: 'g2-test', typ: 'JWT' })
+      .setSubject(PRINCIPAL)
+      .setIssuer(ISSUER)
+      .setAudience(RESOURCE)
+      .setIssuedAt()
+      .setExpirationTime('2m')
+      .sign(privateKey);
+    const libraryBody = JSON.stringify({
+      source: '@supabase/server',
+      code: 'POSTGRES_POOL_BUSY',
+      message: `[@supabase/server] ${sentinel}`,
+      hint: sentinel,
+      docs: 'https://github.com/supabase/server/blob/main/docs/error-handling.md#postgres_pool_busy',
+      details: { max: 4, waitedMs: 10000, cause: sentinel },
+    });
+    const base = {
+      resourceServer: RESOURCE,
+      supabaseUrl: SUPABASE_URL,
+      expectedClientId: CLIENT,
+      ingressRole: MCP_INGRESS_ROLE,
+      publishableKey: PUBLISHABLE_KEY,
+      jwks,
+      expectedAgentId: agent,
+    };
+    const normalized = createNativeUserMcpHandler({
+      ...base,
+      onVerified: () =>
+        new Response(libraryBody, {
+          status: 503,
+          statusText: sentinel,
+          headers: {
+            'content-type': 'application/json',
+            'content-length': '424242',
+            'x-supabase-server-error': `POSTGRES_POOL_BUSY ${sentinel}`,
+            'access-control-expose-headers': 'X-Supabase-Server-Error, x-request-id',
+            'x-request-id': 'trace-kept',
+          },
+        }),
+    });
+    const response = await normalized(mcpPost(token));
+    expect(response.status).toBe(503);
+    expect(response.statusText).not.toContain(sentinel);
+    const body = await response.text();
+    expect(JSON.parse(body)).toEqual({ error: 'authorization_unavailable' });
+    const wire = `${body}\n${[...response.headers.entries()]
+      .map(([name, value]) => `${name}: ${value}`)
+      .join('\n')}`;
+    expect(wire).not.toContain(sentinel);
+    expect(wire).not.toContain('[@supabase/server]');
+    expect(wire).not.toContain('POSTGRES_POOL');
+    expect(wire).not.toContain('github.com/supabase/server');
+    expect(wire.toLowerCase()).not.toContain('x-supabase-server-error');
+    expect(body).not.toContain('"code"');
+    expect(body).not.toContain('"message"');
+    expect(body).not.toContain('"hint"');
+    expect(body).not.toContain('"docs"');
+    expect(body).not.toContain('"details"');
+    expect(response.headers.get('content-length')).not.toBe('424242');
+    expect(response.headers.get('access-control-expose-headers')).toBe('x-request-id');
+    expect(response.headers.get('x-request-id')).toBe('trace-kept');
+
+    const other = createNativeUserMcpHandler({
+      ...base,
+      onVerified: () =>
+        new Response(
+          JSON.stringify({
+            code: 'POSTGRES_CONNECT_PAUSED',
+            message: sentinel,
+            hint: sentinel,
+            docs: sentinel,
+            details: sentinel,
+          }),
+          {
+            status: 409,
+            headers: {
+              'content-type': 'application/json',
+              'content-length': '424242',
+              'x-supabase-server-error': sentinel,
+              'access-control-expose-headers': 'x-supabase-server-error',
+            },
+          },
+        ),
+    });
+    const otherResponse = await other(mcpPost(token));
+    expect(otherResponse.status).toBe(409);
+    const otherBody = await otherResponse.text();
+    expect(JSON.parse(otherBody)).toEqual({ error: 'invalid_request' });
+    const otherWire = `${otherBody}\n${[...otherResponse.headers.entries()]
+      .map(([name, value]) => `${name}: ${value}`)
+      .join('\n')}`;
+    expect(otherWire).not.toContain(sentinel);
+    expect(otherWire).not.toContain('POSTGRES_CONNECT_PAUSED');
+    expect(otherWire.toLowerCase()).not.toContain('x-supabase-server-error');
+    expect(otherResponse.headers.get('access-control-expose-headers')).toBeNull();
+    expect(otherResponse.headers.get('content-length')).not.toBe('424242');
+
+    const untouched = createNativeUserMcpHandler({
+      ...base,
+      onVerified: () =>
+        new Response(JSON.stringify({ error: sentinel, details: sentinel }), {
+          status: 503,
+          headers: {
+            'content-type': 'application/json',
+            'x-request-id': sentinel,
+          },
+        }),
+    });
+    const passed = await untouched(mcpPost(token));
+    expect(passed.status).toBe(503);
+    expect(await passed.json()).toEqual({ error: sentinel, details: sentinel });
+    expect(passed.headers.get('x-request-id')).toBe(sentinel);
+  });
+
   it('rejects symmetric JWKS and JWT-shaped publishable keys', async () => {
     expect(() =>
       createNativeUserMcpHandler({
