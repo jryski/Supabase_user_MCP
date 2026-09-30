@@ -13,7 +13,17 @@ const FUTURE = '77777777-7777-4777-8777-777777777777';
 const CLIENT_A = 'registered-client-parameter';
 const CLIENT_EXT = 'external-a-client-parameter';
 const CLIENT_B = 'downstream-b-client-parameter';
-const OTHER_AGENT_A = 'other-agent-a-client';
+// Distinct synthetic ids. auth.sessions.oauth_client_id is uuid upstream
+// (supabase/auth 20250904133000). Claim and argument client ids stay text.
+const NATIVE_A = 'a0a0a0a0-a0a0-40a0-80a0-a0a0a0a0a0a0';
+const NATIVE_EXT = 'b0b0b0b0-b0b0-40b0-80b0-b0b0b0b0b0b0';
+const NATIVE_B = 'c0c0c0c0-c0c0-40c0-80c0-c0c0c0c0c0c0';
+const NATIVE_OTHER_AGENT = 'd0d0d0d0-d0d0-40d0-80d0-d0d0d0d0d0d0';
+const NATIVE_WRONG = 'e0e0e0e0-e0e0-40e0-80e0-e0e0e0e0e0e0';
+const NON_OAUTH = '88888888-8888-4888-8888-888888888888';
+const WRONG_SESSION = '12121212-1212-4121-8121-121212121212';
+const CROSS_A = '99999999-9999-4999-8999-999999999999';
+const CROSS_B = 'abababab-abab-4aba-8aba-abababababab';
 const RESOURCE = 'https://odbcejsuuqdzhabjmozi.supabase.co/mcp';
 const EXTERNAL_RESOURCE = 'http://127.0.0.1:8788/mcp';
 const AGENT = 'hook-only-agent-parameter';
@@ -66,10 +76,12 @@ describe('lane B SQL packet', { concurrency: false }, () => {
     assert.match(sql, /auth\.sessions/);
     assert.match(sql, /ari_probe\.downstream_client/);
     assert.match(sql, /ari_probe\.mcp_client/);
-    assert.match(sql, /session\.oauth_client_id = a_client_id/);
+    assert.match(sql, /session\.oauth_client_id::text = a_client_id/);
+    assert.doesNotMatch(sql, /session\.oauth_client_id = a_client_id/);
     assert.match(sql, /v_claims ->> 'session_id'/);
     assert.match(sql, /b_session\.user_id = v_uid/);
-    assert.match(sql, /b_session\.oauth_client_id = v_client_id/);
+    assert.match(sql, /b_session\.oauth_client_id::text = v_client_id/);
+    assert.doesNotMatch(sql, /b_session\.oauth_client_id = v_client_id/);
     assert.match(sql, /b_session\.not_after is null or b_session\.not_after > pg_catalog\.now\(\)/);
     assert.match(sql, /ingress\.agent_id = v_b_agent/);
     assert.match(
@@ -115,7 +127,7 @@ describe('sql/05 liveness in PGlite', { concurrency: false }, () => {
       create table auth.sessions (
         id uuid primary key,
         user_id uuid not null,
-        oauth_client_id text,
+        oauth_client_id uuid,
         not_after timestamptz
       );
       create schema ari_probe;
@@ -131,17 +143,23 @@ describe('sql/05 liveness in PGlite', { concurrency: false }, () => {
         probe_label text not null
       );
       insert into ari_probe.mcp_client (client_id, mcp_resource, agent_id, probe_label) values
-        ('${CLIENT_A}', '${RESOURCE}', '${AGENT}', 'ari-test-synthetic'),
-        ('${CLIENT_EXT}', '${RESOURCE}', '${AGENT}', 'ari-test-external-a'),
-        ('${OTHER_AGENT_A}', '${RESOURCE}', '${OTHER_AGENT}', 'ari-test-synthetic');
+        ('${NATIVE_A}', '${RESOURCE}', '${AGENT}', 'ari-test-synthetic'),
+        ('${NATIVE_EXT}', '${RESOURCE}', '${AGENT}', 'ari-test-external-a'),
+        ('${NATIVE_OTHER_AGENT}', '${RESOURCE}', '${OTHER_AGENT}', 'ari-test-synthetic'),
+        ('not-a-uuid', '${RESOURCE}', '${AGENT}', 'ari-test-synthetic');
       insert into ari_probe.downstream_client (client_id, agent_id, probe_label) values
-        ('${CLIENT_B}', '${AGENT}', 'ari-test-downstream-b');
+        ('${NATIVE_B}', '${AGENT}', 'ari-test-downstream-b'),
+        ('not-a-client', '${AGENT}', 'ari-test-downstream-b');
       insert into auth.sessions (id, user_id, oauth_client_id, not_after) values
-        ('${SOURCE}', '${USER}', '${CLIENT_A}', null),
-        ('${FUTURE}', '${USER}', '${CLIENT_EXT}', '2999-01-01T00:00:00Z'),
-        ('${DEAD}', '${USER}', '${CLIENT_A}', '2000-01-01T00:00:00Z'),
-        ('${B_SESSION}', '${USER}', '${CLIENT_B}', null),
-        ('${B_DEAD}', '${USER}', '${CLIENT_B}', '2000-01-01T00:00:00Z');
+        ('${SOURCE}', '${USER}', '${NATIVE_A}', null),
+        ('${FUTURE}', '${USER}', '${NATIVE_EXT}', '2999-01-01T00:00:00Z'),
+        ('${DEAD}', '${USER}', '${NATIVE_A}', '2000-01-01T00:00:00Z'),
+        ('${B_SESSION}', '${USER}', '${NATIVE_B}', null),
+        ('${B_DEAD}', '${USER}', '${NATIVE_B}', '2000-01-01T00:00:00Z'),
+        ('${NON_OAUTH}', '${USER}', null, null),
+        ('${WRONG_SESSION}', '${USER}', '${NATIVE_WRONG}', null),
+        ('${CROSS_A}', '${OTHER}', '${NATIVE_A}', null),
+        ('${CROSS_B}', '${OTHER}', '${NATIVE_B}', null);
       create function auth.uid() returns uuid language sql stable as $$
         select nullif(current_setting('request.jwt.claim.sub', true), '')::uuid
       $$;
@@ -167,40 +185,66 @@ describe('sql/05 liveness in PGlite', { concurrency: false }, () => {
     return result.rows[0]?.live;
   }
 
+  test('synthetic oauth_client_id is the upstream uuid type', async () => {
+    const result = await db.query(`
+      select pg_catalog.format_type(attribute.atttypid, attribute.atttypmod) as typname
+      from pg_catalog.pg_attribute as attribute
+      join pg_catalog.pg_class as relation on relation.oid = attribute.attrelid
+      join pg_catalog.pg_namespace as namespace on namespace.oid = relation.relnamespace
+      where namespace.nspname = 'auth'
+        and relation.relname = 'sessions'
+        and attribute.attname = 'oauth_client_id'
+        and not attribute.attisdropped
+    `);
+    assert.equal(result.rows[0]?.typname, 'uuid');
+  });
+
+  test('uncast uuid oauth_client_id equality with text is undefined', async () => {
+    await assert.rejects(
+      db.query(`select 1 from auth.sessions as session where session.oauth_client_id = $1::text`, [
+        NATIVE_A,
+      ]),
+      (error) => {
+        assert.equal(error.code, '42883');
+        return true;
+      },
+    );
+  });
+
   test('true only for the exact A session of the same agent', async () => {
-    assert.equal(await live(SOURCE, CLIENT_A, claims(CLIENT_B, AGENT)), true);
-    assert.equal(await live(FUTURE, CLIENT_EXT, claims(CLIENT_B, AGENT)), true);
+    assert.equal(await live(SOURCE, NATIVE_A, claims(NATIVE_B, AGENT)), true);
+    assert.equal(await live(FUTURE, NATIVE_EXT, claims(NATIVE_B, AGENT)), true);
   });
 
   test('null claims, wrong pair, dead session, and other agent fail closed', async () => {
-    assert.equal(await live(null, CLIENT_A, claims(CLIENT_B, AGENT)), false);
-    assert.equal(await live(SOURCE, null, claims(CLIENT_B, AGENT)), false);
-    assert.equal(await live(SOURCE, CLIENT_A, null), false);
-    assert.equal(await live(SOURCE, CLIENT_A, claims(CLIENT_B, AGENT), null), false);
-    assert.equal(await live(SOURCE, CLIENT_A, claims(CLIENT_B, AGENT, 'mcp_ingress')), false);
-    assert.equal(await live(SOURCE, CLIENT_A, claims(CLIENT_A, AGENT)), false);
-    assert.equal(await live(SOURCE, CLIENT_B, claims(CLIENT_B, AGENT)), false);
-    assert.equal(await live(SOURCE, CLIENT_EXT, claims(CLIENT_B, AGENT)), false);
-    assert.equal(await live(DEAD, CLIENT_A, claims(CLIENT_B, AGENT)), false);
+    assert.equal(await live(null, NATIVE_A, claims(NATIVE_B, AGENT)), false);
+    assert.equal(await live(SOURCE, null, claims(NATIVE_B, AGENT)), false);
+    assert.equal(await live(SOURCE, NATIVE_A, null), false);
+    assert.equal(await live(SOURCE, NATIVE_A, claims(NATIVE_B, AGENT), null), false);
+    assert.equal(await live(SOURCE, NATIVE_A, claims(NATIVE_B, AGENT, 'mcp_ingress')), false);
+    assert.equal(await live(SOURCE, NATIVE_A, claims(NATIVE_A, AGENT)), false);
+    assert.equal(await live(SOURCE, NATIVE_B, claims(NATIVE_B, AGENT)), false);
+    assert.equal(await live(SOURCE, NATIVE_EXT, claims(NATIVE_B, AGENT)), false);
+    assert.equal(await live(DEAD, NATIVE_A, claims(NATIVE_B, AGENT)), false);
     assert.equal(
-      await live(SOURCE, CLIENT_A, claims(CLIENT_B, AGENT, 'authenticated', B_DEAD)),
+      await live(SOURCE, NATIVE_A, claims(NATIVE_B, AGENT, 'authenticated', B_DEAD)),
       false,
     );
     assert.equal(
       await live(
         SOURCE,
-        CLIENT_A,
-        claims(CLIENT_B, AGENT, 'authenticated', '00000000-0000-0000-0000-000000000000'),
+        NATIVE_A,
+        claims(NATIVE_B, AGENT, 'authenticated', '00000000-0000-0000-0000-000000000000'),
       ),
       false,
     );
     assert.equal(
       await live(
         SOURCE,
-        CLIENT_A,
+        NATIVE_A,
         JSON.stringify({
           role: 'authenticated',
-          client_id: CLIENT_B,
+          client_id: NATIVE_B,
           agent_id: AGENT,
           sub: USER,
         }),
@@ -208,28 +252,42 @@ describe('sql/05 liveness in PGlite', { concurrency: false }, () => {
       false,
     );
     assert.equal(
-      await live(SOURCE, CLIENT_A, claims(CLIENT_B, AGENT, 'authenticated', 'not-a-uuid')),
+      await live(SOURCE, NATIVE_A, claims(NATIVE_B, AGENT, 'authenticated', 'not-a-uuid')),
       false,
     );
-    assert.equal(await live(SOURCE, OTHER_AGENT_A, claims(CLIENT_B, AGENT)), false);
-    assert.equal(await live(SOURCE, CLIENT_A, claims(CLIENT_B, OTHER_AGENT)), false);
-    assert.equal(await live(SOURCE, CLIENT_A, JSON.stringify({ role: 'authenticated' })), false);
+    assert.equal(await live(SOURCE, NATIVE_OTHER_AGENT, claims(NATIVE_B, AGENT)), false);
+    assert.equal(await live(SOURCE, NATIVE_A, claims(NATIVE_B, OTHER_AGENT)), false);
+    assert.equal(await live(SOURCE, NATIVE_A, JSON.stringify({ role: 'authenticated' })), false);
+    assert.equal(await live(NON_OAUTH, NATIVE_A, claims(NATIVE_B, AGENT)), false);
+    assert.equal(
+      await live(SOURCE, NATIVE_A, claims(NATIVE_B, AGENT, 'authenticated', NON_OAUTH)),
+      false,
+    );
+    assert.equal(await live(WRONG_SESSION, NATIVE_A, claims(NATIVE_B, AGENT)), false);
+    assert.equal(await live(CROSS_A, NATIVE_A, claims(NATIVE_B, AGENT)), false);
+    assert.equal(
+      await live(SOURCE, NATIVE_A, claims(NATIVE_B, AGENT, 'authenticated', CROSS_B), OTHER),
+      false,
+    );
+    assert.equal(await live(SOURCE, 'not-a-uuid', claims(NATIVE_B, AGENT)), false);
+    assert.equal(await live(SOURCE, NATIVE_A, claims('not-a-client', AGENT)), false);
+    assert.equal(await live(SOURCE, '   ', claims(NATIVE_B, AGENT)), false);
   });
 
   test('B session present is true; deleting only B or only A is false', async () => {
     await db.exec('begin');
     try {
-      assert.equal(await live(SOURCE, CLIENT_A, claims(CLIENT_B, AGENT)), true);
+      assert.equal(await live(SOURCE, NATIVE_A, claims(NATIVE_B, AGENT)), true);
       await db.query(`delete from auth.sessions where id = $1`, [B_SESSION]);
       const aRemains = await db.query(
         `select count(*)::int as n from auth.sessions where id = $1`,
         [SOURCE],
       );
       assert.equal(aRemains.rows[0]?.n, 1);
-      assert.equal(await live(SOURCE, CLIENT_A, claims(CLIENT_B, AGENT)), false);
+      assert.equal(await live(SOURCE, NATIVE_A, claims(NATIVE_B, AGENT)), false);
       await db.query(
-        `insert into auth.sessions (id, user_id, oauth_client_id, not_after) values ($1, $2, $3, null)`,
-        [B_SESSION, USER, CLIENT_B],
+        `insert into auth.sessions (id, user_id, oauth_client_id, not_after) values ($1, $2, $3::uuid, null)`,
+        [B_SESSION, USER, NATIVE_B],
       );
       await db.query(`delete from auth.sessions where id = $1`, [SOURCE]);
       const bRemains = await db.query(
@@ -237,11 +295,11 @@ describe('sql/05 liveness in PGlite', { concurrency: false }, () => {
         [B_SESSION],
       );
       assert.equal(bRemains.rows[0]?.n, 1);
-      assert.equal(await live(SOURCE, CLIENT_A, claims(CLIENT_B, AGENT)), false);
+      assert.equal(await live(SOURCE, NATIVE_A, claims(NATIVE_B, AGENT)), false);
     } finally {
       await db.exec('rollback');
     }
-    assert.equal(await live(SOURCE, CLIENT_A, claims(CLIENT_B, AGENT)), true);
+    assert.equal(await live(SOURCE, NATIVE_A, claims(NATIVE_B, AGENT)), true);
   });
 
   test('execute is authenticated only', async () => {

@@ -165,12 +165,14 @@ begin
     return false;
   end if;
 
+  -- Upstream oauth_client_id is uuid. Cast the column value to text at the
+  -- equality. Arguments stay text. A null or different client fails closed.
   if not exists (
     select 1
     from auth.sessions as b_session
     where b_session.id = v_b_session
       and b_session.user_id = v_uid
-      and b_session.oauth_client_id = v_client_id
+      and b_session.oauth_client_id::text = v_client_id
       and (b_session.not_after is null or b_session.not_after > pg_catalog.now())
   ) then
     return false;
@@ -181,7 +183,7 @@ begin
     from auth.sessions as session
     where session.id = source_session_id
       and session.user_id = v_uid
-      and session.oauth_client_id = a_client_id
+      and session.oauth_client_id::text = a_client_id
       and (session.not_after is null or session.not_after > pg_catalog.now())
   );
 end;
