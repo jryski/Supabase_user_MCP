@@ -121,7 +121,8 @@ hook-policy denial, and without an allowlisted OAuth `error`, also stays
 
 If any issuance attempt is still unresolved when a gate returns, the runner
 does not start the next gate. It does not prepare N2 and it does not delete
-the second synthetic user. The packet then asks for
+the second synthetic user. An N7 prepare that already happened stays
+un-deleted while issuance is unresolved. The packet then asks for
 `reconcile_unresolved_issuance` for those attempt ids only. That readback
 does not resolve the attempt, does not resume later gates, and is not
 permission to list or delete baseline sessions, including any ids the
@@ -141,20 +142,35 @@ Every receipt is written after that finalization. It carries
 gate row is finalized the same way. `acceptance` stays false.
 
 N8 callback transport cases stay in the row. They do not pass N8 by
-themselves. The gate also needs a legitimate signed native B that is
-either left unbound or refused at binding, with the real PKCE exchange.
-On a non-loopback issuer those signed-B cases stay `not_executed` and N8
-stays incomplete. PKCE `invalid_grant` is labeled on its own and is not
-binding proof.
+themselves. `signed_b_unbound` and `signed_b_mismatch` run against the
+configured issuer, including hosted native Supabase. The unbound row
+obtains a genuine B without completing the pending handshake, verifies it
+with issuer and JWKS, checks native B liveness, and presents that B to the
+external MCP ingress as a negative bearer. A valid B held only in harness
+memory is not a stored grant. Presenting genuine A stays
+`downstream_authorization_required` with no B custody and no marker
+dispatch. HTTP transport failure and decoded claims alone are not proof.
+`signed_b_mismatch` is the native subject-mismatch callback and is labelled
+`SUBJECT`. The loopback `x-ari-probe-b-claim` case is a separate
+`synthetic_agent` row. It does not mean the native B client or agent was
+mutated. A loopback receipt is not a hosted PASS.
+PKCE `invalid_grant` is labeled on its own and is not binding proof.
 An issuer or service failure is not binding proof. Callback HTTP 500 is
-not a redirect-mismatch pass. After a successful bind, replay must leave
-that binding and session in place. N7 records the consent flow it actually
-sees. Policy proof remains exchange HTTP 403 `openid_scope_refused` with
-no token. Each N7 subcase row keeps `exchangeStatus`, `policyMarker`, and
-the booleans `accessTokenPresent`, `idTokenPresent`, and
-`refreshTokenPresent`. Those fields are status and presence only. A
-retained client that is already consented does not need a new
-registration.
+not a redirect-mismatch pass. After a successful bind, native B liveness
+and the MCP same-owner marker read must succeed, replay must leave that
+binding and session in place, and a different genuine A source session must
+not inherit it. HTTP 5xx, a timeout, and an unreadable body are not that
+proof.
+N7 prepares the same run-owned second user before either profile has an
+openid consent. The gate passes only when external A and mapped B each
+observe `approval_post` and then `already_consented_get`, with exchange
+HTTP 403 `openid_scope_refused` and no token. Repeated
+`already_consented_get` stays incomplete. This does not reset the baseline
+user or reclassify an older receipt. Each N7 subcase row keeps
+`exchangeStatus`, `policyMarker`, and the booleans `accessTokenPresent`,
+`idTokenPresent`, and `refreshTokenPresent`. Those fields are status and
+presence only. A retained client that is already consented does not need a
+new registration.
 
 ## Local proof
 

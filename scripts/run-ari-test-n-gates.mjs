@@ -277,11 +277,11 @@ export function nGatesPlan() {
       'External A uses /oauth/callback and its mapped resource. B uses /oauth/downstream/callback and omits resource on authorize and on token exchange.',
       'Baseline A /callback remains the consent-harness profile where that profile is used.',
       'N3 presents one genuine signed A, unmodified, under one local verifier mismatch at a time. Reauthorization stays off.',
-      'N7 sends openid for external A and mapped B, both consent branches. Only exchange HTTP 403 openid_scope_refused with no token is a hook-policy pass.',
+      'N7 prepares one run-owned second synthetic user, then sends openid for external A and mapped B. The gate passes only when each profile is approval_post and then already_consented_get, with exchange HTTP 403 openid_scope_refused and no token. Repeated already_consented_get is not a pass. The baseline user is not reset.',
       'A complete hook-policy denial is HTTP 403 and a full JSON object that carries the exact marker openid_scope_refused and no access_token, id_token, or refresh_token field. That denial resolves issuance the same way as a clean allowlisted OAuth error. It does not require a particular error field. A top-level access_token, id_token, or refresh_token field, including null or any non-string value, stays unresolved before a hook marker or an allowlisted error can resolve it. A truncated or malformed body, HTTP 5xx, or a non-object envelope stays unresolved.',
       'Unresolved issuance after a gate stops the runner before the next gate. N2 is not prepared and the second user is not deleted. The reconcile readback does not resolve the attempt and does not resume later gates.',
       'N7 subcase rows keep exchangeStatus, policyMarker, and token-presence booleans only. They do not carry token values.',
-      'N8 keeps callback transport cases, and passes only with a legitimate signed B that the grant store refuses to bind. Transport evidence alone is incomplete.',
+      'N8 keeps callback transport cases. signed_b_unbound and signed_b_mismatch run on the configured issuer, including hosted native Supabase. A signed B in harness memory is not a stored grant. Subject mismatch is labelled SUBJECT. A loopback agent-claim mutation is labelled synthetic_agent and is not a native agent or client change. Transport evidence, HTTP 5xx, and an unreadable body are not binding proof.',
       'N2: create one run-owned second synthetic user distinct from the verified baseline, then delete that user only after cleanup. The child never receives the password.',
       'Cleanup readbacks must be a bijection of the requested session ids. A duplicate or omitted id is not confirmation.',
       'N6: read back the enabled hook and the effective restrictive F1, prove the exact owner marker for the verified owner, arm restoration, then disable only that hook.',
@@ -896,6 +896,192 @@ function zeroCounts(observation) {
   );
 }
 
+const MARKER_TOOL_NAME = 'ari_test_marker_get';
+const OWNER_MARKER = /^ari-probe-marker-[a-z0-9]{20}$/u;
+const N7_FIRST_CONSENT = Object.freeze([
+  'external_a_approval_post',
+  'external_a_already_consented_get',
+  'downstream_b_approval_post',
+  'downstream_b_already_consented_get',
+]);
+
+function boundedHttpStatus(status) {
+  return Number.isInteger(status) && status >= 100 && status <= 599 ? status : null;
+}
+
+function parseRpcMessages(text) {
+  const messages = [];
+  const push = (value) => {
+    if (value !== null && typeof value === 'object') messages.push(value);
+  };
+  try {
+    const parsed = JSON.parse(text);
+    if (Array.isArray(parsed)) {
+      for (const item of parsed) push(item);
+    } else push(parsed);
+  } catch {
+    // SSE frames are parsed below. A body that is neither JSON nor SSE stays empty.
+  }
+  for (const line of text.split('\n')) {
+    const trimmed = line.trim();
+    if (!trimmed.startsWith('data:')) continue;
+    const payload = trimmed.slice(5).trim();
+    if (payload.length === 0 || payload === '[DONE]') continue;
+    try {
+      push(JSON.parse(payload));
+    } catch {
+      // One bad frame does not make another frame proof.
+    }
+  }
+  return messages;
+}
+
+function markerFromMessages(messages) {
+  let rpcError = false;
+  let isError = false;
+  let marker = null;
+  let authError = null;
+  for (const parsed of messages) {
+    if (typeof parsed.error === 'string' && SAFE_CODE.test(parsed.error)) authError = parsed.error;
+    if (parsed.error !== null && typeof parsed.error === 'object') rpcError = true;
+    const result = parsed.result;
+    if (result === null || typeof result !== 'object' || Array.isArray(result)) continue;
+    if (result.isError === true) isError = true;
+    const structured = result.structuredContent;
+    const structuredMarker =
+      structured !== null && typeof structured === 'object' && !Array.isArray(structured)
+        ? structured.marker
+        : undefined;
+    const blocks = Array.isArray(result.content) ? result.content : [];
+    const text = blocks.find((block) => block?.type === 'text' && typeof block.text === 'string');
+    const candidate = typeof structuredMarker === 'string' ? structuredMarker : text?.text;
+    if (typeof candidate === 'string' && OWNER_MARKER.test(candidate)) marker = candidate;
+  }
+  return { rpcError, isError, marker, authError };
+}
+
+async function callMarkerOnce(url, token) {
+  let response;
+  try {
+    response = await fetch(url, {
+      method: 'POST',
+      redirect: 'manual',
+      headers: {
+        accept: 'application/json, text/event-stream',
+        authorization: `Bearer ${token}`,
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({
+        jsonrpc: '2.0',
+        id: 1,
+        method: 'tools/call',
+        params: { name: MARKER_TOOL_NAME, arguments: {} },
+      }),
+    });
+  } catch {
+    return { readable: false, status: null, error: 'unreadable', marker: null, isError: false };
+  }
+  let text = '';
+  try {
+    text = await response.text();
+  } catch {
+    return {
+      readable: false,
+      status: boundedHttpStatus(response.status),
+      error: 'unreadable',
+      marker: null,
+      isError: false,
+    };
+  }
+  const messages = parseRpcMessages(text);
+  if (messages.length === 0) {
+    return {
+      readable: false,
+      status: boundedHttpStatus(response.status),
+      error: 'unreadable',
+      marker: null,
+      isError: false,
+    };
+  }
+  const found = markerFromMessages(messages);
+  return {
+    readable: true,
+    status: boundedHttpStatus(response.status),
+    error: found.authError ?? (found.rpcError ? 'rpc_error' : 'ok'),
+    marker: found.marker,
+    isError: found.isError || found.rpcError,
+    redirected: response.status >= 300 && response.status < 400,
+  };
+}
+
+async function markerProof(url, token, observation, projectRef) {
+  const beforeReads = observation.markerReads;
+  const beforeChecks = observation.livenessChecks;
+  const beforeDenials = observation.livenessDenials;
+  const called = await callMarkerOnce(url, token);
+  const expected = expectedOwnerMarker(projectRef);
+  const proved =
+    called.readable === true &&
+    called.status === 200 &&
+    called.redirected !== true &&
+    called.isError !== true &&
+    expected !== null &&
+    called.marker === expected &&
+    observation.markerReads === beforeReads + 1 &&
+    observation.livenessChecks === beforeChecks + 1 &&
+    observation.livenessDenials === beforeDenials;
+  return proved;
+}
+
+async function rememberDownstreamToken(holder, env, response, requestUrl, method) {
+  const url = String(requestUrl);
+  if ((method ?? 'GET') !== 'POST' || !url.includes('/oauth/token')) return;
+  try {
+    const body = await response.clone().json();
+    const token = body?.access_token;
+    const claims = claimShape(token);
+    if (
+      typeof token === 'string' &&
+      claims?.role === 'authenticated' &&
+      claims.clientId === env.ARI_DOWNSTREAM_CLIENT_ID
+    ) {
+      holder.token = token;
+      holder.sub = claims.sub;
+    }
+  } catch {
+    // An unreadable exchange body is not liveness proof.
+  }
+}
+
+async function ensureSecondUser(env, reader, timeoutMs, ctx, gate) {
+  if (ctx.secondUser !== undefined) return ctx.secondUser;
+  if (
+    typeof env.ARI_N2_SECOND_EMAIL !== 'string' ||
+    env.ARI_N2_SECOND_EMAIL.length === 0 ||
+    typeof env.ARI_N2_SECOND_PASSWORD !== 'string' ||
+    env.ARI_N2_SECOND_PASSWORD.length === 0
+  ) {
+    throw coded('second_user_required');
+  }
+  const prepared = await pauseForReadback(
+    reader,
+    { runId: ctx.runId, action: 'prepare_second_synthetic_user', gate },
+    timeoutMs,
+    ctx.signal,
+  );
+  const secondUserId = safeUuid(prepared.secondUserId);
+  if (
+    secondUserId === undefined ||
+    prepared.createdForRun !== true ||
+    prepared.email !== env.ARI_N2_SECOND_EMAIL ||
+    prepared.email === SYNTHETIC_EMAIL
+  ) {
+    throw coded('second_user_unverified');
+  }
+  ctx.secondUser = { id: secondUserId, email: prepared.email };
+  return ctx.secondUser;
+}
+
 function openIdRowProjection(receipt) {
   const status = receipt?.exchangeStatus;
   return {
@@ -988,8 +1174,9 @@ async function runN3(env, _ledger, timeoutMs, ctx) {
   return subcaseRow('N3', subcases, evidenceLabel);
 }
 
-async function runN7(env, ledger, timeoutMs, ctx) {
+async function runN7(env, ledger, reader, timeoutMs, ctx) {
   ctx.cursor.gate = 'N7';
+  const secondUser = await ensureSecondUser(env, reader, timeoutMs, ctx, 'N7');
   const profiles = [
     [
       'external_a',
@@ -1022,7 +1209,8 @@ async function runN7(env, ledger, timeoutMs, ctx) {
           callbackProfile: profile,
           expectedOrigin: redirect.origin,
           requirePort: true,
-          password: env.ARI_TEST_SYNTHETIC_PASSWORD,
+          email: secondUser.email,
+          password: env.ARI_N2_SECOND_PASSWORD,
           ...(omitResource ? {} : { resource }),
         }),
         timeoutMs,
@@ -1043,7 +1231,13 @@ async function runN7(env, ledger, timeoutMs, ctx) {
       });
     }
   }
-  return subcaseRow('N7', subcases, 'hook_policy');
+  const sequence =
+    subcases.length === N7_FIRST_CONSENT.length &&
+    subcases.every((row, index) => row.id === N7_FIRST_CONSENT[index] && row.pass === true);
+  const row = subcaseRow('N7', subcases, 'hook_policy');
+  row.pass = sequence;
+  row.label = sequence ? 'hook_policy' : 'n7_incomplete';
+  return row;
 }
 
 function countFetch(counter, inner) {
@@ -1115,7 +1309,7 @@ function downstreamAuthorize(env, runtime, state, pkce) {
   });
 }
 
-async function runN8(env, _ledger, timeoutMs, ctx) {
+async function runN8(env, ledger, reader, timeoutMs, ctx) {
   ctx.cursor.gate = 'N8';
   const runtimeEnv = { ...env, ARI_LANE_B_EXECUTE: '1' };
   const subcases = [];
@@ -1272,16 +1466,22 @@ async function runN8(env, _ledger, timeoutMs, ctx) {
 
   const replayCounter = { exchanges: 0 };
   const facts = [];
+  const heldB = { token: undefined, sub: undefined };
+  const replayFetch = countFetch(replayCounter, async (input, init) => {
+    const response = await ctx.fetch(input, init);
+    await rememberDownstreamToken(heldB, env, response, input, init?.method);
+    return response;
+  });
   const replay = await startExternalRuntime(runtimeEnv, {
     spawnChild: false,
-    fetch: countFetch(replayCounter, ctx.fetch),
+    fetch: replayFetch,
     onGrantFact(fact) {
       facts.push(fact);
     },
   });
   try {
     const issued = await withTimeout(
-      obtainGrant(replay, env, 'external_a', {}, ctx.fetch),
+      obtainGrant(replay, env, 'external_a', {}, replayFetch),
       timeoutMs,
       ctx.signal,
     );
@@ -1294,43 +1494,125 @@ async function runN8(env, _ledger, timeoutMs, ctx) {
         reason: 'handshake_missing',
       });
     } else {
+      const verifiedA = await verifyJwt(issued.accessToken, env, {
+        audience: env.ARI_EXTERNAL_MCP_URL,
+        role: 'mcp_ingress',
+        clientId: env.ARI_EXTERNAL_A_CLIENT_ID,
+        agentId: env.ARI_AGENT_ID,
+        requireSource: true,
+      });
+      noteSession(ledger, {
+        gate: 'N8',
+        sourceSessionId: verifiedA.sourceSessionId,
+        sub: verifiedA.sub,
+      });
       const state = new URL(opened.authorizationUrl).searchParams.get('state');
       const before = replayCounter.exchanges;
+      const readsBefore = replay.observation.markerReads;
+      const checksBefore = replay.observation.livenessChecks;
       const consent = await withTimeout(
-        consentUrl(env, opened.authorizationUrl, {}, ctx.fetch),
+        consentUrl(env, opened.authorizationUrl, {}, replayFetch),
         timeoutMs,
         ctx.signal,
       );
       const bound = facts.find((fact) => fact.event === 'bound');
       const afterBind = replayCounter.exchanges;
-      const replayed = await callbackGet(
-        `${profile.redirectUri}?code=${encodeURIComponent(randomBytes(16).toString('base64url'))}&state=${state}`,
-      );
-      const replayFact = facts.at(-1);
-      const persisted = await presentOnce(env.ARI_EXTERNAL_MCP_URL, issued.accessToken);
-      const pass =
-        consent.ok === true &&
-        bound !== undefined &&
-        safeUuid(bound.sessionId) !== undefined &&
-        bound.subjectMismatch === false &&
-        replayed.status === 403 &&
-        replayed.error === 'downstream_credential_unresolved' &&
-        replayFact?.event === 'replay' &&
-        replayCounter.exchanges === afterBind &&
-        afterBind === before + 1 &&
-        persisted.authorizationUrl === undefined &&
-        replay.observation.bSessionId === bound.sessionId &&
-        replay.observation.markerReads === 0;
+      const exchangeFailed = facts.find((fact) => fact.event === 'exchange_failed');
+      let reason = safeCode(exchangeFailed?.failureClass ?? 'replay_missed');
+      let pass = false;
+      let exchangesAfterReplay = 0;
+      let markerReads = replay.observation.markerReads;
+      let livenessChecks = replay.observation.livenessChecks;
+      let livenessDenials = replay.observation.livenessDenials;
+      const boundSessionId = safeUuid(bound?.sessionId);
+      if (exchangeFailed === undefined && bound !== undefined) {
+        const bLive =
+          typeof heldB.token === 'string' &&
+          heldB.sub === bound.sub &&
+          (await liveOwner(env, heldB.token, bound.sub, timeoutMs, ctx.signal));
+        heldB.token = undefined;
+        const firstMarker =
+          bLive === true &&
+          (await markerProof(
+            env.ARI_EXTERNAL_MCP_URL,
+            issued.accessToken,
+            replay.observation,
+            env.ARI_TEST_PROJECT_REF,
+          ));
+        const replayed = await callbackGet(
+          `${profile.redirectUri}?code=${encodeURIComponent(randomBytes(16).toString('base64url'))}&state=${state}`,
+        );
+        exchangesAfterReplay = replayCounter.exchanges - afterBind;
+        const replayFact = facts.at(-1);
+        const replayHeld =
+          replayed.status === 403 &&
+          replayed.error === 'downstream_credential_unresolved' &&
+          replayFact?.event === 'replay' &&
+          replayCounter.exchanges === afterBind &&
+          replay.observation.bSessionId === boundSessionId &&
+          replay.observation.markerReads === readsBefore + 1;
+        const reused =
+          replayHeld &&
+          (await markerProof(
+            env.ARI_EXTERNAL_MCP_URL,
+            issued.accessToken,
+            replay.observation,
+            env.ARI_TEST_PROJECT_REF,
+          ));
+        const issuedOther = await withTimeout(
+          obtainGrant(replay, env, 'external_a', {}, replayFetch),
+          timeoutMs,
+          ctx.signal,
+        );
+        const verifiedOther = await verifyJwt(issuedOther.accessToken, env, {
+          audience: env.ARI_EXTERNAL_MCP_URL,
+          role: 'mcp_ingress',
+          clientId: env.ARI_EXTERNAL_A_CLIENT_ID,
+          agentId: env.ARI_AGENT_ID,
+          requireSource: true,
+        });
+        const other = await presentOnce(env.ARI_EXTERNAL_MCP_URL, issuedOther.accessToken);
+        const distinct =
+          verifiedOther.sourceSessionId !== verifiedA.sourceSessionId &&
+          verifiedOther.sub === verifiedA.sub &&
+          other.status === 403 &&
+          other.error === 'downstream_authorization_required' &&
+          other.redirected === false &&
+          replay.observation.bSessionId === boundSessionId &&
+          replay.observation.markerReads === readsBefore + 2 &&
+          replay.observation.livenessDenials === 0;
+        pass =
+          consent.ok === true &&
+          bound.subjectMismatch === false &&
+          boundSessionId !== undefined &&
+          afterBind === before + 1 &&
+          bLive === true &&
+          firstMarker === true &&
+          replayHeld === true &&
+          reused === true &&
+          distinct === true &&
+          checksBefore === 0 &&
+          readsBefore === 0;
+        markerReads = replay.observation.markerReads;
+        livenessChecks = replay.observation.livenessChecks;
+        livenessDenials = replay.observation.livenessDenials;
+        if (pass) reason = 'replay_rejected';
+        else if (firstMarker !== true || reused !== true) reason = 'marker_unproven';
+        else if (distinct !== true) reason = 'source_unproven';
+        else reason = 'replay_missed';
+      }
+      heldB.token = undefined;
       subcases.push({
         id: 'accepted_then_replay',
         executed: true,
         pass,
-        reason: pass
-          ? 'replay_rejected'
-          : safeCode(
-              facts.find((fact) => fact.event === 'exchange_failed')?.failureClass ??
-                'replay_missed',
-            ),
+        reason,
+        boundSessionId: boundSessionId ?? null,
+        exchangesAfterBind: afterBind - before,
+        exchangesAfterReplay,
+        markerReads,
+        livenessChecks,
+        livenessDenials,
       });
     }
     const beforeUri = replayCounter.exchanges;
@@ -1355,72 +1637,203 @@ async function runN8(env, _ledger, timeoutMs, ctx) {
     await stopExternalRuntime(replay);
   }
 
-  if (!loopbackSupabase(env.ARI_TEST_SUPABASE_URL)) {
-    subcases.push(
-      { id: 'signed_b_unbound', executed: false, pass: false, reason: 'not_executed' },
-      { id: 'signed_b_mismatch', executed: false, pass: false, reason: 'not_executed' },
+  const signedFacts = [];
+  const signedCounter = { exchanges: 0 };
+  const counting = countFetch(signedCounter, ctx.fetch);
+  const unboundSigned = await startExternalRuntime(runtimeEnv, {
+    spawnChild: false,
+    captureDownstreamCode: true,
+    fetch: ctx.fetch,
+    onGrantFact(fact) {
+      signedFacts.push(fact);
+    },
+  });
+  try {
+    const issuedA = await withTimeout(
+      obtainGrant(unboundSigned, env, 'external_a', {}, counting),
+      timeoutMs,
+      ctx.signal,
     );
-  } else {
-    const unboundCounter = { exchanges: 0 };
-    const counting = countFetch(unboundCounter, ctx.fetch);
-    const unboundSigned = await startExternalRuntime(runtimeEnv, {
-      spawnChild: false,
-      captureDownstreamCode: true,
-      fetch: ctx.fetch,
+    const verifiedA = await verifyJwt(issuedA.accessToken, env, {
+      audience: env.ARI_EXTERNAL_MCP_URL,
+      role: 'mcp_ingress',
+      clientId: env.ARI_EXTERNAL_A_CLIENT_ID,
+      agentId: env.ARI_AGENT_ID,
+      requireSource: true,
     });
+    noteSession(ledger, {
+      gate: 'N8',
+      passwordSessionId: issuedA.passwordSessionId,
+      sub: verifiedA.sub,
+    });
+    noteSession(ledger, {
+      gate: 'N8',
+      sourceSessionId: verifiedA.sourceSessionId,
+      sub: verifiedA.sub,
+    });
+    const opened = await presentOnce(env.ARI_EXTERNAL_MCP_URL, issuedA.accessToken);
+    const before = signedCounter.exchanges;
+    const issuedB = await withTimeout(
+      obtainGrant(unboundSigned, env, 'downstream_b', {}, counting),
+      timeoutMs,
+      ctx.signal,
+    );
+    const verifiedB = await verifyJwt(issuedB.accessToken, env, {
+      audience: 'authenticated',
+      role: 'authenticated',
+      clientId: env.ARI_DOWNSTREAM_CLIENT_ID,
+      agentId: env.ARI_AGENT_ID,
+    });
+    noteSession(ledger, {
+      gate: 'N8',
+      passwordSessionId: issuedB.passwordSessionId,
+      sub: verifiedB.sub,
+    });
+    noteSession(ledger, { gate: 'N8', bSessionId: verifiedB.sessionId, sub: verifiedB.sub });
+    const bLive = await liveOwner(env, issuedB.accessToken, verifiedB.sub, timeoutMs, ctx.signal);
+    let negative;
     try {
-      const issuedA = await withTimeout(
-        obtainGrant(unboundSigned, env, 'external_a', {}, counting),
-        timeoutMs,
-        ctx.signal,
-      );
-      const verifiedA = await verifyJwt(issuedA.accessToken, env, {
-        audience: env.ARI_EXTERNAL_MCP_URL,
-        role: 'mcp_ingress',
-        clientId: env.ARI_EXTERNAL_A_CLIENT_ID,
-        agentId: env.ARI_AGENT_ID,
-        requireSource: true,
-      });
-      const opened = await presentOnce(env.ARI_EXTERNAL_MCP_URL, issuedA.accessToken);
-      const before = unboundCounter.exchanges;
-      const issuedB = await withTimeout(
-        obtainGrant(unboundSigned, env, 'downstream_b', {}, counting),
-        timeoutMs,
-        ctx.signal,
-      );
-      const verifiedB = await verifyJwt(issuedB.accessToken, env, {
-        audience: 'authenticated',
-        role: 'authenticated',
-        clientId: env.ARI_DOWNSTREAM_CLIENT_ID,
-        agentId: env.ARI_AGENT_ID,
-      });
-      const again = await presentOnce(env.ARI_EXTERNAL_MCP_URL, issuedA.accessToken);
-      const pass =
-        opened.error === 'downstream_authorization_required' &&
-        unboundCounter.exchanges === before + 1 &&
-        verifiedB.sub === verifiedA.sub &&
-        verifiedB.sessionId !== verifiedA.sessionId &&
-        again.error === 'downstream_authorization_required' &&
-        again.authorizationUrl !== undefined &&
-        unboundSigned.observation.bSessionId === null &&
-        unboundSigned.observation.markerReads === 0;
+      negative = await presentOnce(env.ARI_EXTERNAL_MCP_URL, issuedB.accessToken);
+    } catch {
+      negative = { status: 0, error: 'unreadable', redirected: false };
+    }
+    const again = await presentOnce(env.ARI_EXTERNAL_MCP_URL, issuedA.accessToken);
+    const negativeDenied =
+      negative.status === 401 &&
+      negative.error === 'invalid_token' &&
+      negative.redirected === false;
+    const pass =
+      opened.status === 403 &&
+      opened.error === 'downstream_authorization_required' &&
+      opened.redirected === false &&
+      signedCounter.exchanges === before + 1 &&
+      verifiedB.sub === verifiedA.sub &&
+      verifiedB.sessionId !== verifiedA.sessionId &&
+      bLive === true &&
+      negativeDenied === true &&
+      again.status === 403 &&
+      again.error === 'downstream_authorization_required' &&
+      again.authorizationUrl !== undefined &&
+      signedFacts.every((row) => row.event !== 'bound') &&
+      unboundSigned.observation.bSessionId === null &&
+      unboundSigned.observation.markerReads === 0 &&
+      unboundSigned.observation.livenessChecks === 0;
+    subcases.push({
+      id: 'signed_b_unbound',
+      executed: true,
+      pass,
+      reason: pass ? 'signed_b_not_stored' : 'inconclusive',
+      negativeStatus: boundedHttpStatus(negative.status),
+      negativeError: negativeDenied ? 'invalid_token' : safeCode(negative.error),
+      bLive: bLive === true,
+      sessionsDistinct: verifiedB.sessionId !== verifiedA.sessionId,
+      storedGrant: false,
+    });
+  } catch (error) {
+    subcases.push({
+      id: 'signed_b_unbound',
+      executed: true,
+      pass: false,
+      reason: safeCode(error?.code ?? 'inconclusive'),
+      negativeStatus: null,
+      negativeError: 'unreadable',
+      bLive: false,
+      sessionsDistinct: false,
+      storedGrant: false,
+    });
+  } finally {
+    await stopExternalRuntime(unboundSigned);
+  }
+
+  const secondUser = await ensureSecondUser(env, reader, timeoutMs, ctx, 'N8');
+  const subjectFacts = [];
+  const subjectRuntime = await startExternalRuntime(runtimeEnv, {
+    spawnChild: false,
+    fetch: ctx.fetch,
+    onGrantFact(fact) {
+      subjectFacts.push(fact);
+    },
+  });
+  try {
+    const issued = await withTimeout(
+      obtainGrant(subjectRuntime, env, 'external_a', {}, ctx.fetch),
+      timeoutMs,
+      ctx.signal,
+    );
+    const verifiedA = await verifyJwt(issued.accessToken, env, {
+      audience: env.ARI_EXTERNAL_MCP_URL,
+      role: 'mcp_ingress',
+      clientId: env.ARI_EXTERNAL_A_CLIENT_ID,
+      agentId: env.ARI_AGENT_ID,
+      requireSource: true,
+    });
+    const opened = await presentOnce(env.ARI_EXTERNAL_MCP_URL, issued.accessToken);
+    if (
+      opened.authorizationUrl === undefined ||
+      opened.error !== 'downstream_authorization_required'
+    ) {
       subcases.push({
-        id: 'signed_b_unbound',
-        executed: true,
-        pass,
-        reason: pass ? 'signed_b_not_stored' : 'inconclusive',
-      });
-    } catch (error) {
-      subcases.push({
-        id: 'signed_b_unbound',
+        id: 'signed_b_mismatch',
         executed: true,
         pass: false,
-        reason: safeCode(error?.code ?? 'inconclusive'),
+        reason: 'inconclusive',
+        mismatchClass: 'SUBJECT',
       });
-    } finally {
-      await stopExternalRuntime(unboundSigned);
+    } else {
+      await withTimeout(
+        consentUrl(
+          env,
+          opened.authorizationUrl,
+          { email: secondUser.email, password: env.ARI_N2_SECOND_PASSWORD },
+          ctx.fetch,
+        ),
+        timeoutMs,
+        ctx.signal,
+      );
+      const fact = subjectFacts.find((row) => row.event === 'exchange_rejected');
+      markRejected(ledger, fact?.sessionId);
+      const again = await presentOnce(env.ARI_EXTERNAL_MCP_URL, issued.accessToken);
+      const pass =
+        fact !== undefined &&
+        fact.subjectMismatch === true &&
+        fact.failureClass === undefined &&
+        safeUuid(fact.sessionId) !== undefined &&
+        safeUuid(fact.sub) === secondUser.id &&
+        fact.sub !== verifiedA.sub &&
+        subjectFacts.every((row) => row.event !== 'bound') &&
+        subjectRuntime.observation.bSessionId === null &&
+        subjectRuntime.observation.markerReads === 0 &&
+        subjectRuntime.observation.livenessChecks === 0 &&
+        again.status === 403 &&
+        again.error === 'downstream_authorization_required' &&
+        again.redirected === false;
+      if (pass) {
+        ctx.deletionEligible = true;
+        ctx.eligibleSecondUserId = secondUser.id;
+      }
+      subcases.push({
+        id: 'signed_b_mismatch',
+        executed: true,
+        pass,
+        reason: pass ? 'SUBJECT' : 'inconclusive',
+        mismatchClass: 'SUBJECT',
+        subject: safeUuid(fact?.sub) ?? null,
+        bSessionId: safeUuid(fact?.sessionId) ?? null,
+      });
     }
+  } catch (error) {
+    subcases.push({
+      id: 'signed_b_mismatch',
+      executed: true,
+      pass: false,
+      reason: safeCode(error?.code ?? 'inconclusive'),
+      mismatchClass: 'SUBJECT',
+    });
+  } finally {
+    await stopExternalRuntime(subjectRuntime);
+  }
 
+  if (loopbackSupabase(env.ARI_TEST_SUPABASE_URL)) {
     const mismatchCounter = { exchanges: 0 };
     const mismatchFacts = [];
     const mismatchFetch = countFetch(mismatchCounter, async (input, init) => {
@@ -1446,10 +1859,11 @@ async function runN8(env, _ledger, timeoutMs, ctx) {
       const opened = await presentOnce(env.ARI_EXTERNAL_MCP_URL, issued.accessToken);
       if (opened.authorizationUrl === undefined) {
         subcases.push({
-          id: 'signed_b_mismatch',
+          id: 'synthetic_agent_mismatch',
           executed: true,
           pass: false,
           reason: 'inconclusive',
+          mismatchClass: 'synthetic_agent',
         });
       } else {
         const before = mismatchCounter.exchanges;
@@ -1459,6 +1873,7 @@ async function runN8(env, _ledger, timeoutMs, ctx) {
           ctx.signal,
         );
         const fact = mismatchFacts.find((row) => row.event === 'exchange_rejected');
+        markRejected(ledger, fact?.sessionId);
         const pass =
           fact !== undefined &&
           fact.subjectMismatch === false &&
@@ -1467,20 +1882,23 @@ async function runN8(env, _ledger, timeoutMs, ctx) {
           mismatchCounter.exchanges === before + 1 &&
           mismatchFacts.every((row) => row.event !== 'bound') &&
           mismatched.observation.bSessionId === null &&
-          mismatched.observation.markerReads === 0;
+          mismatched.observation.markerReads === 0 &&
+          mismatched.observation.livenessChecks === 0;
         subcases.push({
-          id: 'signed_b_mismatch',
+          id: 'synthetic_agent_mismatch',
           executed: true,
           pass,
-          reason: pass ? 'binding_rejected' : 'inconclusive',
+          reason: pass ? 'synthetic_agent' : 'inconclusive',
+          mismatchClass: 'synthetic_agent',
         });
       }
     } catch (error) {
       subcases.push({
-        id: 'signed_b_mismatch',
+        id: 'synthetic_agent_mismatch',
         executed: true,
         pass: false,
         reason: safeCode(error?.code ?? 'inconclusive'),
+        mismatchClass: 'synthetic_agent',
       });
     } finally {
       await stopExternalRuntime(mismatched);
@@ -1490,8 +1908,13 @@ async function runN8(env, _ledger, timeoutMs, ctx) {
     (row) => row.id === 'signed_b_unbound' || row.id === 'signed_b_mismatch',
   );
   const signedHeld =
-    signed.length === 2 && signed.every((row) => row.executed === true && row.pass === true);
-  const pass = signedHeld && subcases.every((row) => row.pass === true);
+    signed.length === 2 &&
+    signed.every((row) => row.executed === true && row.pass === true) &&
+    signed.find((row) => row.id === 'signed_b_mismatch')?.reason === 'SUBJECT';
+  const synthetic = subcases.find((row) => row.id === 'synthetic_agent_mismatch');
+  const syntheticHeld =
+    synthetic === undefined || (synthetic.executed === true && synthetic.pass === true);
+  const pass = signedHeld && syntheticHeld && subcases.every((row) => row.pass === true);
   return {
     id: 'N8',
     name: GATE_NAMES.N8,
@@ -1541,29 +1964,8 @@ async function confirmCleanup(reader, ctx, timeoutMs, gate) {
 
 async function runN2(env, ledger, reader, timeoutMs, ctx) {
   ctx.cursor.gate = 'N2';
-  if (
-    typeof env.ARI_N2_SECOND_EMAIL !== 'string' ||
-    env.ARI_N2_SECOND_EMAIL.length === 0 ||
-    typeof env.ARI_N2_SECOND_PASSWORD !== 'string' ||
-    env.ARI_N2_SECOND_PASSWORD.length === 0
-  ) {
-    throw coded('second_user_required');
-  }
-  const prepared = await pauseForReadback(
-    reader,
-    { runId: ctx.runId, action: 'prepare_second_synthetic_user', gate: 'N2' },
-    timeoutMs,
-    ctx.signal,
-  );
-  const secondUserId = safeUuid(prepared.secondUserId);
-  if (
-    secondUserId === undefined ||
-    prepared.createdForRun !== true ||
-    prepared.email !== env.ARI_N2_SECOND_EMAIL ||
-    prepared.email === SYNTHETIC_EMAIL
-  ) {
-    throw coded('second_user_unverified');
-  }
+  const secondUser = await ensureSecondUser(env, reader, timeoutMs, ctx, 'N2');
+  const secondUserId = secondUser.id;
   const runtimeEnv = { ...env, ARI_LANE_B_EXECUTE: '1' };
   const facts = [];
   const runtime = await startExternalRuntime(runtimeEnv, {
@@ -2276,8 +2678,8 @@ export async function runNGates(env, stdin) {
     for (const id of selected) {
       let row;
       if (id === 'N3') row = await runN3(env, ledger, timeoutMs, ctx);
-      else if (id === 'N7') row = await runN7(env, ledger, timeoutMs, ctx);
-      else if (id === 'N8') row = await runN8(env, ledger, timeoutMs, ctx);
+      else if (id === 'N7') row = await runN7(env, ledger, reader, timeoutMs, ctx);
+      else if (id === 'N8') row = await runN8(env, ledger, reader, timeoutMs, ctx);
       else if (id === 'N2') row = await runN2(env, ledger, reader, timeoutMs, ctx);
       else if (id === 'N6') row = await runN6(env, ledger, reader, timeoutMs, restoreState, ctx);
       else throw coded('live_configuration_incomplete');

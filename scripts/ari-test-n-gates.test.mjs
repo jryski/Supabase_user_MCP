@@ -288,9 +288,12 @@ async function startIssuer(mode, hooks = {}) {
   const sessions = new Map();
   const remembered = new Set();
   if (mode === 'preconsented') {
-    remembered.add(`${USER1}:${A_CLIENT}:openid email`);
-    remembered.add(`${USER1}:${B_CLIENT}:openid email`);
+    for (const user of [USER1, USER2]) {
+      remembered.add(`${user}:${A_CLIENT}:openid email`);
+      remembered.add(`${user}:${B_CLIENT}:openid email`);
+    }
   }
+  const { privateKey: decoyKey } = await generateKeyPair('ES256');
   let hookEnabled = true;
   let passwordSerial = 0;
   let downstreamTokenPosts = 0;
@@ -566,6 +569,10 @@ async function startIssuer(mode, hooks = {}) {
               send(503, JSON.stringify({ error: 'server_error' }));
               return;
             }
+            if (mode === 'b_malformed' && record.clientId === B_CLIENT) {
+              send(200, 'not-json');
+              return;
+            }
             const mismatch = req.headers['x-ari-probe-b-claim'] === 'agent-mismatch';
             const tokenA = record.clientId === A_CLIENT;
             if (mode === 'delay_oauth' && tokenA) {
@@ -603,7 +610,7 @@ async function startIssuer(mode, hooks = {}) {
               .setExpirationTime(
                 mode === 'expired_hook_off' && tokenA && !hookEnabled ? '-10s' : '5m',
               )
-              .sign(privateKey);
+              .sign(mode === 'b_bad_signature' && !tokenA ? decoyKey : privateKey);
             sessions.set(access, { sub: record.sub ?? USER1 });
             send(
               200,
@@ -620,7 +627,9 @@ async function startIssuer(mode, hooks = {}) {
       }
       if (req.method === 'GET' && url.pathname === '/rest/v1/ari_probe_marker') {
         seen.marker.push(url.search);
-        if (url.search !== '?select=marker,owner_id') {
+        const mcpMarker = url.search === '?select=marker';
+        const ownerMarker = url.search === '?select=marker,owner_id';
+        if (!mcpMarker && !ownerMarker) {
           seen.forbidden += 1;
           send(404, JSON.stringify({ error: 'not_found' }));
           return;
@@ -632,6 +641,18 @@ async function startIssuer(mode, hooks = {}) {
             JSON.parse(Buffer.from(payload ?? '', 'base64url').toString('utf8')).client_id ?? '';
         } catch {
           clientId = '';
+        }
+        if (mcpMarker && clientId === B_CLIENT) {
+          if (mode === 'marker_tool_5xx') {
+            send(500, JSON.stringify({ error: 'server_error' }));
+            return;
+          }
+          if (mode === 'marker_tool_malformed') {
+            send(200, 'not-json');
+            return;
+          }
+          send(200, JSON.stringify([{ marker: 'ari-probe-marker-odbcejsuuqdzhabjmozi' }]));
+          return;
         }
         if (mode === 'hang-a-marker' && clientId === A_CLIENT) return;
         if (mode === 'stall_marker_body' && clientId === A_CLIENT) {
@@ -688,7 +709,7 @@ async function startIssuer(mode, hooks = {}) {
           send(401, JSON.stringify({ error: 'unauthorized' }));
           return;
         }
-        send(200, JSON.stringify({ id: user.sub }));
+        send(200, JSON.stringify({ id: user.sub, aud: 'authenticated' }));
         return;
       }
       if (
@@ -1122,15 +1143,43 @@ test('synthetic packet executes the remaining gates without hosted contact', asy
     true,
   );
   assert.equal(result.seen.forbidden, 0);
+  assert.equal(result.seen.marker.includes('?select=marker,owner_id'), true);
+  assert.equal(result.seen.marker.includes('?select=marker'), true);
   assert.equal(
-    result.seen.marker.every((search) => search === '?select=marker,owner_id'),
+    result.seen.marker.every(
+      (search) => search === '?select=marker,owner_id' || search === '?select=marker',
+    ),
     true,
   );
+  const n8 = byId.N8;
+  const unbound = n8.subcases.find((row) => row.id === 'signed_b_unbound');
+  const subject = n8.subcases.find((row) => row.id === 'signed_b_mismatch');
+  const synthetic = n8.subcases.find((row) => row.id === 'synthetic_agent_mismatch');
+  const replay = n8.subcases.find((row) => row.id === 'accepted_then_replay');
+  assert.equal(unbound.pass, true);
+  assert.equal(unbound.reason, 'signed_b_not_stored');
+  assert.equal(unbound.negativeStatus, 401);
+  assert.equal(unbound.negativeError, 'invalid_token');
+  assert.equal(unbound.bLive, true);
+  assert.equal(unbound.storedGrant, false);
+  assert.equal(subject.pass, true);
+  assert.equal(subject.reason, 'SUBJECT');
+  assert.equal(subject.mismatchClass, 'SUBJECT');
+  assert.equal(subject.subject, USER2);
+  assert.equal(synthetic.pass, true);
+  assert.equal(synthetic.reason, 'synthetic_agent');
+  assert.equal(synthetic.mismatchClass, 'synthetic_agent');
+  assert.equal(replay.pass, true);
+  assert.equal(replay.reason, 'replay_rejected');
+  assert.equal(replay.exchangesAfterBind, 1);
+  assert.equal(replay.exchangesAfterReplay, 0);
+  assert.equal(replay.markerReads, 2);
+  assert.equal(replay.livenessDenials, 0);
   assert.deepEqual(result.actions, [
     'cleanup_sessions',
-    'cleanup_sessions',
-    'cleanup_sessions',
     'prepare_second_synthetic_user',
+    'cleanup_sessions',
+    'cleanup_sessions',
     'cleanup_sessions',
     'delete_second_synthetic_user',
     'capture_hook_manifest',
@@ -1227,7 +1276,13 @@ function assertNoIssuanceSecrets(result, label) {
 }
 
 function assertStoppedBeforeN2(result, label) {
-  assert.equal(result.actions.includes('prepare_second_synthetic_user'), false, label);
+  assert.equal(
+    result.messages.some(
+      (row) => row.action === 'prepare_second_synthetic_user' && row.gate === 'N2',
+    ),
+    false,
+    label,
+  );
   assert.equal(result.actions.includes('delete_second_synthetic_user'), false, label);
   const n2 = result.receipt.rows.find((row) => row.id === 'N2');
   assert.equal(n2.executed, false, label);
@@ -1449,19 +1504,24 @@ test('N6 restores the saved hook when the marker probe times out', async () => {
   assert.equal(result.receipt.cleanupStatus, 'confirmed');
 });
 
-test('retained consent still proves N7 policy without a forced approval', async () => {
+test('repeated already-consented reads stay an incomplete N7 gate', async () => {
   const result = await drive('preconsented', 'N7');
-  assert.equal(result.code, 0, `${result.errText}\n${result.outText}`);
+  assert.equal(result.code, 2, `${result.errText}\n${result.outText}`);
+  assert.equal(result.receipt.acceptance, false);
+  assert.equal(result.receipt.rowsPass, false);
   const n7 = result.receipt.rows.find((row) => row.id === 'N7');
-  assert.equal(n7.pass, true);
+  assert.equal(n7.executed, true);
+  assert.equal(n7.pass, false);
+  assert.equal(n7.label, 'n7_incomplete');
   assert.equal(
-    n7.subcases.every((row) => row.observedFlow === 'already_consented_get'),
+    n7.subcases.every((row) => row.observedFlow === 'already_consented_get' && row.pass === true),
     true,
   );
   assert.equal(
     n7.subcases.every((row) => row.reason === 'openid_scope_refused'),
     true,
   );
+  assert.equal(result.actions.includes('delete_second_synthetic_user'), false);
 });
 
 test('unrelated marker 401 and 403 cannot pass F1', async () => {
@@ -1572,9 +1632,10 @@ test('exchange service failure and callback HTTP 500 cannot pass binding or URI'
   assert.equal(service.receipt.rowsPass, false);
   const n8 = service.receipt.rows.find((row) => row.id === 'N8');
   assert.equal(
-    n8.subcases.some((row) => row.pass === true && row.reason === 'binding_rejected'),
+    n8.subcases.some((row) => row.pass === true && row.reason === 'SUBJECT'),
     false,
   );
+  assert.equal(n8.subcases.find((row) => row.id === 'signed_b_mismatch').pass, false);
   assert.equal(n8.subcases.find((row) => row.id === 'accepted_then_replay').pass, false);
   assert.equal(
     n8.subcases.find((row) => row.id === 'accepted_then_replay').reason,
@@ -1591,6 +1652,67 @@ test('exchange service failure and callback HTTP 500 cannot pass binding or URI'
     .subcases.find((row) => row.id === 'callback_uri_mismatch');
   assert.equal(uriRow.pass, false);
   assert.equal(uriRow.reason, 'uri_inconclusive');
+});
+
+test('N8 rejects marker 5xx, unreadable marker, bad signature, malformed B, and wrong subject', async () => {
+  for (const [mode, replayReason] of [
+    ['marker_tool_5xx', 'marker_unproven'],
+    ['marker_tool_malformed', 'marker_unproven'],
+  ]) {
+    const result = await drive(mode, 'N8');
+    assert.equal(result.code, 2, `${mode}\n${result.errText}\n${result.outText}`);
+    assert.equal(result.receipt.acceptance, false, mode);
+    assert.equal(result.receipt.rowsPass, false, mode);
+    const replay = result.receipt.rows
+      .find((row) => row.id === 'N8')
+      .subcases.find((row) => row.id === 'accepted_then_replay');
+    assert.equal(replay.pass, false, mode);
+    assert.equal(replay.reason, replayReason, mode);
+    assert.notEqual(replay.reason, 'replay_rejected', mode);
+    assertNoIssuanceSecrets(result, mode);
+  }
+  const signature = await drive('b_bad_signature', 'N8');
+  assert.equal(signature.code, 2, signature.errText);
+  assert.equal(signature.receipt.acceptance, false);
+  const signatureN8 = signature.receipt.rows.find((row) => row.id === 'N8');
+  assert.equal(signatureN8.subcases.find((row) => row.id === 'signed_b_mismatch').pass, false);
+  assert.notEqual(
+    signatureN8.subcases.find((row) => row.id === 'signed_b_mismatch').reason,
+    'SUBJECT',
+  );
+  assert.equal(
+    signatureN8.subcases.find((row) => row.id === 'accepted_then_replay').reason,
+    'signature_rejected',
+  );
+  assertNoIssuanceSecrets(signature, 'b_bad_signature');
+  const malformed = await drive('b_malformed', 'N8');
+  assert.equal(malformed.code, 2, malformed.errText);
+  assert.equal(malformed.receipt.acceptance, false);
+  assert.equal(malformed.receipt.issuanceStatus, 'unresolved');
+  assert.equal(malformed.receipt.cleanupStatus, 'unresolved');
+  const malformedSigned = malformed.receipt.rows
+    .find((row) => row.id === 'N8')
+    .subcases.find((row) => row.id === 'signed_b_unbound');
+  assert.equal(malformedSigned.executed, true);
+  assert.equal(malformedSigned.pass, false);
+  assert.notEqual(malformedSigned.reason, 'signed_b_not_stored');
+  assert.equal(malformed.actions.includes('delete_second_synthetic_user'), false);
+  assert.equal(malformed.actions.includes('reconcile_unresolved_issuance'), true);
+  assertNoIssuanceSecrets(malformed, 'b_malformed');
+  const wrongSubject = await drive('wrong_subject', 'N8');
+  assert.equal(wrongSubject.code, 2, wrongSubject.errText);
+  assert.equal(wrongSubject.receipt.acceptance, false);
+  const wrongRow = wrongSubject.receipt.rows
+    .find((row) => row.id === 'N8')
+    .subcases.find((row) => row.id === 'signed_b_mismatch');
+  assert.equal(wrongRow.pass, false);
+  assert.notEqual(wrongRow.reason, 'SUBJECT');
+  assert.equal(wrongSubject.actions.includes('delete_second_synthetic_user'), false);
+  assert.equal(
+    wrongSubject.messages.some((row) => row.secondUserId === USER1),
+    false,
+  );
+  assertNoIssuanceSecrets(wrongSubject, 'wrong_subject');
 });
 
 test('unexpected N7 issuance is not policy proof and stays on the ledger', async () => {
