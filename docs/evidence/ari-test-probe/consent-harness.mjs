@@ -74,10 +74,14 @@ function redirectExpectation(options) {
   if (profile !== undefined && !Object.hasOwn(CALLBACK_PROFILES, profile)) {
     return { ok: false, reason: 'redirect_not_exact' };
   }
+  const pathname =
+    profile === undefined ? CALLBACK_PROFILES.baseline_a : CALLBACK_PROFILES[profile];
+  if (typeof options?.pathname === 'string' && options.pathname !== pathname) {
+    return { ok: false, reason: 'redirect_not_exact' };
+  }
   return {
     ok: true,
-    pathname:
-      profile === undefined ? (options?.pathname ?? '/callback') : CALLBACK_PROFILES[profile],
+    pathname,
     origin: typeof options?.expectedOrigin === 'string' ? options.expectedOrigin : undefined,
     requirePort: options?.requirePort === true,
   };

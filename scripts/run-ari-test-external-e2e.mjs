@@ -745,6 +745,15 @@ export async function startExternalRuntime(env, options = {}) {
       rejectJson(res);
       return;
     }
+    if (
+      req.method === 'GET' &&
+      env.ARI_N_GATES_SYNTHETIC_HTTP_STATUS === '500' &&
+      requestUrl.pathname === '/oauth/downstream/cb'
+    ) {
+      res.writeHead(500, { 'content-type': 'application/json', 'cache-control': 'no-store' });
+      res.end(JSON.stringify({ error: 'server_error' }));
+      return;
+    }
     if (req.method === 'GET' && requestUrl.pathname === aRedirect.pathname) {
       const keys = [...requestUrl.searchParams.keys()];
       const code = requestUrl.searchParams.get('code') ?? '';

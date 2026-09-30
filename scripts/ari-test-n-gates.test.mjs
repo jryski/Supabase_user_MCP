@@ -2,16 +2,18 @@ import assert from 'node:assert/strict';
 import { execFileSync, spawn } from 'node:child_process';
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { once } from 'node:events';
-import { mkdtempSync, readFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync } from 'node:fs';
 import { createServer as createHttpServer } from 'node:http';
 import { createServer as createHttpsServer } from 'node:https';
 import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { createInterface } from 'node:readline';
 import test from 'node:test';
 import { exportJWK, generateKeyPair, SignJWT } from 'jose';
 
 import { SYNTHETIC_EMAIL } from '../docs/evidence/ari-test-probe/decisions.mjs';
 import {
+  callbackUriMismatchPass,
   classifyMarkerProbe,
   crossUserPass,
   hookManifestHash,
@@ -92,16 +94,56 @@ test('plan stays closed and false passes stay false', () => {
     false,
   );
   assert.equal(classifyMarkerProbe(500, '{}').reason, 'inconclusive');
-  const hash = hookManifestHash({
-    enabled: true,
-    function: 'ari_probe.custom_access_token_hook',
+  const bound = {
     projectRef: 'odbcejsuuqdzhabjmozi',
     resource: 'http://127.0.0.1:9/mcp',
     agentId: AGENT,
     externalClientId: A_CLIENT,
-    baselineClientId: 'baseline-a-client',
-  });
+  };
+  const hash = hookManifestHash(
+    {
+      enabled: true,
+      function: 'ari_probe.custom_access_token_hook',
+      uri: 'pg-functions://postgres/ari_probe/custom_access_token_hook',
+      settings: { schema: 'ari_probe' },
+      projectRef: 'odbcejsuuqdzhabjmozi',
+      resource: 'http://127.0.0.1:9/mcp',
+      agentId: AGENT,
+      externalClientId: A_CLIENT,
+      baselineClientId: 'baseline-a-client',
+    },
+    bound,
+  );
   assert.equal(hash.length, 64);
+  assert.throws(
+    () =>
+      hookManifestHash({ enabled: true, function: 'ari_probe.custom_access_token_hook' }, bound),
+    /hook_manifest_unreadable/,
+  );
+  assert.throws(
+    () =>
+      hookManifestHash(
+        {
+          enabled: true,
+          function: 'ari_probe.custom_access_token_hook',
+          uri: 'pg-functions://postgres/ari_probe/custom_access_token_hook',
+          settings: {},
+          projectRef: 'other-project-ref',
+          resource: 'http://127.0.0.1:9/mcp',
+          agentId: AGENT,
+          externalClientId: A_CLIENT,
+          baselineClientId: 'baseline-a-client',
+        },
+        bound,
+      ),
+    /hook_manifest_unreadable/,
+  );
+  assert.equal(classifyMarkerProbe(401, '{}').reason, 'inconclusive');
+  assert.equal(classifyMarkerProbe(403, '{}').denial, false);
+  assert.equal(
+    callbackUriMismatchPass({ status: 500, error: 'malformed', exchangesDelta: 0 }),
+    false,
+  );
 });
 
 test('plan command opens no runtime and run stays closed', async () => {
@@ -193,11 +235,23 @@ async function startIssuer(mode) {
     ],
     { stdio: 'ignore' },
   );
-  const seen = { authorize: [], exchange: [], marker: [], emails: [], forbidden: 0 };
+  const seen = {
+    authorize: [],
+    exchange: [],
+    marker: [],
+    emails: [],
+    forbidden: 0,
+    decoySessionIds: [],
+    codes: 0,
+  };
   const authorizations = new Map();
   const pending = new Map();
   const sessions = new Map();
   const remembered = new Set();
+  if (mode === 'preconsented') {
+    remembered.add(`${USER1}:${A_CLIENT}:openid email`);
+    remembered.add(`${USER1}:${B_CLIENT}:openid email`);
+  }
   let hookEnabled = true;
   let passwordSerial = 0;
   const https = createHttpsServer(
@@ -249,6 +303,7 @@ async function startIssuer(mode) {
       }
       const issueCode = (record) => {
         const code = randomBytes(16).toString('base64url');
+        seen.codes += 1;
         pending.set(code, record);
         const redirectUrl = new URL(record.redirect);
         redirectUrl.searchParams.set('code', code);
@@ -359,7 +414,7 @@ async function startIssuer(mode) {
               send(400, JSON.stringify({ error: 'invalid_grant' }));
               return;
             }
-            if ((record.scope ?? '').includes('openid')) {
+            if ((record.scope ?? '').includes('openid') && mode !== 'openid_issued') {
               if (mode === 'invalid_scope') {
                 send(400, JSON.stringify({ error: 'invalid_scope' }));
                 return;
@@ -373,31 +428,41 @@ async function startIssuer(mode) {
               );
               return;
             }
+            if (mode === 'b_exchange_503' && record.clientId === B_CLIENT) {
+              send(503, JSON.stringify({ error: 'server_error' }));
+              return;
+            }
             const tokenA = record.clientId === A_CLIENT;
+            const mintedSession = randomUUID();
+            const sourceSession = randomUUID();
             const claims = tokenA
               ? hookEnabled
                 ? {
                     role: 'mcp_ingress',
                     client_id: A_CLIENT,
-                    session_id: randomUUID(),
-                    source_session_id: randomUUID(),
+                    session_id: mintedSession,
+                    source_session_id: sourceSession,
                     agent_id: AGENT,
                   }
-                : { role: 'authenticated', client_id: A_CLIENT, session_id: randomUUID() }
+                : { role: 'authenticated', client_id: A_CLIENT, session_id: mintedSession }
               : {
                   role: 'authenticated',
                   client_id: B_CLIENT,
-                  session_id: randomUUID(),
+                  session_id: mintedSession,
                   agent_id: AGENT,
                 };
+            if (tokenA && hookEnabled) seen.decoySessionIds.push(mintedSession);
             const access = await new SignJWT(claims)
               .setProtectedHeader({ alg: 'ES256', kid: 'g2-test', typ: 'JWT' })
               .setSubject(record.sub ?? USER1)
               .setIssuer(issuer)
               .setAudience(tokenA && hookEnabled ? (record.resource ?? '') : 'authenticated')
               .setIssuedAt()
-              .setExpirationTime('5m')
+              .setExpirationTime(
+                mode === 'expired_hook_off' && tokenA && !hookEnabled ? '-10s' : '5m',
+              )
               .sign(privateKey);
+            sessions.set(access, { sub: record.sub ?? USER1 });
             send(
               200,
               JSON.stringify({
@@ -427,6 +492,14 @@ async function startIssuer(mode) {
           clientId = '';
         }
         if (mode === 'hang-a-marker' && clientId === A_CLIENT) return;
+        if (mode === 'marker_401' && clientId === A_CLIENT) {
+          send(401, JSON.stringify({ error: 'unauthorized' }));
+          return;
+        }
+        if (mode === 'marker_403' && clientId === A_CLIENT) {
+          send(403, JSON.stringify({ error: 'permission_denied' }));
+          return;
+        }
         if (clientId === A_CLIENT) {
           send(200, '[]');
           return;
@@ -436,6 +509,15 @@ async function startIssuer(mode) {
           return;
         }
         send(401, JSON.stringify({ error: 'unauthorized' }));
+        return;
+      }
+      if (req.method === 'GET' && url.pathname === '/auth/v1/user') {
+        const user = bearerUser();
+        if (user === undefined) {
+          send(401, JSON.stringify({ error: 'unauthorized' }));
+          return;
+        }
+        send(200, JSON.stringify({ id: user.sub }));
         return;
       }
       if (
@@ -464,7 +546,7 @@ async function startIssuer(mode) {
   };
 }
 
-async function drive(mode, gates) {
+async function drive(mode, gates, fault = 'none') {
   const issuer = await startIssuer(mode);
   const mcpPort = await freePort();
   const mcpResource = `http://127.0.0.1:${mcpPort}/mcp`;
@@ -472,13 +554,20 @@ async function drive(mode, gates) {
   const manifest = {
     enabled: true,
     function: 'ari_probe.custom_access_token_hook',
+    uri: 'pg-functions://postgres/ari_probe/custom_access_token_hook',
+    settings: { schema: 'ari_probe' },
     projectRef: 'odbcejsuuqdzhabjmozi',
     resource: mcpResource,
     agentId: AGENT,
     externalClientId: A_CLIENT,
     baselineClientId: 'baseline-a-client',
   };
-  const hash = hookManifestHash(manifest);
+  const hash = hookManifestHash(manifest, {
+    projectRef: 'odbcejsuuqdzhabjmozi',
+    resource: mcpResource,
+    agentId: AGENT,
+    externalClientId: A_CLIENT,
+  });
   const proc = spawn(process.execPath, ['scripts/run-ari-test-n-gates.mjs', 'run'], {
     stdio: ['pipe', 'pipe', 'pipe'],
     env: {
@@ -489,7 +578,9 @@ async function drive(mode, gates) {
       ARI_N_GATES_EXECUTE: '1',
       ARI_N_GATES: gates,
       ARI_LANE_B_G5_HEAD: head,
-      ARI_LANE_B_TIMEOUT_MS: mode === 'hang-a-marker' ? '1000' : '20000',
+      ARI_LANE_B_TIMEOUT_MS:
+        mode === 'hang-a-marker' || fault === 'timeout_disable' ? '1000' : '20000',
+      ...(fault === 'callback_500' ? { ARI_N_GATES_SYNTHETIC_HTTP_STATUS: '500' } : {}),
       ARI_TEST_PROJECT_REF: 'odbcejsuuqdzhabjmozi',
       ARI_TEST_SUPABASE_URL: issuer.origin,
       ARI_TEST_PUBLISHABLE_KEY: PUBLISHABLE,
@@ -511,13 +602,25 @@ async function drive(mode, gates) {
   const stdoutText = [];
   let receipt;
   const actions = [];
+  const messages = [];
+  const policyFields = {
+    f1Policy: 'ari_probe_marker_reject_a_client',
+    mappingReady: true,
+    grantsUnchanged: true,
+  };
+  const write = (value) => {
+    proc.stdin.write(`${JSON.stringify(value)}\n`);
+  };
   try {
     while (receipt === undefined) {
       let timer;
       const line = await Promise.race([
         reader.next(),
         new Promise((resolve) => {
-          timer = setTimeout(() => resolve(null), mode === 'hang-a-marker' ? 20_000 : 60_000);
+          timer = setTimeout(
+            () => resolve(null),
+            mode === 'hang-a-marker' || fault === 'timeout_disable' ? 20_000 : 60_000,
+          );
         }),
       ]);
       clearTimeout(timer);
@@ -526,32 +629,109 @@ async function drive(mode, gates) {
       const message = JSON.parse(line);
       if (message.type === 'controller_action') {
         actions.push(message.action);
+        messages.push(message);
         assert.equal(JSON.stringify(message).includes(PASSWORD), false);
         assert.equal(JSON.stringify(message).includes(PASSWORD2), false);
         assert.equal(JSON.stringify(message).includes(REFRESH), false);
         if (message.action === 'capture_hook_manifest') {
-          proc.stdin.write(
-            `${JSON.stringify({
+          if (fault === 'minimal_manifest') {
+            write({
               type: 'readback',
+              runId: message.runId,
+              action: message.action,
+              hookManifest: { enabled: true, function: manifest.function },
+              ...policyFields,
+            });
+          } else if (fault === 'foreign_manifest') {
+            write({
+              type: 'readback',
+              runId: message.runId,
+              action: message.action,
+              hookManifest: { ...manifest, projectRef: 'other-project-ref' },
+              ...policyFields,
+            });
+          } else {
+            write({
+              type: 'readback',
+              runId: message.runId,
+              action: message.action,
               hookManifest: manifest,
-              f1Policy: 'ari_probe_marker_reject_a_client',
-              mappingReady: true,
-            })}\n`,
-          );
+              ...policyFields,
+            });
+          }
         } else if (message.action === 'disable_current_hook') {
           assert.equal(message.hookHash, hash);
           issuer.setHook(false);
-          proc.stdin.write(
-            `${JSON.stringify({ type: 'readback', hookEnabled: false, hookHash: hash, function: manifest.function })}\n`,
-          );
+          if (fault === 'malformed_disable') {
+            proc.stdin.write('not-json\n');
+          } else if (fault === 'eof_disable') {
+            proc.stdin.end();
+          } else if (fault === 'stale_disable') {
+            write({
+              type: 'readback',
+              runId: 'stale-run',
+              action: 'restore_hook_configuration',
+              hookEnabled: true,
+              hookHash: hash,
+              function: manifest.function,
+              hookManifest: manifest,
+              ...policyFields,
+            });
+          } else if (fault === 'sigint') {
+            proc.kill('SIGINT');
+          } else if (fault === 'timeout_disable') {
+            // Leave the disable readback unanswered so the runner times out armed.
+          } else {
+            write({
+              type: 'readback',
+              runId: message.runId,
+              action: message.action,
+              hookEnabled: false,
+              hookHash: hash,
+              function: manifest.function,
+              ...policyFields,
+            });
+          }
         } else if (message.action === 'restore_hook_configuration') {
           assert.equal(message.hookHash, hash);
+          assert.equal(message.hookManifest.function, manifest.function);
+          assert.equal(message.hookManifest.uri, manifest.uri);
           issuer.setHook(true);
-          proc.stdin.write(
-            `${JSON.stringify({ type: 'readback', hookEnabled: true, hookHash: hash, function: manifest.function })}\n`,
-          );
+          write({
+            type: 'readback',
+            runId: message.runId,
+            action: message.action,
+            hookEnabled: true,
+            hookHash: hash,
+            function: manifest.function,
+            hookManifest: manifest,
+            ...policyFields,
+          });
+        } else if (message.action === 'cleanup_sessions') {
+          write({
+            type: 'readback',
+            runId: message.runId,
+            action: message.action,
+            sessionsRows: 0,
+            refreshRows: 0,
+            sessionIds: message.sessionIds,
+          });
+        } else if (message.action === 'prepare_second_synthetic_user') {
+          write({
+            type: 'readback',
+            runId: message.runId,
+            action: message.action,
+            secondUserId: USER2,
+          });
+        } else if (message.action === 'delete_second_synthetic_user') {
+          write({
+            type: 'continue',
+            runId: message.runId,
+            action: message.action,
+            secondUserId: message.secondUserId,
+          });
         } else {
-          proc.stdin.write('continue\n');
+          assert.fail(`unhandled ${message.action}`);
         }
       } else if (message.type === 'receipt') {
         receipt = message;
@@ -567,6 +747,7 @@ async function drive(mode, gates) {
       outText: stdoutText.join('\n'),
       seen: issuer.seen,
       actions,
+      messages,
       head,
     };
   } finally {
@@ -647,7 +828,11 @@ test('synthetic packet executes the remaining gates without hosted contact', asy
     true,
   );
   assert.deepEqual(result.actions, [
+    'cleanup_sessions',
+    'cleanup_sessions',
+    'cleanup_sessions',
     'prepare_second_synthetic_user',
+    'cleanup_sessions',
     'delete_second_synthetic_user',
     'capture_hook_manifest',
     'disable_current_hook',
@@ -655,6 +840,52 @@ test('synthetic packet executes the remaining gates without hosted contact', asy
     'restore_hook_configuration',
     'cleanup_sessions',
   ]);
+  const cleanup = result.messages.filter((row) => row.action === 'cleanup_sessions');
+  const n2Cleanup = cleanup.find((row) => row.gate === 'N2');
+  const deleteAt = result.messages.findIndex(
+    (row) => row.action === 'delete_second_synthetic_user',
+  );
+  const n2CleanupAt = result.messages.findIndex(
+    (row) => row.action === 'cleanup_sessions' && row.gate === 'N2',
+  );
+  assert.equal(n2CleanupAt < deleteAt, true);
+  assert.equal(n2Cleanup.sessionIds.length, 8);
+  assert.equal(result.messages[deleteAt].secondUserId, USER2);
+  const n2Ids = new Set();
+  for (const row of receipt.sessionLedger.filter((item) => item.gate === 'N2')) {
+    for (const key of ['passwordSessionId', 'sourceSessionId', 'bSessionId', 'authSessionId']) {
+      if (row[key]) n2Ids.add(row[key]);
+    }
+  }
+  assert.equal(n2Ids.size, 8);
+  assert.equal(
+    receipt.sessionLedger.some(
+      (row) => row.gate === 'N2' && row.rejected === true && row.sub === USER2,
+    ),
+    true,
+  );
+  assert.equal(
+    receipt.sessionLedger.some((row) => row.gate === 'N8' && row.passwordSessionId),
+    true,
+  );
+  assert.equal(
+    receipt.sessionLedger.some((row) => row.gate === 'N8' && row.bSessionId),
+    true,
+  );
+  assert.equal(
+    receipt.sessionLedger.some((row) => row.gate === 'N6' && row.passwordSessionId),
+    true,
+  );
+  assert.equal(
+    receipt.sessionLedger.some((row) => row.gate === 'N6' && row.authSessionId),
+    true,
+  );
+  const cleaned = new Set(cleanup.flatMap((row) => row.sessionIds));
+  for (const decoy of result.seen.decoySessionIds) {
+    assert.equal(cleaned.has(decoy), false, decoy);
+  }
+  assert.equal(result.seen.decoySessionIds.length > 0, true);
+  assert.equal(result.seen.codes > result.seen.exchange.length, true);
   for (const secret of [PASSWORD, PASSWORD2, REFRESH, PUBLISHABLE, 'eyJ']) {
     assert.equal(result.outText.includes(secret), false, secret);
     assert.equal(result.errText.includes(secret), false, secret);
@@ -686,4 +917,132 @@ test('N6 restores the saved hook when the marker probe times out', async () => {
   assert.equal(result.actions.includes('restore_hook_configuration'), true);
   assert.equal(result.outText.includes(PASSWORD), false);
   assert.equal(result.outText.includes(REFRESH), false);
+  assert.equal(result.receipt.cleanupStatus, 'confirmed');
+});
+
+test('retained consent still proves N7 policy without a forced approval', async () => {
+  const result = await drive('preconsented', 'N7');
+  assert.equal(result.code, 0, `${result.errText}\n${result.outText}`);
+  const n7 = result.receipt.rows.find((row) => row.id === 'N7');
+  assert.equal(n7.pass, true);
+  assert.equal(
+    n7.subcases.every((row) => row.observedFlow === 'already_consented_get'),
+    true,
+  );
+  assert.equal(
+    n7.subcases.every((row) => row.reason === 'openid_scope_refused'),
+    true,
+  );
+});
+
+test('unrelated marker 401 and 403 cannot pass F1', async () => {
+  for (const mode of ['marker_401', 'marker_403']) {
+    const result = await drive(mode, 'N6');
+    assert.equal(result.code, 2, mode);
+    assert.equal(result.receipt.acceptance, false);
+    assert.equal(result.receipt.rowsPass, false);
+    const n6 = result.receipt.rows.find((row) => row.id === 'N6');
+    assert.equal(n6.pass, false, mode);
+    assert.equal(n6.subcases.find((row) => row.id === 'f1_denial').pass, false, mode);
+    assert.equal(result.receipt.restoreStatus, undefined);
+    assert.equal(result.actions.includes('restore_hook_configuration'), true, mode);
+  }
+});
+
+test('expired hook-off token cannot pass F1 and still restores', async () => {
+  const result = await drive('expired_hook_off', 'N6');
+  assert.equal(result.code, 2);
+  assert.equal(result.receipt.rowsPass, false);
+  assert.equal(result.receipt.reason, 'hook_off_unverified');
+  assert.equal(result.receipt.restoreStatus, 'confirmed');
+  assert.notEqual(result.receipt.restoreStatus, 'not_required');
+});
+
+test('malformed disable readback still restores and is not not_required', async () => {
+  const result = await drive('policy', 'N6', 'malformed_disable');
+  assert.equal(result.code, 2);
+  assert.equal(result.receipt.reason, 'readback_malformed');
+  assert.equal(result.receipt.restoreStatus, 'confirmed');
+  assert.equal(result.actions.includes('disable_current_hook'), true);
+  assert.equal(result.actions.includes('restore_hook_configuration'), true);
+});
+
+test('EOF after disable stays pending and keeps the recovery locator', async () => {
+  const result = await drive('policy', 'N6', 'eof_disable');
+  assert.equal(result.code, 2);
+  assert.equal(result.receipt.restoreStatus, 'pending');
+  assert.notEqual(result.receipt.restoreStatus, 'not_required');
+  assert.equal(typeof result.receipt.recoveryLocator, 'string');
+  const file = join(tmpdir(), 'ari-n-gates-recovery', result.receipt.recoveryLocator);
+  assert.equal(existsSync(file), true);
+  const saved = JSON.parse(readFileSync(file, 'utf8'));
+  assert.equal(saved.phase, 'disable_armed');
+  assert.equal(saved.hookManifest.function, 'ari_probe.custom_access_token_hook');
+  assert.equal(JSON.stringify(saved).includes(PASSWORD), false);
+  assert.equal(JSON.stringify(saved).includes('eyJ'), false);
+});
+
+test('disable timeout and SIGINT keep restoration armed', async () => {
+  const timed = await drive('policy', 'N6', 'timeout_disable');
+  assert.equal(timed.code, 2);
+  assert.equal(timed.receipt.reason, 'orchestration_timeout');
+  assert.equal(timed.receipt.restoreStatus, 'confirmed');
+  const signaled = await drive('policy', 'N6', 'sigint');
+  assert.equal(signaled.code, 2);
+  assert.equal(signaled.receipt.reason, 'signal_received');
+  assert.equal(signaled.receipt.restoreStatus, 'confirmed');
+  assert.equal(signaled.actions.includes('restore_hook_configuration'), true);
+});
+
+test('stale readback cannot satisfy disable', async () => {
+  const result = await drive('policy', 'N6', 'stale_disable');
+  assert.equal(result.code, 2);
+  assert.equal(result.receipt.reason, 'readback_stale');
+  assert.equal(result.receipt.restoreStatus, 'confirmed');
+  assert.notEqual(result.receipt.restoreStatus, 'not_required');
+});
+
+test('minimal and foreign hook manifests are rejected before disable', async () => {
+  for (const fault of ['minimal_manifest', 'foreign_manifest']) {
+    const result = await drive('policy', 'N6', fault);
+    assert.equal(result.code, 2, fault);
+    assert.equal(result.receipt.reason, 'hook_manifest_unreadable', fault);
+    assert.equal(result.receipt.restoreStatus, 'not_required', fault);
+    assert.equal(result.actions.includes('disable_current_hook'), false, fault);
+  }
+});
+
+test('exchange service failure and callback HTTP 500 cannot pass binding or URI', async () => {
+  const service = await drive('b_exchange_503', 'N8');
+  assert.equal(service.code, 2);
+  assert.equal(service.receipt.rowsPass, false);
+  const n8 = service.receipt.rows.find((row) => row.id === 'N8');
+  assert.equal(
+    n8.subcases.some((row) => row.pass === true && row.reason === 'binding_rejected'),
+    false,
+  );
+  assert.equal(n8.subcases.find((row) => row.id === 'pkce_invalid_grant').pass, false);
+  const uri = await drive('policy', 'N8', 'callback_500');
+  assert.equal(uri.code, 2);
+  const uriRow = uri.receipt.rows
+    .find((row) => row.id === 'N8')
+    .subcases.find((row) => row.id === 'callback_uri_mismatch');
+  assert.equal(uriRow.pass, false);
+  assert.equal(uriRow.reason, 'uri_inconclusive');
+});
+
+test('unexpected N7 issuance is not policy proof and stays on the ledger', async () => {
+  const result = await drive('openid_issued', 'N7');
+  assert.equal(result.code, 2);
+  const n7 = result.receipt.rows.find((row) => row.id === 'N7');
+  assert.equal(n7.pass, false);
+  assert.equal(
+    n7.subcases.some((row) => row.pass === true),
+    false,
+  );
+  assert.equal(
+    result.receipt.sessionLedger.some((row) => row.gate === 'N7' && row.passwordSessionId),
+    true,
+  );
+  assert.equal(result.actions.includes('cleanup_sessions'), true);
 });

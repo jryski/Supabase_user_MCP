@@ -312,4 +312,53 @@ describe('downstream OAuth grant binding', () => {
     ).toBe(false);
     expect(facts.at(-1)?.event).toBe('replay');
   });
+
+  it('labels PKCE invalid_grant and does not treat a service failure as binding', async () => {
+    const material = await keys();
+    const cases: Array<{ status: number; body: string; failureClass: string }> = [
+      {
+        status: 400,
+        body: JSON.stringify({ error: 'invalid_grant' }),
+        failureClass: 'invalid_grant',
+      },
+      {
+        status: 503,
+        body: JSON.stringify({ error: 'server_error' }),
+        failureClass: 'service_error',
+      },
+    ];
+    for (const item of cases) {
+      const facts: Array<{ event: string; failureClass?: string; subjectMismatch: boolean }> = [];
+      const store = new DownstreamOAuthGrantStore({
+        issuer: ISSUER,
+        authOrigin: ORIGIN,
+        expectedBClientId: B_CLIENT,
+        expectedAgentId: AGENT,
+        redirectUri: REDIRECT,
+        jwks: material.jwks,
+        fetch: async () => new Response(item.body, { status: item.status }),
+        onGrantFact(fact) {
+          facts.push(fact);
+        },
+      });
+      const handshake = store.beginHandshake(principal);
+      expect(
+        await store.completeCallback({
+          code: 'code',
+          state: handshake.id,
+          redirectUri: REDIRECT,
+        }),
+      ).toBe(false);
+      expect(store.resolve(principal).status).toBe('missing');
+      expect(facts).toEqual([
+        {
+          event: 'exchange_failed',
+          sessionId: null,
+          sub: null,
+          subjectMismatch: false,
+          failureClass: item.failureClass,
+        },
+      ]);
+    }
+  });
 });

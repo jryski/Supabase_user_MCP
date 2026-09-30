@@ -76,6 +76,14 @@ interface GrantRecord extends DownstreamHandshakePrincipal {
 
 type FetchLike = typeof globalThis.fetch;
 
+/** Safe exchange failure class. Not a binding proof by itself. */
+export type DownstreamExchangeFailureClass =
+  | 'invalid_grant'
+  | 'service_error'
+  | 'issuer_error'
+  | 'transport'
+  | 'signature_rejected';
+
 /** Public grant fact. Session and subject UUIDs only. Never a bearer. */
 export interface DownstreamGrantPublicFact {
   readonly event:
@@ -88,6 +96,8 @@ export interface DownstreamGrantPublicFact {
   readonly sessionId: string | null;
   readonly sub: string | null;
   readonly subjectMismatch: boolean;
+  /** Present only for exchange_failed. Service and signature classes are not binding proof. */
+  readonly failureClass?: DownstreamExchangeFailureClass;
 }
 
 export interface DownstreamOAuthGrantConfig {
@@ -260,6 +270,7 @@ export class DownstreamOAuthGrantStore {
     }
     if (input.code.length === 0) return false;
     let accessToken: string;
+    const exchangeAttempt = { failureClass: 'issuer_error' as DownstreamExchangeFailureClass };
     try {
       const exchanged = await exchangeLocalAuthorizationCode({
         authOrigin: this.config.authOrigin,
@@ -267,7 +278,7 @@ export class DownstreamOAuthGrantStore {
         redirectUri: handshake.redirectUri,
         code: input.code,
         codeVerifier: handshake.codeVerifier,
-        ...(this.fetchImpl === undefined ? {} : { fetch: this.fetchImpl }),
+        fetch: classifyExchangeFetch(this.fetchImpl, exchangeAttempt),
       });
       accessToken = dropRefreshToken(exchanged);
     } catch {
@@ -276,6 +287,7 @@ export class DownstreamOAuthGrantStore {
         sessionId: null,
         sub: null,
         subjectMismatch: false,
+        failureClass: exchangeAttempt.failureClass,
       });
       return false;
     }
@@ -396,9 +408,19 @@ export class DownstreamOAuthGrantStore {
       });
       payload = verified.payload;
     } catch {
+      if (notify) {
+        this.emitFact({
+          event: 'exchange_failed',
+          sessionId: null,
+          sub: null,
+          subjectMismatch: false,
+          failureClass: 'signature_rejected',
+        });
+      }
       return undefined;
     }
-    if (payload.sub !== handshake.sub) return this.rejectVerified(payload, true, notify);
+    // Subject is last. A pure subject mismatch means signature, role, audience,
+    // client, agent, session, expiry, issuer, and the preceding PKCE exchange passed.
     if (payload.role === MCP_INGRESS_ROLE) return this.rejectVerified(payload, false, notify);
     if (payload.role !== DATA_API_AUDIENCE) return this.rejectVerified(payload, false, notify);
     const audiences = audienceValues(payload.aud);
@@ -415,6 +437,7 @@ export class DownstreamOAuthGrantStore {
     }
     if (payload.exp * 1000 <= this.now()) return this.rejectVerified(payload, false, notify);
     if (payload.iss !== this.config.issuer) return this.rejectVerified(payload, false, notify);
+    if (payload.sub !== handshake.sub) return this.rejectVerified(payload, true, notify);
     const sessionId = publicUuid(payload.session_id);
     if (sessionId === null) return undefined;
     return {
@@ -434,6 +457,41 @@ function publicUuid(value: unknown): string | null {
   if (typeof value !== 'string' || !RemotePrincipalIdSchema.safeParse(value).success) return null;
   if (value.toLowerCase() === '00000000-0000-0000-0000-000000000000') return null;
   return value;
+}
+
+const EXCHANGE_ERROR_CODE = /^[a-z0-9_]{1,64}$/u;
+
+function classifyExchangeFetch(
+  inner: FetchLike | undefined,
+  attempt: { failureClass: DownstreamExchangeFailureClass },
+): FetchLike {
+  const base = inner ?? globalThis.fetch;
+  return async (input, init) => {
+    let response: Response;
+    try {
+      response = await base(input, init);
+    } catch (error) {
+      attempt.failureClass = 'transport';
+      throw error;
+    }
+    const url =
+      typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url;
+    if (!response.ok && url.includes('/oauth/token')) {
+      let oauthError: string | null = null;
+      try {
+        const body = (await response.clone().json()) as { error?: unknown };
+        if (typeof body.error === 'string' && EXCHANGE_ERROR_CODE.test(body.error)) {
+          oauthError = body.error;
+        }
+      } catch {
+        oauthError = null;
+      }
+      if (response.status >= 500) attempt.failureClass = 'service_error';
+      else if (oauthError === 'invalid_grant') attempt.failureClass = 'invalid_grant';
+      else attempt.failureClass = 'issuer_error';
+    }
+    return response;
+  };
 }
 
 function dropRefreshToken(exchanged: {
