@@ -216,8 +216,14 @@ and does not dial out. `listenOnce` only records a redacted loopback receipt.
 Those two commands do not consent and do not exchange a code.
 
 `performConsent` performs consent: `GET /auth/v1/oauth/authorizations/{id}`
-and `POST /auth/v1/oauth/authorizations/{id}/consent` with the synthetic
-user's own session. `exchangeAuthorizationCode` and `runConsentExchange`
+with the synthetic user's own session. A valid loopback `redirect_url` that
+already carries a code is `already_consented_get` and does not POST. A
+details response with no code is `approval_post`:
+`POST /auth/v1/oauth/authorizations/{id}/consent`, and the code is taken
+only from that successful POST. Receipts keep `consentFlow`,
+`authorizationGetStatus`, `consentPostStatus`, a sanitized `oauthErrorCode`,
+and callback `deliveryResult` (`delivered`, `callback_rejected`, or
+`transport_failed`). `exchangeAuthorizationCode` and `runConsentExchange`
 then `POST /auth/v1/oauth/token` with `grant_type=authorization_code`, the
 code, and the S256 verifier. Receipts keep key names and drop token values,
 codes, and verifiers. This agent does not run these calls against hosted

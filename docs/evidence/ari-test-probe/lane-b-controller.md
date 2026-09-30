@@ -111,11 +111,17 @@ Do not put these in the child, and do not pass them on the command line:
 The parent performs consent for `external_a` and `downstream_b`. It GETs each
 authorization URL with `redirect: manual`, reads `authorization_id` from
 `Location`, password-logs in the synthetic user with
-`ARI_TEST_SYNTHETIC_PASSWORD`, then GETs and POSTs
+`ARI_TEST_SYNTHETIC_PASSWORD`, then GETs
 `/auth/v1/oauth/authorizations/{id}`. Supabase `/oauth/authorize` does not
 return a code. It redirects to the Site URL consent page, and that page is
-not deployed. The code is issued only after the consent POST. The parent
-then GETs `redirect_url` so the code lands on the loopback callback.
+not deployed. When the authorization GET already returns a loopback
+`redirect_url` with a code, that user and client are already consented and
+the parent does not POST. Otherwise the parent POSTs `/consent` and uses a
+code only from that successful POST. A failed POST does not replace an
+already-consented GET redirect. The parent then GETs `redirect_url` so the
+code lands on the loopback callback. Callback HTTP 4xx/5xx is
+`callback_rejected` with `deliveryStatus`. A thrown callback fetch is
+`redirect_transport_failed`.
 
 `ARI_TEST_SYNTHETIC_PASSWORD` stays in the parent environment. It is not
 copied to the child, not written to stdout or stderr, and not read from

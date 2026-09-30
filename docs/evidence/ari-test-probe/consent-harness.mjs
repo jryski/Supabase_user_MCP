@@ -283,6 +283,11 @@ function queryParam(value, key) {
 }
 
 const OAUTH_ERROR_NAME = /^[a-z0-9_]{1,64}$/u;
+const CALLBACK_REJECTION_CODES = new Set([
+  'http_client_error',
+  'http_server_error',
+  'unexpected_status',
+]);
 const SESSION_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;
 
 // Generic OAuth client errors are inconclusive. They are not an openid denial.
@@ -386,16 +391,6 @@ function idTokenIn(text) {
   );
 }
 
-function codeFrom(response, text) {
-  const located = queryParam(headerValue(response, 'location'), 'code');
-  if (located) return located;
-  const parsed = parseJson(text);
-  if (parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed)) {
-    return queryParam(parsed.redirect_url, 'code');
-  }
-  return null;
-}
-
 function redirectTargetFrom(response, text) {
   const located = headerValue(response, 'location');
   if (typeof located === 'string' && located.length > 0 && queryParam(located, 'code') !== null) {
@@ -427,6 +422,207 @@ function loopbackCodeRedirect(value) {
   if (url.username !== '' || url.password !== '') return false;
   if (!LOOPBACK_CODE_PATHS.has(url.pathname)) return false;
   return queryParam(url.toString(), 'code') !== null;
+}
+
+function nullableStatus(value) {
+  return typeof value === 'number' && Number.isFinite(value) ? value : null;
+}
+
+function callbackRejectionFor(status) {
+  if (typeof status === 'number' && status >= 400 && status <= 499) return 'http_client_error';
+  if (typeof status === 'number' && status >= 500 && status <= 599) return 'http_server_error';
+  return 'unexpected_status';
+}
+
+function sanitizedOauthErrorCode(value) {
+  return typeof value === 'string' && OAUTH_ERROR_NAME.test(value) ? value : null;
+}
+
+function publicConsentFacts(input = {}) {
+  const consentFlow =
+    input.consentFlow === 'already_consented_get' || input.consentFlow === 'approval_post'
+      ? input.consentFlow
+      : null;
+  const deliveryResult =
+    input.deliveryResult === 'delivered' ||
+    input.deliveryResult === 'callback_rejected' ||
+    input.deliveryResult === 'transport_failed'
+      ? input.deliveryResult
+      : null;
+  const callbackRejection =
+    typeof input.callbackRejection === 'string' &&
+    CALLBACK_REJECTION_CODES.has(input.callbackRejection)
+      ? input.callbackRejection
+      : null;
+  return {
+    consentFlow,
+    authorizeStatus: nullableStatus(input.authorizeStatus),
+    authorizationGetStatus: nullableStatus(input.authorizationGetStatus),
+    consentPostStatus: nullableStatus(input.consentPostStatus),
+    oauthErrorCode: sanitizedOauthErrorCode(input.oauthErrorCode),
+    deliveryStatus: nullableStatus(input.deliveryStatus),
+    deliveryResult,
+    callbackRejection,
+  };
+}
+
+function redirectProblem(value) {
+  let url;
+  try {
+    url = new URL(value);
+  } catch {
+    return 'redirect_not_loopback';
+  }
+  if (
+    url.protocol === 'http:' &&
+    isLoopbackHostname(url.hostname) &&
+    url.username === '' &&
+    url.password === '' &&
+    LOOPBACK_CODE_PATHS.has(url.pathname)
+  ) {
+    return 'authorization_code_missing';
+  }
+  return 'redirect_not_loopback';
+}
+
+function loopbackRedirect(response, text) {
+  const redirectUrl = redirectTargetFrom(response, text);
+  if (typeof redirectUrl !== 'string') return { redirectUrl: null, code: null };
+  const code = queryParam(redirectUrl, 'code');
+  if (!loopbackCodeRedirect(redirectUrl) || typeof code !== 'string' || code.length === 0) {
+    return { redirectUrl, code: null };
+  }
+  return { redirectUrl, code };
+}
+
+function classifyAuthorizationGet(response, text) {
+  const status = nullableStatus(response?.status);
+  const oauthErrorCode = oauthErrorFrom(response, text);
+  const idTokenPresent = idTokenIn(text);
+  if (idTokenPresent) {
+    return {
+      outcome: 'failure',
+      reason: 'id_token_present',
+      status,
+      oauthErrorCode,
+      idTokenPresent,
+    };
+  }
+  const readable =
+    (typeof status === 'number' && status >= 200 && status < 300) ||
+    status === 302 ||
+    status === 303;
+  if (!readable) {
+    return {
+      outcome: 'failure',
+      reason:
+        typeof status === 'number' && status >= 500
+          ? 'consent_server_error'
+          : 'consent_inconclusive',
+      status,
+      oauthErrorCode,
+      idTokenPresent: false,
+    };
+  }
+  const located = loopbackRedirect(response, text);
+  if (located.code !== null) {
+    return {
+      outcome: 'already_consented',
+      status,
+      redirectUrl: located.redirectUrl,
+      code: located.code,
+      idTokenPresent: false,
+    };
+  }
+  if (located.redirectUrl !== null) {
+    return {
+      outcome: 'failure',
+      reason: redirectProblem(located.redirectUrl),
+      status,
+      oauthErrorCode,
+      idTokenPresent: false,
+    };
+  }
+  if (oauthErrorCode !== null || status === 302 || status === 303) {
+    return {
+      outcome: 'failure',
+      reason: 'consent_inconclusive',
+      status,
+      oauthErrorCode,
+      idTokenPresent: false,
+    };
+  }
+  return { outcome: 'needs_approval', status, idTokenPresent: false };
+}
+
+function classifyApprovalPost(response, text) {
+  const status = nullableStatus(response?.status);
+  const oauthErrorCode = oauthErrorFrom(response, text);
+  const idTokenPresent = idTokenIn(text);
+  if (idTokenPresent) {
+    return {
+      outcome: 'failure',
+      reason: 'id_token_present',
+      status,
+      oauthErrorCode,
+      idTokenPresent,
+    };
+  }
+  const expected = (typeof status === 'number' && status >= 200 && status < 300) || status === 303;
+  if (!expected) {
+    return {
+      outcome: 'failure',
+      reason:
+        typeof status === 'number' && status >= 500
+          ? 'consent_server_error'
+          : 'consent_inconclusive',
+      status,
+      oauthErrorCode,
+      idTokenPresent: false,
+    };
+  }
+  const located = loopbackRedirect(response, text);
+  if (located.code !== null) {
+    return {
+      outcome: 'approved',
+      status,
+      redirectUrl: located.redirectUrl,
+      code: located.code,
+      idTokenPresent: false,
+    };
+  }
+  return {
+    outcome: 'failure',
+    reason:
+      located.redirectUrl === null
+        ? 'authorization_code_missing'
+        : redirectProblem(located.redirectUrl),
+    status,
+    oauthErrorCode,
+    idTokenPresent: false,
+  };
+}
+
+function consentResult(fields) {
+  const oauthErrorCode = sanitizedOauthErrorCode(fields.oauthErrorCode);
+  return baseReceipt({
+    ok: false,
+    performed: false,
+    hasCode: false,
+    idTokenPresent: false,
+    getAuthorization: false,
+    postConsent: false,
+    consentFlow: null,
+    getStatus: null,
+    postStatus: null,
+    authorizationGetStatus: null,
+    consentPostStatus: null,
+    code: null,
+    redirectUrl: null,
+    ...fields,
+    oauthErrorCode,
+    oauthError: oauthErrorCode,
+  });
 }
 
 function authorizationIdFrom(response, text) {
@@ -502,49 +698,94 @@ async function consentWithCode(input) {
     `/auth/v1/oauth/authorizations/${encodeURIComponent(input.authorizationId)}/consent`,
     origin,
   );
+  let got;
+  let gotText;
   try {
-    const got = await input.fetch(authorizationUrl, {
+    got = await input.fetch(authorizationUrl, {
       method: 'GET',
       headers: userHeaders(input, false),
       redirect: 'manual',
     });
-    const gotText = await readBody(got);
-    const posted = await input.fetch(consentUrl, {
+    gotText = await readBody(got);
+  } catch {
+    return consentResult({ reason: 'consent_transport_failed' });
+  }
+  const gotClass = classifyAuthorizationGet(got, gotText);
+  if (gotClass.outcome === 'failure') {
+    return consentResult({
+      reason: gotClass.reason,
+      getAuthorization: true,
+      getStatus: gotClass.status,
+      authorizationGetStatus: gotClass.status,
+      oauthErrorCode: gotClass.oauthErrorCode,
+      idTokenPresent: gotClass.idTokenPresent === true,
+    });
+  }
+  if (gotClass.outcome === 'already_consented') {
+    return consentResult({
+      ok: true,
+      reason: 'consent_performed',
+      performed: true,
+      label: 'synthetic_user_consent',
+      consentFlow: 'already_consented_get',
+      getAuthorization: true,
+      getStatus: gotClass.status,
+      authorizationGetStatus: gotClass.status,
+      hasCode: true,
+      code: gotClass.code,
+      redirectUrl: gotClass.redirectUrl,
+    });
+  }
+  let posted;
+  let postedText;
+  try {
+    posted = await input.fetch(consentUrl, {
       method: 'POST',
       headers: userHeaders(input, true),
       body: JSON.stringify({ action: 'approve' }),
       redirect: 'manual',
     });
-    const postedText = await readBody(posted);
-    const idTokenPresent = idTokenIn(gotText) || idTokenIn(postedText);
-    const redirectUrl = redirectTargetFrom(posted, postedText) ?? redirectTargetFrom(got, gotText);
-    const code = codeFrom(posted, postedText) ?? codeFrom(got, gotText);
-    return baseReceipt({
-      ok: !idTokenPresent,
-      reason: idTokenPresent ? 'id_token_present' : 'consent_performed',
-      performed: true,
-      label: 'synthetic_user_consent',
-      getAuthorization: true,
-      postConsent: true,
-      getStatus: got.status,
-      postStatus: posted.status,
-      hasCode: typeof code === 'string' && code.length > 0,
-      idTokenPresent,
-      oauthError: oauthErrorName(parseJson(postedText)) ?? oauthErrorName(parseJson(gotText)),
-      code,
-      redirectUrl,
-    });
+    postedText = await readBody(posted);
   } catch {
-    return baseReceipt({
-      ok: false,
+    return consentResult({
       reason: 'consent_transport_failed',
-      performed: false,
-      hasCode: false,
-      idTokenPresent: false,
-      getAuthorization: false,
-      postConsent: false,
+      consentFlow: 'approval_post',
+      getAuthorization: true,
+      getStatus: gotClass.status,
+      authorizationGetStatus: gotClass.status,
     });
   }
+  const postedClass = classifyApprovalPost(posted, postedText);
+  if (postedClass.outcome !== 'approved') {
+    return consentResult({
+      reason: postedClass.reason,
+      consentFlow: 'approval_post',
+      getAuthorization: true,
+      postConsent: true,
+      getStatus: gotClass.status,
+      postStatus: postedClass.status,
+      authorizationGetStatus: gotClass.status,
+      consentPostStatus: postedClass.status,
+      oauthErrorCode: postedClass.oauthErrorCode,
+      idTokenPresent: postedClass.idTokenPresent === true,
+    });
+  }
+  return consentResult({
+    ok: true,
+    reason: 'consent_performed',
+    performed: true,
+    label: 'synthetic_user_consent',
+    consentFlow: 'approval_post',
+    getAuthorization: true,
+    postConsent: true,
+    getStatus: gotClass.status,
+    postStatus: postedClass.status,
+    authorizationGetStatus: gotClass.status,
+    consentPostStatus: postedClass.status,
+    hasCode: true,
+    code: postedClass.code,
+    redirectUrl: postedClass.redirectUrl,
+  });
 }
 
 export async function performConsent(input) {
@@ -572,9 +813,12 @@ function consentFailure(secrets, reason, extra = {}) {
 /**
  * Parent consent for one authorize URL.
  * GET the URL with redirect manual, read authorization_id from Location,
- * password-login when no session is retained, GET and POST consent, then GET
- * the loopback redirect so the code lands on the callback. The receipt keeps
- * the password session id and drops the password, bearer, code, and URL.
+ * password-login when no session is retained, then GET authorization details.
+ * A valid loopback redirect with a code is already consented and is not
+ * posted. Otherwise POST approve and accept a redirect only from that
+ * successful POST. Then GET the loopback redirect so the code lands on the
+ * callback. The receipt keeps the password session id and drops the password,
+ * bearer, code, and URL.
  * Callers that need the bearer for a second consent pass retainSession and
  * must not serialize that bearer.
  */
@@ -595,25 +839,54 @@ export async function performLoopbackConsent(input) {
     return consentFailure(secrets, 'authorization_url_required');
   }
   let authorized;
+  let authorizeStatus = null;
   try {
     const response = await input.fetch(input.authorizationUrl, {
       method: 'GET',
       redirect: 'manual',
       headers: { apikey: input.publishableKey },
     });
+    authorizeStatus = nullableStatus(response?.status);
     authorized = { response, text: await readBody(response) };
   } catch {
-    return consentFailure(secrets, 'authorize_transport_failed');
+    return consentFailure(secrets, 'authorize_transport_failed', {
+      ...publicConsentFacts({ authorizeStatus: null }),
+    });
   }
+  const fail = (reason, extra = {}) => {
+    const {
+      consentFlow,
+      authorizationGetStatus,
+      consentPostStatus,
+      oauthErrorCode,
+      deliveryStatus,
+      deliveryResult,
+      callbackRejection,
+      ...rest
+    } = extra;
+    return consentFailure(secrets, reason, {
+      ...rest,
+      ...publicConsentFacts({
+        consentFlow,
+        authorizeStatus,
+        authorizationGetStatus,
+        consentPostStatus,
+        oauthErrorCode,
+        deliveryStatus,
+        deliveryResult,
+        callbackRejection,
+      }),
+    });
+  };
   if (idTokenIn(authorized.text)) {
-    return consentFailure(secrets, 'id_token_present', { idTokenPresent: true });
+    return fail('id_token_present', { idTokenPresent: true });
   }
   const authorizationId = authorizationIdFrom(authorized.response, authorized.text);
-  if (authorizationId === null) return consentFailure(secrets, 'authorization_id_missing');
+  if (authorizationId === null) return fail('authorization_id_missing');
   let accessToken = typeof input.userAccessToken === 'string' ? input.userAccessToken : '';
   if (accessToken.length === 0) {
     if (typeof input.password !== 'string' || input.password.length === 0) {
-      return consentFailure(secrets, 'synthetic_password_required');
+      return fail('synthetic_password_required');
     }
     let login;
     try {
@@ -624,7 +897,7 @@ export async function performLoopbackConsent(input) {
         password: input.password,
       });
     } catch {
-      return consentFailure(secrets, 'password_login_failed');
+      return fail('password_login_failed');
     }
     remember(secrets, login.accessToken);
     if (
@@ -632,8 +905,7 @@ export async function performLoopbackConsent(input) {
       login.receipt.idTokenPresent === true ||
       login.receipt.ok !== true
     ) {
-      return consentFailure(
-        secrets,
+      return fail(
         login.receipt.idTokenPresent === true ? 'id_token_present' : 'password_login_failed',
         { idTokenPresent: login.receipt.idTokenPresent === true },
       );
@@ -641,7 +913,7 @@ export async function performLoopbackConsent(input) {
     accessToken = login.accessToken;
   }
   const sessionId = passwordSessionId(accessToken);
-  if (sessionId === null) return consentFailure(secrets, 'password_session_id_missing');
+  if (sessionId === null) return fail('password_session_id_missing');
   if (typeof input.retainSession === 'function') input.retainSession(accessToken);
   const consent = await consentWithCode({
     fetch: input.fetch,
@@ -653,52 +925,81 @@ export async function performLoopbackConsent(input) {
   remember(secrets, consent.code);
   remember(secrets, consent.redirectUrl);
   const session = { passwordSessionId: sessionId };
+  const facts = publicConsentFacts({
+    consentFlow: consent.consentFlow,
+    authorizeStatus,
+    authorizationGetStatus: consent.authorizationGetStatus,
+    consentPostStatus: consent.consentPostStatus,
+    oauthErrorCode: consent.oauthErrorCode,
+  });
+  const attempt = {
+    consentPerformed: consent.performed === true,
+    getAuthorization: consent.getAuthorization === true,
+    postConsent: consent.postConsent === true,
+    ...session,
+    ...facts,
+  };
   if (consent.idTokenPresent === true) {
-    return consentFailure(secrets, 'id_token_present', {
-      idTokenPresent: true,
-      consentPerformed: consent.performed === true,
-      ...session,
-    });
+    return fail('id_token_present', { idTokenPresent: true, ...attempt });
   }
-  if (typeof consent.redirectUrl !== 'string' || consent.redirectUrl.length === 0) {
-    return consentFailure(
-      secrets,
-      consent.performed === true ? 'authorization_code_missing' : consent.reason,
-      { consentPerformed: consent.performed === true, ...session },
-    );
+  if (
+    consent.ok !== true ||
+    typeof consent.redirectUrl !== 'string' ||
+    consent.redirectUrl.length === 0
+  ) {
+    return fail(consent.ok === true ? 'authorization_code_missing' : consent.reason, attempt);
   }
   if (!loopbackCodeRedirect(consent.redirectUrl)) {
-    return consentFailure(secrets, 'redirect_not_loopback', {
-      consentPerformed: true,
-      ...session,
-    });
+    return fail('redirect_not_loopback', { ...attempt, consentPerformed: true });
   }
   let delivered;
   try {
     delivered = await input.fetch(consent.redirectUrl, { method: 'GET', redirect: 'manual' });
   } catch {
-    return consentFailure(secrets, 'redirect_delivery_failed', {
+    return fail('redirect_transport_failed', {
+      ...attempt,
       consentPerformed: true,
-      ...session,
+      ...publicConsentFacts({ ...facts, deliveryResult: 'transport_failed' }),
     });
   }
-  const status = delivered?.status;
-  const deliveredOk = typeof status === 'number' && status >= 200 && status < 300;
-  return scrub(
-    baseReceipt({
-      ok: deliveredOk,
-      reason: deliveredOk ? 'consent_delivered' : 'redirect_delivery_failed',
-      label: 'synthetic_user_consent',
-      consentPerformed: true,
-      redirectDelivered: deliveredOk,
-      getAuthorization: true,
-      postConsent: true,
-      deliveryStatus: typeof status === 'number' ? status : null,
-      idTokenPresent: false,
-      ...session,
+  try {
+    await readBody(delivered);
+  } catch {
+    // Callback status is the delivery fact. The body is never a receipt field.
+  }
+  const status = nullableStatus(delivered?.status);
+  const deliveredFacts = {
+    label: 'synthetic_user_consent',
+    ...attempt,
+    consentPerformed: true,
+    idTokenPresent: false,
+  };
+  if (status !== null && status >= 200 && status < 300) {
+    return scrub(
+      baseReceipt({
+        ok: true,
+        reason: 'consent_delivered',
+        redirectDelivered: true,
+        ...deliveredFacts,
+        ...publicConsentFacts({
+          ...facts,
+          deliveryStatus: status,
+          deliveryResult: 'delivered',
+        }),
+      }),
+      secrets,
+    );
+  }
+  return fail('callback_rejected', {
+    ...deliveredFacts,
+    redirectDelivered: false,
+    ...publicConsentFacts({
+      ...facts,
+      deliveryStatus: status,
+      deliveryResult: 'callback_rejected',
+      callbackRejection: callbackRejectionFor(status),
     }),
-    secrets,
-  );
+  });
 }
 
 function secretResult(receipt) {
@@ -883,8 +1184,12 @@ export async function runConsentExchange(input) {
     label: 'synthetic_user_consent_exchange',
     consentPerformed: true,
     exchangePerformed: exchange.exchanged === true,
-    getAuthorization: true,
-    postConsent: true,
+    consentFlow: consent.consentFlow ?? null,
+    getAuthorization: consent.getAuthorization === true,
+    postConsent: consent.postConsent === true,
+    authorizationGetStatus: consent.authorizationGetStatus ?? null,
+    consentPostStatus: consent.consentPostStatus ?? null,
+    oauthErrorCode: sanitizedOauthErrorCode(consent.oauthErrorCode),
     hasCode: true,
     exchangeStatus: exchange.status,
     idTokenPresent: exchange.idTokenPresent === true,

@@ -177,8 +177,12 @@ test('consent GET and POST plus S256 exchange stay redacted', async () => {
   };
   const consent = await performConsent(input);
   assert.equal(consent.performed, true);
+  assert.equal(consent.consentFlow, 'approval_post');
   assert.equal(consent.getAuthorization, true);
   assert.equal(consent.postConsent, true);
+  assert.equal(consent.authorizationGetStatus, 200);
+  assert.equal(consent.consentPostStatus, 200);
+  assert.equal(consent.oauthErrorCode, null);
   assert.equal(consent.hasCode, true);
   assert.equal(consent.label, 'synthetic_user_consent');
   assert.equal(calls[0].init.headers.Authorization, `Bearer ${session}`);
@@ -252,8 +256,16 @@ test('loopback consent delivers a code only after POST consent', async () => {
   const delivered = await performLoopbackConsent(input);
   assert.equal(delivered.ok, true);
   assert.equal(delivered.reason, 'consent_delivered');
+  assert.equal(delivered.consentFlow, 'approval_post');
   assert.equal(delivered.passwordSessionId, sessionId);
   assert.equal(delivered.postConsent, true);
+  assert.equal(delivered.authorizationGetStatus, 200);
+  assert.equal(delivered.consentPostStatus, 200);
+  assert.equal(delivered.authorizeStatus, 302);
+  assert.equal(delivered.deliveryResult, 'delivered');
+  assert.equal(delivered.deliveryStatus, 200);
+  assert.equal(delivered.callbackRejection, null);
+  assert.equal(delivered.oauthErrorCode, null);
   assert.equal(delivered.redirectDelivered, true);
   assert.equal(retained, session);
   const consentAt = calls.findIndex((call) => call.href.endsWith('/consent'));
@@ -293,6 +305,193 @@ test('loopback consent delivers a code only after POST consent', async () => {
     false,
   );
   assert.equal(JSON.stringify(second).includes(session), false);
+});
+
+test('already-consented GET skips POST and callback delivery stays distinct', async () => {
+  const sessionId = '77777777-7777-4777-8777-777777777777';
+  const payload = Buffer.from(JSON.stringify({ session_id: sessionId })).toString('base64url');
+  const session = `eyJhbGciOiJFUzI1NiJ9.${payload}.c2ln`;
+  const password = 'synthetic-password-must-not-leak';
+  const verifier = 'verifier-sentinel-must-not-leak';
+  const firstCode = 'auth-code-must-not-leak-first';
+  const rememberedCode = 'auth-code-must-not-leak-again';
+  const poisonedCode = 'auth-code-must-not-leak-poison';
+  const callbackBody = 'callback-body-must-not-leak';
+  const transportDetail = 'socket-hangup-must-not-leak';
+  const sentinels = [
+    session,
+    password,
+    verifier,
+    firstCode,
+    rememberedCode,
+    poisonedCode,
+    callbackBody,
+    transportDetail,
+  ];
+  const origin = 'https://odbcejsuuqdzhabjmozi.supabase.co';
+  const authorizeUrl = `${origin}/auth/v1/oauth/authorize?response_type=code&client_id=${CLIENT}&state=ari`;
+  const baseInput = {
+    authOrigin: origin,
+    authorizationUrl: authorizeUrl,
+    publishableKey: 'publishable-key',
+    userAccessToken: session,
+    codeVerifier: verifier,
+  };
+  const authorize = () =>
+    jsonResponse(302, '', { location: '/oauth/consent?authorization_id=authz-state' });
+  const captured = await captureProcessStreams(async () => {
+    let posts = 0;
+    const first = await performLoopbackConsent({
+      ...baseInput,
+      password,
+      userAccessToken: undefined,
+      fetch: async (url, init) => {
+        const href = `${url}`;
+        if (href.includes('/oauth/authorize?')) return authorize();
+        if (href.includes('grant_type=password')) {
+          return jsonResponse(200, { access_token: session, token_type: 'bearer' });
+        }
+        if (init?.method === 'GET' && href.endsWith('/oauth/authorizations/authz-state')) {
+          return jsonResponse(200, { authorization_id: 'authz-state', client_id: CLIENT });
+        }
+        if (init?.method === 'POST' && href.endsWith('/consent')) {
+          posts += 1;
+          return jsonResponse(200, { redirect_url: `${REDIRECT}?code=${firstCode}&state=ari` });
+        }
+        if (href.startsWith(`${REDIRECT}?code=`)) return jsonResponse(204, '');
+        throw new Error(`unexpected ${init?.method ?? 'GET'} ${href}`);
+      },
+    });
+    assert.equal(posts, 1);
+    assert.equal(first.ok, true);
+    assert.equal(first.consentFlow, 'approval_post');
+    assert.equal(first.deliveryResult, 'delivered');
+    assert.equal(first.postConsent, true);
+    assert.equal(first.consentPostStatus, 200);
+    assert.equal(first.passwordSessionId, sessionId);
+
+    posts = 0;
+    let callbackCode = '';
+    const remembered = await performLoopbackConsent({
+      ...baseInput,
+      fetch: async (url, init) => {
+        const href = `${url}`;
+        if (href.includes('/oauth/authorize?')) return authorize();
+        if (init?.method === 'GET' && href.endsWith('/oauth/authorizations/authz-state')) {
+          return jsonResponse(200, {
+            redirect_url: `${REDIRECT}?code=${rememberedCode}&state=ari`,
+          });
+        }
+        if (init?.method === 'POST' && href.endsWith('/consent')) {
+          posts += 1;
+          return jsonResponse(400, {
+            error: 'validation_failed',
+            redirect_url: `${REDIRECT}?code=${poisonedCode}&state=ari`,
+          });
+        }
+        if (href.startsWith(`${REDIRECT}?code=`)) {
+          callbackCode = new URL(href).searchParams.get('code') ?? '';
+          return jsonResponse(204, '');
+        }
+        throw new Error(`unexpected ${init?.method ?? 'GET'} ${href}`);
+      },
+    });
+    assert.equal(posts, 0);
+    assert.equal(remembered.ok, true);
+    assert.equal(remembered.consentFlow, 'already_consented_get');
+    assert.equal(remembered.postConsent, false);
+    assert.equal(remembered.consentPostStatus, null);
+    assert.equal(remembered.authorizationGetStatus, 200);
+    assert.equal(remembered.deliveryResult, 'delivered');
+    assert.equal(remembered.passwordSessionId, sessionId);
+    assert.equal(callbackCode, rememberedCode);
+
+    const rejected = await performLoopbackConsent({
+      ...baseInput,
+      fetch: async (url, init) => {
+        const href = `${url}`;
+        if (href.includes('/oauth/authorize?')) return authorize();
+        if (init?.method === 'GET' && href.endsWith('/oauth/authorizations/authz-state')) {
+          return jsonResponse(200, { authorization_id: 'authz-state' });
+        }
+        if (init?.method === 'POST' && href.endsWith('/consent')) {
+          return jsonResponse(200, { redirect_url: `${REDIRECT}?code=${firstCode}&state=ari` });
+        }
+        if (href.startsWith(`${REDIRECT}?code=`)) {
+          return jsonResponse(400, { error: 'invalid_request', detail: callbackBody });
+        }
+        throw new Error(`unexpected ${init?.method ?? 'GET'} ${href}`);
+      },
+    });
+    assert.equal(rejected.ok, false);
+    assert.equal(rejected.reason, 'callback_rejected');
+    assert.equal(rejected.deliveryResult, 'callback_rejected');
+    assert.equal(rejected.deliveryStatus, 400);
+    assert.equal(rejected.callbackRejection, 'http_client_error');
+    assert.equal(rejected.passwordSessionId, sessionId);
+    assert.equal(rejected.consentFlow, 'approval_post');
+
+    const transport = await performLoopbackConsent({
+      ...baseInput,
+      fetch: async (url, init) => {
+        const href = `${url}`;
+        if (href.includes('/oauth/authorize?')) return authorize();
+        if (init?.method === 'GET' && href.endsWith('/oauth/authorizations/authz-state')) {
+          return jsonResponse(200, {
+            redirect_url: `${REDIRECT}?code=${rememberedCode}&state=ari`,
+          });
+        }
+        if (href.startsWith(`${REDIRECT}?code=`)) throw new Error(transportDetail);
+        if (init?.method === 'POST') throw new Error('post_after_already_consented');
+        throw new Error(`unexpected ${init?.method ?? 'GET'} ${href}`);
+      },
+    });
+    assert.equal(transport.ok, false);
+    assert.equal(transport.reason, 'redirect_transport_failed');
+    assert.equal(transport.deliveryResult, 'transport_failed');
+    assert.equal(transport.deliveryStatus, null);
+    assert.equal(transport.consentFlow, 'already_consented_get');
+    assert.equal(transport.postConsent, false);
+    assert.equal(transport.passwordSessionId, sessionId);
+
+    let callbackFetches = 0;
+    const poisoned = await performLoopbackConsent({
+      ...baseInput,
+      fetch: async (url, init) => {
+        const href = `${url}`;
+        if (href.includes('/oauth/authorize?')) return authorize();
+        if (init?.method === 'GET' && href.endsWith('/oauth/authorizations/authz-state')) {
+          return jsonResponse(200, { authorization_id: 'authz-state' });
+        }
+        if (init?.method === 'POST' && href.endsWith('/consent')) {
+          return jsonResponse(400, {
+            error: 'validation_failed',
+            error_description: callbackBody,
+            redirect_url: `${REDIRECT}?code=${poisonedCode}&state=ari`,
+          });
+        }
+        if (href.startsWith(`${REDIRECT}?`)) {
+          callbackFetches += 1;
+          return jsonResponse(200, '');
+        }
+        throw new Error(`unexpected ${init?.method ?? 'GET'} ${href}`);
+      },
+    });
+    assert.equal(callbackFetches, 0);
+    assert.equal(poisoned.ok, false);
+    assert.equal(poisoned.consentFlow, 'approval_post');
+    assert.equal(poisoned.consentPostStatus, 400);
+    assert.equal(poisoned.authorizationGetStatus, 200);
+    assert.equal(poisoned.oauthErrorCode, 'validation_failed');
+    assert.equal(poisoned.deliveryResult, null);
+    assert.equal(poisoned.passwordSessionId, sessionId);
+    assert.equal(poisoned.postConsent, true);
+
+    const printed = JSON.stringify({ first, remembered, rejected, transport, poisoned });
+    for (const secret of sentinels) assert.equal(printed.includes(secret), false, secret);
+    return printed;
+  });
+  assertStreamsClean(captured, sentinels);
 });
 
 test('openid_negative sends openid and records authorize or exchange rejection', async () => {

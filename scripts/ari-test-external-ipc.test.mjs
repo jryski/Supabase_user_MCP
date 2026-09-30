@@ -489,11 +489,13 @@ async function runSyntheticLaneB(mode) {
     marker: 0,
     markerUsedA: false,
     consentPosts: 0,
+    alreadyConsentedGets: 0,
     passwordLogins: 0,
     authorizeWithCode: 0,
   };
   const pending = new Map();
   const authorizations = new Map();
+  const rememberedConsent = new Set();
   const revokedSources = new Set();
   const revokedBSessions = new Set();
   let passwordToken = '';
@@ -565,6 +567,14 @@ async function runSyntheticLaneB(mode) {
       send(200, 'consent-ui-not-deployed', 'text/html');
       return;
     }
+    const issueApprovedRedirect = (record) => {
+      const code = randomBytes(16).toString('base64url');
+      pending.set(code, { clientId: record.clientId, challenge: record.challenge });
+      const redirectUrl = new URL(record.redirect);
+      redirectUrl.searchParams.set('code', code);
+      redirectUrl.searchParams.set('state', record.state);
+      return redirectUrl;
+    };
     const authorizationPath = url.pathname.match(
       /^\/auth\/v1\/oauth\/authorizations\/([^/]+)(\/consent)?$/u,
     );
@@ -575,9 +585,16 @@ async function runSyntheticLaneB(mode) {
         send(401, JSON.stringify({ error: 'unauthorized' }));
         return;
       }
+      const record = authorizations.get(authorizationId);
+      const consentKey = record === undefined ? '' : `${sub}:${record.clientId}`;
       if (req.method === 'GET' && authorizationPath[2] === undefined) {
-        if (!authorizations.has(authorizationId)) {
+        if (record === undefined) {
           send(404, JSON.stringify({ error: 'not_found' }));
+          return;
+        }
+        if (rememberedConsent.has(consentKey)) {
+          counts.alreadyConsentedGets += 1;
+          send(200, JSON.stringify({ redirect_url: issueApprovedRedirect(record).toString() }));
           return;
         }
         send(200, JSON.stringify({ authorization_id: authorizationId }));
@@ -587,7 +604,6 @@ async function runSyntheticLaneB(mode) {
         const chunks = [];
         req.on('data', (chunk) => chunks.push(chunk));
         req.on('end', () => {
-          const record = authorizations.get(authorizationId);
           let action = '';
           try {
             action = JSON.parse(Buffer.concat(chunks).toString('utf8')).action ?? '';
@@ -598,13 +614,13 @@ async function runSyntheticLaneB(mode) {
             send(400, JSON.stringify({ error: 'invalid_request' }));
             return;
           }
-          const code = randomBytes(16).toString('base64url');
-          pending.set(code, { clientId: record.clientId, challenge: record.challenge });
+          if (rememberedConsent.has(consentKey)) {
+            send(400, JSON.stringify({ error: 'validation_failed' }));
+            return;
+          }
+          rememberedConsent.add(consentKey);
           counts.consentPosts += 1;
-          const redirectUrl = new URL(record.redirect);
-          redirectUrl.searchParams.set('code', code);
-          redirectUrl.searchParams.set('state', record.state);
-          send(200, JSON.stringify({ redirect_url: redirectUrl.toString() }));
+          send(200, JSON.stringify({ redirect_url: issueApprovedRedirect(record).toString() }));
         });
         return;
       }
@@ -1032,7 +1048,8 @@ async function runSyntheticLaneB(mode) {
     assert.equal(counts.aExchange, 3);
     assert.equal(counts.bExchange, 3);
     assert.equal(counts.passwordLogins, 3);
-    assert.equal(counts.consentPosts, 6);
+    assert.equal(counts.consentPosts, 2);
+    assert.equal(counts.alreadyConsentedGets, 4);
     assert.equal(counts.authorizeWithCode, 0);
     assert.equal(counts.livenessDenied >= 2, true);
     assert.equal(counts.marker, 3);
