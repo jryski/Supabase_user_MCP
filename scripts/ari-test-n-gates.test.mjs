@@ -1106,7 +1106,10 @@ test('unrelated marker 401 and 403 cannot pass F1', async () => {
     const n6 = result.receipt.rows.find((row) => row.id === 'N6');
     assert.equal(n6.pass, false, mode);
     assert.equal(n6.subcases.find((row) => row.id === 'f1_denial').pass, false, mode);
-    assert.equal(result.receipt.restoreStatus, undefined);
+    assert.equal(result.receipt.restoreStatus, 'confirmed', mode);
+    assert.notEqual(result.receipt.restoreStatus, 'not_required', mode);
+    assert.equal(result.receipt.issuanceStatus !== undefined, true, mode);
+    assert.equal(result.receipt.cleanupStatus !== undefined, true, mode);
     assert.equal(result.actions.includes('restore_hook_configuration'), true, mode);
   }
 });
