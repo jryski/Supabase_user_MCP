@@ -505,8 +505,8 @@ async function runSyntheticLaneB(mode, inject) {
     '66666666-6666-4666-8666-666666666662',
     '66666666-6666-4666-8666-666666666663',
   ];
-  const mcpPort = await freePort();
-  const mcpResource = `http://127.0.0.1:${mcpPort}/mcp`;
+  let mcpPort = 0;
+  let mcpResource = 'http://127.0.0.1:9/mcp';
   const https = createHttpsServer({ cert: ca, key: readFileSync(keyPath) }, (req, res) => {
     const url = new URL(req.url ?? '/', 'https://127.0.0.1');
     const origin = `https://127.0.0.1:${https.address().port}`;
@@ -813,6 +813,8 @@ async function runSyntheticLaneB(mode, inject) {
   });
   await new Promise((resolve) => https.listen(0, '127.0.0.1', () => resolve()));
   const httpsPort = https.address().port;
+  mcpPort = await freePort();
+  mcpResource = `http://127.0.0.1:${mcpPort}/mcp`;
   const head = execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
   const proc = spawn(process.execPath, ['scripts/run-ari-test-external-e2e.mjs', 'run'], {
     stdio: ['pipe', 'pipe', 'pipe'],
