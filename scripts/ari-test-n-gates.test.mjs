@@ -9,11 +9,15 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createInterface } from 'node:readline';
 import test from 'node:test';
+import { PGlite } from '@electric-sql/pglite';
 import { exportJWK, generateKeyPair, SignJWT } from 'jose';
 
 import { SYNTHETIC_EMAIL } from '../docs/evidence/ari-test-probe/decisions.mjs';
+
 import {
   callbackUriMismatchPass,
+  canonicalF1Qual,
+  canonicalOwnerQual,
   classifyMarkerProbe,
   crossUserPass,
   exactIdBijection,
@@ -35,6 +39,7 @@ const PASSWORD = 'synthetic-password-sentinel';
 const PASSWORD2 = 'second-user-password-sentinel';
 const REFRESH = 'refresh-sentinel-must-not-leak';
 const PUBLISHABLE = 'sb_publishable_parent_only_sentinel';
+const DECOY_SESSION = '33333333-3333-4333-8333-333333333333';
 
 test('plan stays closed and false passes stay false', () => {
   const plan = nGatesPlan();
@@ -257,6 +262,7 @@ async function startIssuer(mode) {
   }
   let hookEnabled = true;
   let passwordSerial = 0;
+  let downstreamTokenPosts = 0;
   const https = createHttpsServer(
     { cert: readFileSync(certPath), key: readFileSync(keyPath) },
     (req, res) => {
@@ -375,12 +381,28 @@ async function startIssuer(mode) {
               send(400, JSON.stringify({ error: 'invalid_grant' }));
               return;
             }
+            if (mode === 'stall_token_body') {
+              res.writeHead(200, {
+                'content-type': 'application/json',
+                'cache-control': 'no-store',
+              });
+              res.write('{"access_token":');
+              return;
+            }
+            if (mode === 'malformed_token') {
+              send(200, 'not-json');
+              return;
+            }
             if (mode === 'hang_issuance') return;
             if (mode === 'delay_password')
               await new Promise((resolve) => setTimeout(resolve, 1300));
             passwordSerial += 1;
             const sessionId = `77777777-7777-4777-8777-${passwordSerial.toString(16).padStart(12, '0')}`;
-            const access = await new SignJWT({ role: 'authenticated', session_id: sessionId })
+            const access = await new SignJWT(
+              mode === 'missing_session'
+                ? { role: 'authenticated' }
+                : { role: 'authenticated', session_id: sessionId },
+            )
               .setProtectedHeader({ alg: 'ES256', kid: 'g2-test', typ: 'JWT' })
               .setSubject(user.sub)
               .setIssuer(issuer)
@@ -400,6 +422,13 @@ async function startIssuer(mode) {
         req.on('end', () => {
           void (async () => {
             const form = new URLSearchParams(Buffer.concat(chunks).toString('utf8'));
+            if (form.get('client_id') === B_CLIENT) {
+              downstreamTokenPosts += 1;
+              if (mode === 'ambiguous_n8' && downstreamTokenPosts >= 3) {
+                send(200, 'not-json');
+                return;
+              }
+            }
             const record = pending.get(form.get('code') ?? '');
             pending.delete(form.get('code') ?? '');
             const digest = createHash('sha256')
@@ -465,6 +494,7 @@ async function startIssuer(mode) {
                   agent_id: mismatch && !tokenA ? 'other-agent' : AGENT,
                 };
             if (tokenA && hookEnabled) seen.decoySessionIds.push(mintedSession);
+            if (mode === 'missing_session') delete claims.session_id;
             const access = await new SignJWT(claims)
               .setProtectedHeader({ alg: 'ES256', kid: 'g2-test', typ: 'JWT' })
               .setSubject(record.sub ?? USER1)
@@ -609,6 +639,7 @@ async function drive(mode, gates, fault = 'none') {
         mode === 'delay_oauth' ||
         mode === 'delay_rejected_b' ||
         mode === 'hang_issuance' ||
+        mode === 'stall_token_body' ||
         fault === 'timeout_disable'
           ? '1000'
           : '20000',
@@ -644,6 +675,7 @@ async function drive(mode, gates, fault = 'none') {
       kind: 'restrictive',
       roles: ['authenticated'],
       distinctClientIds: ['baseline-a-client', A_CLIENT].sort(),
+      qual: canonicalF1Qual('baseline-a-client', A_CLIENT),
     },
     rls: { schema: 'public', table: 'ari_probe_marker', enabled: true, forced: true },
     ownerPolicy: {
@@ -651,7 +683,7 @@ async function drive(mode, gates, fault = 'none') {
       kind: 'permissive',
       command: 'select',
       roles: ['authenticated'],
-      using: 'auth.uid() = owner_id',
+      qual: canonicalOwnerQual(),
     },
     grants: [
       { role: 'anon', privilege: 'SELECT', table: 'public.ari_probe_marker', allowed: false },
@@ -746,6 +778,23 @@ async function drive(mode, gates, fault = 'none') {
               ...evidence(),
               f1: { ...evidence().f1, kind: 'permissive' },
             });
+          } else if (fault === 'missing_f1_qual') {
+            const body = evidence();
+            delete body.f1.qual;
+            correlated(message, { type: 'readback', hookManifest: manifest, ...body });
+          } else if (fault === 'using_true' || fault === 'using_false') {
+            const body = evidence();
+            body.f1 = { ...body.f1, qual: fault === 'using_true' ? 'true' : 'false' };
+            correlated(message, { type: 'readback', hookManifest: manifest, ...body });
+          } else if (fault === 'or_not_and' || fault === 'one_comparison') {
+            const body = evidence();
+            const full = body.f1.qual;
+            const andAt = full.indexOf(' AND ');
+            body.f1 = {
+              ...body.f1,
+              qual: fault === 'or_not_and' ? full.replace(' AND ', ' OR ') : full.slice(1, andAt),
+            };
+            correlated(message, { type: 'readback', hookManifest: manifest, ...body });
           } else {
             correlated(message, {
               type: 'readback',
@@ -795,6 +844,12 @@ async function drive(mode, gates, fault = 'none') {
               row.role === 'anon' ? { ...row, allowed: true } : row,
             );
           }
+          if (fault === 'altered_f1_expr_restore') {
+            restored.f1 = {
+              ...restored.f1,
+              qual: restored.f1.qual.replace(' AND ', ' OR '),
+            };
+          }
           correlated(message, {
             type: 'readback',
             hookEnabled: true,
@@ -827,7 +882,11 @@ async function drive(mode, gates, fault = 'none') {
             secondUserId: message.secondUserId,
           });
         } else if (message.action === 'reconcile_unresolved_issuance') {
-          correlated(message, { type: 'readback', reconciled: false });
+          correlated(message, {
+            type: 'readback',
+            reconciled: true,
+            sessionIds: [DECOY_SESSION],
+          });
         } else {
           assert.fail(`unhandled ${message.action}`);
         }
@@ -864,6 +923,10 @@ test('synthetic packet executes the remaining gates without hosted contact', asy
   assert.equal(receipt.executedByWriter, false);
   assert.equal(receipt.syntheticLoopback, true);
   assert.equal(receipt.rowsPass, true);
+  assert.equal(receipt.issuanceStatus, 'resolved');
+  assert.equal(receipt.cleanupStatus, 'not_required');
+  assert.equal(receipt.restoreStatus, 'confirmed');
+  assert.deepEqual(receipt.unresolvedAttemptIds, []);
   assert.equal(receipt.actualHead, result.head);
   assert.equal(receipt.reviewedHead, result.head);
   const byId = Object.fromEntries(receipt.rows.map((row) => [row.id, row]));
@@ -1253,12 +1316,23 @@ test('wrong marker, name-only policy, and altered F1 cannot pass N6', async () =
     assert.equal(n6.subcases.find((row) => row.id === 'owner_read').pass, false, mode);
     assert.equal(result.actions.includes('disable_current_hook'), false, mode);
   }
-  for (const fault of ['boolean_policy', 'altered_f1']) {
+  for (const fault of [
+    'boolean_policy',
+    'altered_f1',
+    'missing_f1_qual',
+    'using_true',
+    'using_false',
+    'or_not_and',
+    'one_comparison',
+  ]) {
     const result = await drive('policy', 'N6', fault);
     assert.equal(result.code, 2, fault);
     assert.equal(result.receipt.reason, 'f1_readback_missing', fault);
+    assert.equal(result.receipt.rowsPass, false, fault);
     assert.equal(result.actions.includes('disable_current_hook'), false, fault);
     assert.equal(result.receipt.restoreStatus, 'not_required', fault);
+    assert.equal(result.receipt.issuanceStatus !== undefined, true, fault);
+    assert.equal(result.receipt.cleanupStatus !== undefined, true, fault);
   }
   const restored = await drive('policy', 'N6', 'altered_f1_restore');
   assert.equal(restored.code, 2);
@@ -1266,4 +1340,166 @@ test('wrong marker, name-only policy, and altered F1 cannot pass N6', async () =
   assert.equal(restored.receipt.restoreStatus, 'failed');
   assert.equal(restored.actions.includes('disable_current_hook'), true);
   assert.equal(restored.actions.includes('restore_hook_configuration'), true);
+  const expr = await drive('policy', 'N6', 'altered_f1_expr_restore');
+  assert.equal(expr.code, 2, expr.errText);
+  assert.equal(expr.receipt.reason, 'hook_restore_mismatch');
+  assert.equal(expr.receipt.restoreStatus, 'failed');
+  assert.equal(expr.receipt.rowsPass, false);
+  assert.equal(expr.actions.includes('disable_current_hook'), true);
+  assert.equal(expr.actions.includes('restore_hook_configuration'), true);
+});
+
+function reconcileBeforeReceipt(result) {
+  const reconcileAt = result.outText.indexOf('"action":"reconcile_unresolved_issuance"');
+  const receiptAt = result.outText.lastIndexOf('"type":"receipt"');
+  assert.equal(reconcileAt >= 0 && receiptAt > reconcileAt, true);
+  const reconcile = result.messages.find((row) => row.action === 'reconcile_unresolved_issuance');
+  assert.deepEqual(reconcile.attemptIds, result.receipt.unresolvedAttemptIds);
+  assert.equal(result.receipt.unresolvedAttemptIds.length > 0, true);
+  assert.equal(
+    result.receipt.unresolvedAttemptIds.every((id) => id !== DECOY_SESSION),
+    true,
+  );
+  assert.equal(
+    result.messages.some(
+      (row) =>
+        row.action === 'cleanup_sessions' &&
+        Array.isArray(row.sessionIds) &&
+        row.sessionIds.includes(DECOY_SESSION),
+    ),
+    false,
+  );
+  assert.equal(result.actions.includes('delete_second_synthetic_user'), false);
+}
+
+test('headers then a stalled token body stay unresolved', async () => {
+  const result = await drive('stall_token_body', 'N3');
+  assert.equal(result.code, 2, `${result.errText}\n${result.outText}`);
+  assert.equal(result.receipt.acceptance, false);
+  assert.equal(result.receipt.rowsPass, false);
+  assert.equal(result.receipt.issuanceStatus, 'unresolved');
+  assert.notEqual(result.receipt.issuanceStatus, 'resolved');
+  assert.equal(result.receipt.cleanupStatus, 'unresolved');
+  assert.equal(result.receipt.restoreStatus, 'not_required');
+  assert.equal(result.receipt.sessionLedger.length, 0);
+  reconcileBeforeReceipt(result);
+});
+
+test('malformed 2xx and a missing session claim stay unresolved', async () => {
+  const malformed = await drive('malformed_token', 'N3');
+  assert.equal(malformed.code, 2, malformed.errText);
+  assert.equal(malformed.receipt.acceptance, false);
+  assert.equal(malformed.receipt.issuanceStatus, 'unresolved');
+  assert.equal(malformed.receipt.cleanupStatus, 'unresolved');
+  assert.equal(malformed.receipt.sessionLedger.length, 0);
+  reconcileBeforeReceipt(malformed);
+  const missing = await drive('missing_session', 'N3');
+  assert.equal(missing.code, 2, missing.errText);
+  assert.equal(missing.receipt.acceptance, false);
+  assert.equal(missing.receipt.issuanceStatus, 'unresolved');
+  assert.equal(missing.receipt.cleanupStatus, 'unresolved');
+  assert.equal(
+    missing.receipt.sessionLedger.some(
+      (row) => row.passwordSessionId || row.sourceSessionId || row.bSessionId || row.authSessionId,
+    ),
+    false,
+  );
+  reconcileBeforeReceipt(missing);
+});
+
+test('a failed N8 row finalizes ambiguous issuance before the receipt', async () => {
+  const result = await drive('ambiguous_n8', 'N8');
+  assert.equal(result.code, 2, `${result.errText}\n${result.outText}`);
+  assert.equal(result.receipt.acceptance, false);
+  assert.equal(result.receipt.rowsPass, false);
+  const n8 = result.receipt.rows.find((row) => row.id === 'N8');
+  assert.equal(n8.executed, true);
+  assert.equal(n8.pass, false);
+  assert.equal(n8.label, 'n8_incomplete');
+  const signed = n8.subcases.find((row) => row.id === 'signed_b_unbound');
+  assert.equal(signed.executed, true);
+  assert.equal(signed.pass, false);
+  assert.notEqual(signed.reason, 'not_executed');
+  assert.equal(result.receipt.issuanceStatus, 'unresolved');
+  assert.equal(result.receipt.cleanupStatus, 'unresolved');
+  assert.equal(result.receipt.restoreStatus, 'not_required');
+  reconcileBeforeReceipt(result);
+});
+
+test('F1 qual matches local pg_policies.qual for the sql/06 expression', async () => {
+  const baseline = 'baseline-a-client';
+  const external = 'external-a-client';
+  const sql06 = readFileSync(
+    new URL('../docs/evidence/ari-test-probe/sql/06-ingress-client-rls.sql', import.meta.url),
+    'utf8',
+  );
+  const sql01 = readFileSync(
+    new URL('../docs/evidence/ari-test-probe/sql/01-synthetic-fixture.sql', import.meta.url),
+    'utf8',
+  );
+  assert.equal(
+    sql06.includes(
+      "coalesce(auth.jwt() ->> 'client_id', '') is distinct from %L\n          and coalesce(auth.jwt() ->> 'client_id', '') is distinct from %L",
+    ),
+    true,
+  );
+  assert.equal(sql01.includes('using ((select auth.uid()) = owner_id);'), true);
+  const db = new PGlite();
+  await db.waitReady;
+  await db.exec(`
+    create schema auth;
+    create function auth.jwt() returns jsonb language sql stable as $$
+      select nullif(current_setting('request.jwt.claims', true), '')::jsonb
+    $$;
+    create function auth.uid() returns uuid language sql stable as $$
+      select nullif(current_setting('request.jwt.claim.sub', true), '')::uuid
+    $$;
+    create role authenticated nologin noinherit;
+    create table public.ari_probe_marker (
+      marker text primary key,
+      owner_id uuid not null
+    );
+    create policy ari_probe_marker_owner_read
+      on public.ari_probe_marker
+      for select
+      to authenticated
+      using ((select auth.uid()) = owner_id);
+    create policy ari_probe_marker_reject_a_client
+      on public.ari_probe_marker
+      as restrictive
+      for select
+      to authenticated
+      using (
+        coalesce(auth.jwt() ->> 'client_id', '') is distinct from '${baseline}'
+        and coalesce(auth.jwt() ->> 'client_id', '') is distinct from '${external}'
+      );
+    create policy using_true
+      on public.ari_probe_marker
+      as restrictive
+      for select
+      to authenticated
+      using (true);
+    create policy using_false
+      on public.ari_probe_marker
+      as restrictive
+      for select
+      to authenticated
+      using (false);
+  `);
+  const rows = await db.query(`
+    select policyname, qual
+    from pg_policies
+    where schemaname = 'public' and tablename = 'ari_probe_marker'
+  `);
+  await db.close();
+  const qual = Object.fromEntries(rows.rows.map((row) => [row.policyname, row.qual]));
+  assert.equal(qual.ari_probe_marker_reject_a_client, canonicalF1Qual(baseline, external));
+  assert.equal(qual.ari_probe_marker_owner_read, canonicalOwnerQual());
+  assert.notEqual(qual.using_true, qual.using_false);
+  assert.notEqual(qual.using_true, qual.ari_probe_marker_reject_a_client);
+  assert.notEqual(qual.using_false, qual.ari_probe_marker_reject_a_client);
+  assert.equal(
+    canonicalF1Qual(external, baseline) === qual.ari_probe_marker_reject_a_client,
+    false,
+  );
 });

@@ -419,23 +419,63 @@ function noteSession(ledger, entry) {
   ledger.push(row);
 }
 
+function ledgerHas(ledger, id) {
+  return id !== undefined && ledger.some((row) => ledgerIds(row).includes(id));
+}
+
 function noteAccessToken(ledger, gate, token, requestUrl) {
   const claims = claimShape(token);
-  if (claims === null) return;
+  if (claims === null || claims.sessionId === undefined) return false;
   const url = String(requestUrl);
   if (url.includes('grant_type=password')) {
     noteSession(ledger, { gate, passwordSessionId: claims.sessionId, sub: claims.sub });
-    return;
+    return ledgerHas(ledger, claims.sessionId);
   }
   if (claims.sourceSessionId !== undefined) {
     noteSession(ledger, { gate, sourceSessionId: claims.sourceSessionId, sub: claims.sub });
-    return;
+    return ledgerHas(ledger, claims.sourceSessionId);
   }
-  if (claims.clientId !== null && claims.sessionId !== undefined) {
+  if (claims.clientId !== null) {
     const field =
       claims.role === 'authenticated' && claims.agentId !== null ? 'bSessionId' : 'authSessionId';
     noteSession(ledger, { gate, [field]: claims.sessionId, sub: claims.sub });
+    return ledgerHas(ledger, claims.sessionId);
   }
+  return false;
+}
+
+const PRE_ISSUANCE_DENIAL = new Set([
+  'access_denied',
+  'invalid_client',
+  'invalid_grant',
+  'invalid_request',
+  'invalid_scope',
+  'unauthorized_client',
+  'unsupported_grant_type',
+]);
+
+function definitivePreIssuanceDenial(status, body) {
+  if (status !== 400 && status !== 401 && status !== 403) return false;
+  if (body === null || typeof body !== 'object' || Array.isArray(body)) return false;
+  if (typeof body.access_token === 'string') return false;
+  return typeof body.error === 'string' && PRE_ISSUANCE_DENIAL.has(body.error);
+}
+
+async function issuanceAttemptResolved(response, ledger, gate, requestUrl) {
+  const text = await response.clone().text();
+  let parsed;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    parsed = undefined;
+  }
+  const status = response.status;
+  if (status >= 200 && status < 300) {
+    if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) return false;
+    if (typeof parsed.access_token !== 'string') return false;
+    return noteAccessToken(ledger, gate, parsed.access_token, requestUrl);
+  }
+  return definitivePreIssuanceDenial(status, parsed);
 }
 
 function markRejected(ledger, sessionId) {
@@ -495,21 +535,17 @@ function createIssuanceTracker(ledger, cursor, signal) {
           gate,
           requestId: freshRequestId(),
           issuance,
-          sawResponse: false,
+          resolved: false,
         };
         if (issuance) attempts.push(attempt);
         const run = (async () => {
           try {
             const response = await inner(input, { ...init, signal: controller.signal });
             if (issuance) {
-              attempt.sawResponse = true;
               try {
-                const parsed = await response.clone().json();
-                if (typeof parsed?.access_token === 'string') {
-                  noteAccessToken(ledger, gate, parsed.access_token, url);
-                }
+                attempt.resolved = await issuanceAttemptResolved(response, ledger, gate, url);
               } catch {
-                // A definitive response without a token is not a session id.
+                attempt.resolved = false;
               }
             }
             return response;
@@ -541,19 +577,20 @@ function createIssuanceTracker(ledger, cursor, signal) {
       return attempts.length > 0;
     },
     ambiguous() {
-      return attempts.some((row) => row.issuance && row.sawResponse !== true);
+      return attempts.some((row) => row.issuance && row.resolved !== true);
     },
     unresolvedGates() {
       return [
         ...new Set(
-          attempts.filter((row) => row.issuance && row.sawResponse !== true).map((row) => row.gate),
+          attempts.filter((row) => row.issuance && row.resolved !== true).map((row) => row.gate),
         ),
       ];
     },
     unresolvedAttemptIds() {
       return attempts
-        .filter((row) => row.issuance && row.sawResponse !== true)
-        .map((row) => row.requestId);
+        .filter((row) => row.issuance && row.resolved !== true)
+        .map((row) => row.requestId)
+        .filter((id) => safeUuid(id) !== undefined);
     },
   };
 }
@@ -1670,6 +1707,28 @@ function mappingRecord(row) {
   };
 }
 
+const CLIENT_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/u;
+const OWNER_QUAL = '(( SELECT auth.uid() AS uid) = owner_id)';
+
+function sqlQuote(value) {
+  return `'${value.replaceAll("'", "''")}'`;
+}
+
+export function canonicalOwnerQual() {
+  return OWNER_QUAL;
+}
+
+export function canonicalF1Qual(baselineClientId, externalClientId) {
+  if (typeof baselineClientId !== 'string' || typeof externalClientId !== 'string') return null;
+  if (!CLIENT_ID.test(baselineClientId) || !CLIENT_ID.test(externalClientId)) return null;
+  if (baselineClientId === externalClientId) return null;
+  const comparison = (clientId) => {
+    const literal = sqlQuote(clientId);
+    return `(COALESCE((auth.jwt() ->> 'client_id'::text), ''::text) IS DISTINCT FROM ${literal}::text)`;
+  };
+  return `(${comparison(baselineClientId)} AND ${comparison(externalClientId)})`;
+}
+
 function policySnapshot(readback, env, baselineClientId) {
   const external = env.ARI_EXTERNAL_A_CLIENT_ID;
   const agentId = env.ARI_AGENT_ID;
@@ -1688,15 +1747,8 @@ function policySnapshot(readback, env, baselineClientId) {
   if (!Array.isArray(f1.roles) || f1.roles.length !== 1 || f1.roles[0] !== 'authenticated') {
     return null;
   }
-  if (!Array.isArray(f1.distinctClientIds)) return null;
-  const clients = [...f1.distinctClientIds].sort();
-  const expectedClients = [baselineClientId, external].sort();
-  if (
-    clients.length !== expectedClients.length ||
-    clients.some((id, index) => id !== expectedClients[index])
-  ) {
-    return null;
-  }
+  const expectedQual = canonicalF1Qual(baselineClientId, external);
+  if (expectedQual === null || typeof f1.qual !== 'string' || f1.qual !== expectedQual) return null;
   const rls = readback.rls;
   if (
     rls?.schema !== 'public' ||
@@ -1711,7 +1763,7 @@ function policySnapshot(readback, env, baselineClientId) {
     owner?.name !== 'ari_probe_marker_owner_read' ||
     owner?.kind !== 'permissive' ||
     owner?.command !== 'select' ||
-    owner?.using !== 'auth.uid() = owner_id' ||
+    owner?.qual !== canonicalOwnerQual() ||
     !Array.isArray(owner?.roles) ||
     owner.roles.length !== 1 ||
     owner.roles[0] !== 'authenticated'
@@ -1741,10 +1793,10 @@ function policySnapshot(readback, env, baselineClientId) {
   if (externalRow.resource !== resource || baseline.resource === externalRow.resource) return null;
   return JSON.stringify({
     baselineResource: baseline.resource,
-    distinctClientIds: expectedClients,
     externalResource: externalRow.resource,
+    f1Qual: f1.qual,
     grants,
-    ownerUsing: owner.using,
+    ownerQual: owner.qual,
   });
 }
 
@@ -2064,8 +2116,18 @@ function rowsPass(selected, rows) {
   );
 }
 
-function parentReceipt(env, gate, selected, results, ledger, runId) {
+function parentReceipt(env, gate, selected, results, ledger, runId, outcome) {
   const rows = GATE_ORDER.map((id) => results.get(id) ?? notExecuted(id));
+  let pass = rowsPass(selected, rows);
+  if (
+    outcome.issuanceStatus === 'unresolved' ||
+    outcome.cleanupStatus === 'unresolved' ||
+    outcome.cleanupStatus === 'failed' ||
+    outcome.restoreStatus === 'failed' ||
+    outcome.restoreStatus === 'pending'
+  ) {
+    pass = false;
+  }
   return {
     type: 'receipt',
     packet: 'lane-b-n-gates',
@@ -2080,7 +2142,14 @@ function parentReceipt(env, gate, selected, results, ledger, runId) {
     projectRef: env.ARI_TEST_PROJECT_REF,
     runId,
     selectedGates: selected,
-    rowsPass: rowsPass(selected, rows),
+    rowsPass: pass,
+    issuanceStatus: outcome.issuanceStatus,
+    cleanupStatus: outcome.cleanupStatus,
+    restoreStatus: outcome.restoreStatus,
+    unresolvedAttemptIds: outcome.unresolvedAttemptIds,
+    ...(typeof outcome.recoveryLocator === 'string'
+      ? { recoveryLocator: outcome.recoveryLocator }
+      : {}),
     rows,
     sessionLedger: ledger,
   };
@@ -2123,6 +2192,8 @@ export async function runNGates(env, stdin) {
     locator: undefined,
   };
   let thrown;
+  let cleanupStatus = 'not_required';
+  let issuanceStatus = 'not_required';
   try {
     for (const id of selected) {
       let row;
@@ -2136,21 +2207,16 @@ export async function runNGates(env, stdin) {
       if (id !== 'N2' && id !== 'N6') await confirmCleanup(reader, ctx, timeoutMs, id);
       if (row.pass !== true) break;
     }
-    const receipt = parentReceipt(env, gate, selected, results, ledger, ctx.runId);
-    assertIpcHasNoSecrets(receipt);
-    return receipt;
   } catch (error) {
     thrown = error;
     if (error !== null && typeof error === 'object') error.sessionLedger = ledger;
-    throw error;
   } finally {
-    let cleanupStatus = 'not_required';
-    let issuanceStatus = 'not_required';
     try {
       await ctx.issuance.settle(Math.min(Math.max(timeoutMs, 3_000), 5_000));
       const ambiguous = ctx.issuance.ambiguous();
       if (ambiguous) {
         issuanceStatus = 'unresolved';
+        // This readback does not settle the attempt, and ids in it are not deletable.
         await pauseForReadback(
           reader,
           {
@@ -2181,6 +2247,11 @@ export async function runNGates(env, stdin) {
       } else {
         cleanupStatus = 'failed';
       }
+    }
+    const unresolvedAttemptIds = ctx.issuance.unresolvedAttemptIds();
+    if (unresolvedAttemptIds.length > 0) {
+      issuanceStatus = 'unresolved';
+      if (cleanupStatus !== 'failed') cleanupStatus = 'unresolved';
     }
     if (
       ctx.deletionEligible === true &&
@@ -2217,12 +2288,23 @@ export async function runNGates(env, stdin) {
       thrown.restoreStatus = restoreStatusOf(restoreState);
       thrown.cleanupStatus = cleanupStatus;
       thrown.issuanceStatus = issuanceStatus;
+      thrown.unresolvedAttemptIds = unresolvedAttemptIds;
       if (restoreState.locator !== undefined) thrown.recoveryLocator = restoreState.locator;
       thrown.runId = ctx.runId;
     }
     signal.dispose();
     reader.close();
   }
+  if (thrown !== undefined) throw thrown;
+  const receipt = parentReceipt(env, gate, selected, results, ledger, ctx.runId, {
+    issuanceStatus,
+    cleanupStatus,
+    restoreStatus: restoreStatusOf(restoreState),
+    unresolvedAttemptIds: ctx.issuance.unresolvedAttemptIds(),
+    recoveryLocator: restoreState.locator,
+  });
+  assertIpcHasNoSecrets(receipt);
+  return receipt;
 }
 
 async function main() {
@@ -2268,6 +2350,9 @@ async function main() {
       restoreStatus: safeCode(error?.restoreStatus ?? 'not_required'),
       cleanupStatus: safeCode(error?.cleanupStatus ?? 'not_required'),
       issuanceStatus: safeCode(error?.issuanceStatus ?? 'not_required'),
+      unresolvedAttemptIds: Array.isArray(error?.unresolvedAttemptIds)
+        ? error.unresolvedAttemptIds.filter((id) => safeUuid(id) !== undefined)
+        : [],
       ...(typeof error?.runId === 'string' ? { runId: error.runId } : {}),
       ...(typeof error?.recoveryLocator === 'string'
         ? { recoveryLocator: error.recoveryLocator }
