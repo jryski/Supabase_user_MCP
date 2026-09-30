@@ -4,6 +4,9 @@
 -- ari.project_ref. There is no DROP SCHEMA CASCADE.
 --
 -- Unknown or new dependencies stop the transaction before any drop.
+-- The owned internal manifest is revalidated before any drop: policies,
+-- triggers, constraints, columns, indexes, and function bodies. An unknown
+-- or drifted object stops the transaction. There is no CASCADE.
 -- The allowlist is the objects created by sql/08-memory-read-lab.sql.
 -- Fixture rows are not a schema rollback. Delete those by exact run id.
 
@@ -16,6 +19,12 @@ declare
   forbidden_ref constant text := 'lygftpbjgqgvuunkwnxf';
   version constant text := 'ari-memory-read-lab-v1';
   dependent text;
+  owned_policy text;
+  owned_column text;
+  owned_constraint text;
+  owned_function text;
+  owned_index text;
+  owned_trigger integer;
 begin
   if project_ref is not distinct from forbidden_ref
     or coalesce(project_ref, '') = ''
@@ -34,6 +43,106 @@ begin
     or obj_description('memory'::regnamespace, 'pg_namespace') is distinct from version
   then
     raise exception 'STOP schema version is not %', version;
+  end if;
+
+  select md5(string_agg(
+      policy.polname || '@' || relation.relname || '|' || policy.polcmd::text || '|' ||
+      regexp_replace(
+        lower(replace(pg_get_expr(policy.polqual, policy.polrelid), '::text', '')),
+        '\s+',
+        '',
+        'g'
+      ),
+      E'\n' order by policy.polname
+    ))
+    into owned_policy
+  from pg_policy as policy
+  join pg_class as relation on relation.oid = policy.polrelid
+  join pg_namespace as namespace on namespace.oid = relation.relnamespace
+  where namespace.nspname = 'policy_lab';
+  if owned_policy is distinct from '7d58c1e9658a37eb7c8615dd9ef7a9a3' then
+    raise exception 'STOP owned manifest drift: policy %', owned_policy;
+  end if;
+
+  select md5(string_agg(
+      relation.relname || '.' || attribute.attname || '|' ||
+      format_type(attribute.atttypid, attribute.atttypmod) || '|' ||
+      attribute.attnotnull::text || '|' ||
+      coalesce(pg_get_expr(attribute_default.adbin, attribute_default.adrelid), ''),
+      E'\n' order by relation.relname, attribute.attnum
+    ))
+    into owned_column
+  from pg_attribute as attribute
+  join pg_class as relation on relation.oid = attribute.attrelid
+  join pg_namespace as namespace on namespace.oid = relation.relnamespace
+  left join pg_attrdef as attribute_default
+    on attribute_default.adrelid = attribute.attrelid
+   and attribute_default.adnum = attribute.attnum
+  where namespace.nspname = 'policy_lab'
+    and relation.relkind = 'r'
+    and attribute.attnum > 0
+    and not attribute.attisdropped;
+  if owned_column is distinct from 'f06ed9f3f3ae1a8f415af98885130761' then
+    raise exception 'STOP owned manifest drift: column %', owned_column;
+  end if;
+
+  select md5(string_agg(
+      constraint_row.conname || ':' || regexp_replace(
+        lower(replace(pg_get_constraintdef(constraint_row.oid), '::text', '')),
+        '\s+',
+        '',
+        'g'
+      ),
+      '|' order by constraint_row.conname
+    ))
+    into owned_constraint
+  from pg_constraint as constraint_row
+  join pg_class as relation on relation.oid = constraint_row.conrelid
+  join pg_namespace as namespace on namespace.oid = relation.relnamespace
+  where namespace.nspname = 'policy_lab';
+  if owned_constraint is distinct from '646433b43e50bee6ec1ef515f940e239' then
+    raise exception 'STOP owned manifest drift: constraint %', owned_constraint;
+  end if;
+
+  select md5(string_agg(
+      namespace.nspname || '.' || procedure.proname || '(' ||
+      pg_get_function_identity_arguments(procedure.oid) || ')' || '|' ||
+      md5(regexp_replace(procedure.prosrc, '\s+', '', 'g')) || '|' ||
+      procedure.prosecdef::text || '|' ||
+      coalesce(array_to_string(procedure.proconfig, ','), ''),
+      E'\n' order by namespace.nspname, procedure.proname
+    ))
+    into owned_function
+  from pg_proc as procedure
+  join pg_namespace as namespace on namespace.oid = procedure.pronamespace
+  where namespace.nspname in ('policy_lab', 'memory');
+  if owned_function is distinct from 'f64fe18a01be3488d96ef12964e59233' then
+    raise exception 'STOP owned manifest drift: function %', owned_function;
+  end if;
+
+  select md5(string_agg(
+      relation.relname || '.' || index_relation.relname,
+      E'\n' order by relation.relname, index_relation.relname
+    ))
+    into owned_index
+  from pg_index as index_row
+  join pg_class as index_relation on index_relation.oid = index_row.indexrelid
+  join pg_class as relation on relation.oid = index_row.indrelid
+  join pg_namespace as namespace on namespace.oid = relation.relnamespace
+  where namespace.nspname = 'policy_lab';
+  if owned_index is distinct from '0d734f2e701b06de229d6ef0616931b5' then
+    raise exception 'STOP owned manifest drift: index %', owned_index;
+  end if;
+
+  select count(*)::int
+    into owned_trigger
+  from pg_trigger as trigger_row
+  join pg_class as relation on relation.oid = trigger_row.tgrelid
+  join pg_namespace as namespace on namespace.oid = relation.relnamespace
+  where namespace.nspname = 'policy_lab'
+    and not trigger_row.tgisinternal;
+  if owned_trigger <> 0 then
+    raise exception 'STOP owned manifest drift: trigger';
   end if;
 
   select string_agg(

@@ -21,8 +21,11 @@ Owned version: `ari-memory-read-lab-v1`.
 
 The file is not a `supabase/migration`. It creates `policy_lab` and `memory`
 only when both are absent. A second run must already carry the owned version
-and the exact object allowlist. A partial schema, a different version, an
-extra relation, or `public.policy_lab_memory_read` fails closed. There is no
+and the source-pinned manifest of policy expressions, helper and RPC bodies,
+columns, constraints, indexes, and triggers. Drift stops the transaction.
+Reentry does not bless the drifted objects and does not overwrite them. A
+partial schema, a different version, an extra relation, or
+`public.policy_lab_memory_read` fails closed. There is no
 `CREATE IF NOT EXISTS`.
 
 Cherry-picked shape: principals, clients, memberships, capability grants, and
@@ -111,19 +114,43 @@ local packet does not mint a session. `acceptance` is false.
 Token A read are excluded from the first hosted batch. The local runner does
 not toggle a hook and does not sign a hosted JWT.
 
+## Hosted controller
+
+`node scripts/ari-memory-read-lab.mjs hosted-synthetic` keeps the local
+PGlite runner and adds one Ari-only controller. It does not remove the
+local-only guard. The writer command refuses any URL that names
+`odbcejsuuqdzhabjmozi`. `hosted` refuses retained-TEST contact. This writer does not open a socket
+to the hosted ref. The executable controller is `hosted-synthetic`.
+
+The synthetic controller binds each manifest user through native Token A and
+Token B. The second user id comes from the manifest, not a hardcoded local
+UUID. Data reads are `memory_get`, `memory_list_recent`, and `memory_search`
+on `createNativeUserMcpReadHandler`. The controller does not call the SQL
+RPCs and does not manufacture `request.jwt.claims`. A loopback PostgREST
+stand-in verifies Token B, then applies that verified bearer to the RPCs.
+Both users' grants stay live together. Own foreign-only tokens must be found
+by their owner, and the other user's search of that token must be empty.
+Fetch and the response body use the same abort deadline as the N-gate marker
+read. A stalled header or body is `orchestration_timeout` or
+`signal_received`, then cleanup. The receipt lists the run-owned memories,
+memberships, grants, transient clients, denied principal, and session ids.
+Baseline principals, the retained B client, and both schemas stay.
+`acceptance` stays false.
+
 ## Hosted first round, later
 
-Ariadne executes this. The writer does not.
+Ariadne executes the retained-TEST command. The writer does not.
 
 - Own get, list, and search return the exact seeded ids.
 - Limit-1 pagination walks every own id and stops.
-- Foreign get returns `record: null`, the same shape as a missing id.
-- A foreign-only search token returns no rows.
+- Foreign get is unavailable, the same public shape as a missing id.
+- The owner of a foreign-only token finds that row. The other user's search
+  of that token returns no rows.
 - List returns own rows only.
 - The other user's cursor fails with the existing invalid-cursor contract:
   SQLSTATE `22023` and message `invalid cursor`. The fixed client already
   maps that PostgREST `400` to `FIXED_CLIENT_INVALID_CURSOR`.
-- Bounded concurrent retry returns the same id.
+- Concurrent reads under both credentials return each user's own id.
 - Same user with a different B client stays a named `not_executed` gap.
 
 Stop when any of those proofs is incomplete. Unresolved issuance or cleanup
@@ -132,8 +159,10 @@ exits nonzero with `acceptance` false.
 ## Schema recovery
 
 `sql/08-memory-read-lab-rollback.sql` is a separate reviewed recovery for
-version `ari-memory-read-lab-v1`. It checks the ref and the version, then
-looks for views, external constraints, and functions that depend on the lab.
-Any of those stops the transaction before a drop. Drops then follow the
-reverse object order, without `CASCADE`. A missing expected object fails the
-script rather than being ignored. Fixture cleanup is not this rollback.
+version `ari-memory-read-lab-v1`. Before any drop it revalidates the same
+owned manifest. An unknown policy, trigger, constraint, column, index, or
+function body stops the transaction. It then looks for views, external
+constraints, and functions that depend on the lab. Any of those stops the
+transaction before a drop. Drops then follow the reverse object order,
+without `CASCADE`. A missing expected object fails the script rather than
+being ignored. Fixture cleanup is not this rollback.

@@ -178,7 +178,13 @@ function workspaceId(runId, name) {
   return `ws-${runId}-${name}`;
 }
 
-function buildManifest(runId) {
+export function buildManifest(runId, options = {}) {
+  const principals = {
+    baselineUserId: options.baselineUserId ?? BASELINE_USER_ID,
+    secondUserId: options.secondUserId ?? SECOND_USER_ID,
+    bClientId: options.bClientId ?? LOCAL_B_CLIENT_ID,
+    secondUserIdentity: options.secondUserIdentity ?? SECOND_USER_IDENTITY,
+  };
   const positiveTag = `run:${runId}`;
   const denialTag = `denial:${runId}`;
   const slots = {
@@ -284,6 +290,7 @@ function buildManifest(runId) {
   }));
   return {
     runId,
+    principals,
     positiveTag,
     denialTag,
     memories,
@@ -299,43 +306,44 @@ function memory(manifest, slot) {
   return found;
 }
 
-async function seed(db, manifest) {
+export async function seed(db, manifest) {
+  const principals = manifest.principals;
   await db.query(
     `insert into policy_lab.principals (principal_id, principal_kind, identity_eligibility)
      values ($1, 'human', 'verified'), ($2, 'human', 'verified'), ($3, 'human', 'denied')`,
-    [BASELINE_USER_ID, SECOND_USER_ID, DENIED_PRINCIPAL_ID],
+    [principals.baselineUserId, principals.secondUserId, DENIED_PRINCIPAL_ID],
   );
   await db.query(
     `insert into policy_lab.clients (client_id, state, valid_until) values
       ($1, 'active', $4),
       ($2, 'revoked', $4),
       ($3, 'expired', $5)`,
-    [LOCAL_B_CLIENT_ID, REVOKED_CLIENT_ID, EXPIRED_CLIENT_ID, FAR_EXPIRY, PAST_EXPIRY],
+    [principals.bClientId, REVOKED_CLIENT_ID, EXPIRED_CLIENT_ID, FAR_EXPIRY, PAST_EXPIRY],
   );
   const positive = ['baseline', 'second'];
   for (const name of positive) {
-    const principal = name === 'baseline' ? BASELINE_USER_ID : SECOND_USER_ID;
+    const principal = name === 'baseline' ? principals.baselineUserId : principals.secondUserId;
     const workspace = workspaceId(manifest.runId, name);
     await db.query(
       `insert into policy_lab.memberships
         (principal_id, client_id, workspace_id, state, valid_until)
        values ($1, $2, $3, 'active', $4)`,
-      [principal, LOCAL_B_CLIENT_ID, workspace, FAR_EXPIRY],
+      [principal, principals.bClientId, workspace, FAR_EXPIRY],
     );
     for (const capability of ['memory:read', 'memory:search']) {
       await db.query(
         `insert into policy_lab.capability_grants
           (principal_id, client_id, workspace_id, capability, state, valid_until)
          values ($1, $2, $3, $4, 'active', $5)`,
-        [principal, LOCAL_B_CLIENT_ID, workspace, capability, FAR_EXPIRY],
+        [principal, principals.bClientId, workspace, capability, FAR_EXPIRY],
       );
     }
   }
   const denial = [
     [
       'membershipRevoked',
-      BASELINE_USER_ID,
-      LOCAL_B_CLIENT_ID,
+      principals.baselineUserId,
+      principals.bClientId,
       'revoked',
       FAR_EXPIRY,
       'active',
@@ -345,8 +353,8 @@ async function seed(db, manifest) {
     ],
     [
       'membershipExpired',
-      BASELINE_USER_ID,
-      LOCAL_B_CLIENT_ID,
+      principals.baselineUserId,
+      principals.bClientId,
       'expired',
       PAST_EXPIRY,
       'active',
@@ -356,7 +364,7 @@ async function seed(db, manifest) {
     ],
     [
       'clientRevoked',
-      BASELINE_USER_ID,
+      principals.baselineUserId,
       REVOKED_CLIENT_ID,
       'active',
       FAR_EXPIRY,
@@ -367,7 +375,7 @@ async function seed(db, manifest) {
     ],
     [
       'clientExpired',
-      BASELINE_USER_ID,
+      principals.baselineUserId,
       EXPIRED_CLIENT_ID,
       'active',
       FAR_EXPIRY,
@@ -378,8 +386,8 @@ async function seed(db, manifest) {
     ],
     [
       'readRevoked',
-      BASELINE_USER_ID,
-      LOCAL_B_CLIENT_ID,
+      principals.baselineUserId,
+      principals.bClientId,
       'active',
       FAR_EXPIRY,
       'revoked',
@@ -389,8 +397,8 @@ async function seed(db, manifest) {
     ],
     [
       'searchExpired',
-      BASELINE_USER_ID,
-      LOCAL_B_CLIENT_ID,
+      principals.baselineUserId,
+      principals.bClientId,
       'active',
       FAR_EXPIRY,
       'active',
@@ -401,7 +409,7 @@ async function seed(db, manifest) {
     [
       'denied',
       DENIED_PRINCIPAL_ID,
-      LOCAL_B_CLIENT_ID,
+      principals.bClientId,
       'active',
       FAR_EXPIRY,
       'active',
@@ -454,7 +462,7 @@ async function countIds(db, ids) {
   return result.rows[0].count;
 }
 
-async function cleanup(db, manifest) {
+export async function cleanup(db, manifest) {
   await db.query(`delete from policy_lab.memories where memory_id = any($1::text[])`, [
     manifest.memoryIds,
   ]);
@@ -472,17 +480,17 @@ async function cleanup(db, manifest) {
   ]);
 }
 
-async function retainedBaseline(db) {
-  const principals = await db.query(
+export async function retainedBaseline(db, principals) {
+  const found = await db.query(
     `select count(*)::int as count from policy_lab.principals
      where principal_id = any($1::uuid[])`,
-    [[BASELINE_USER_ID, SECOND_USER_ID]],
+    [[principals.baselineUserId, principals.secondUserId]],
   );
   const client = await db.query(
     `select count(*)::int as count from policy_lab.clients where client_id = $1`,
-    [LOCAL_B_CLIENT_ID],
+    [principals.bClientId],
   );
-  return principals.rows[0].count === 2 && client.rows[0].count === 1;
+  return found.rows[0].count === 2 && client.rows[0].count === 1;
 }
 
 function idsOf(payload) {
@@ -530,17 +538,18 @@ function row(id, pass, reason, extra = {}) {
 async function prove(db, manifest, rows) {
   const expiryRoom = Date.parse(FAR_EXPIRY) - Date.now();
   if (expiryRoom < 24 * 60 * 60 * 1000) throw coded('fixture_expiry_window');
+  const principals = manifest.principals;
   const coexist = await db.query(
     `select principal_id from policy_lab.capability_grants
      where client_id = $1 and capability = 'memory:read' and state = 'active'
        and principal_id = any($2::uuid[])
      group by principal_id`,
-    [LOCAL_B_CLIENT_ID, [BASELINE_USER_ID, SECOND_USER_ID]],
+    [principals.bClientId, [principals.baselineUserId, principals.secondUserId]],
   );
   if (coexist.rows.length !== 2) throw coded('grants_not_coexistent');
 
-  const baseline = claims(BASELINE_USER_ID, LOCAL_B_CLIENT_ID);
-  const second = claims(SECOND_USER_ID, LOCAL_B_CLIENT_ID);
+  const baseline = claims(principals.baselineUserId, principals.bClientId);
+  const second = claims(principals.secondUserId, principals.bClientId);
   const own = [
     ['baseline_get', baseline, 'a1', 'a2', 'a3'],
     ['second_get', second, 'b1', 'b2', 'b3'],
@@ -595,8 +604,21 @@ async function prove(db, manifest, rows) {
   rows.push(row('foreign_get_null', foreignPass, foreignPass ? 'record_null' : 'foreign_visible'));
   if (!foreignPass) throw coded('foreign_visible');
 
+  const ownBaselineOnly = idsOf(
+    await search(db, baseline, manifest.positiveTag, BASELINE_ONLY_TOKEN),
+  );
+  const ownSecondOnly = idsOf(await search(db, second, manifest.positiveTag, SECOND_ONLY_TOKEN));
   const foreignSearch = idsOf(await search(db, baseline, manifest.positiveTag, SECOND_ONLY_TOKEN));
   const reverseSearch = idsOf(await search(db, second, manifest.positiveTag, BASELINE_ONLY_TOKEN));
+  const positivePass =
+    ownBaselineOnly.length === 1 &&
+    ownBaselineOnly[0] === memory(manifest, 'a2').id &&
+    ownSecondOnly.length === 1 &&
+    ownSecondOnly[0] === memory(manifest, 'b2').id;
+  rows.push(
+    row('foreign_only_token_positive', positivePass, positivePass ? 'owner_found' : 'owner_missed'),
+  );
+  if (!positivePass) throw coded('owner_missed');
   const emptyPass = foreignSearch.length === 0 && reverseSearch.length === 0;
   rows.push(row('foreign_only_search_empty', emptyPass, emptyPass ? 'empty' : 'foreign_match'));
   if (!emptyPass) throw coded('foreign_match');
@@ -617,32 +639,46 @@ async function prove(db, manifest, rows) {
   );
   if (!cursorRefused) throw coded('cursor_accepted');
 
-  const target = memory(manifest, 'a1').id;
+  const baselineTarget = memory(manifest, 'a1').id;
+  const secondTarget = memory(manifest, 'b1').id;
   const [left, right] = await Promise.all([
-    getRecord(db, baseline, target),
-    getRecord(db, baseline, target),
+    getRecord(db, baseline, baselineTarget),
+    getRecord(db, second, secondTarget),
   ]);
-  const again = await getRecord(db, baseline, target);
-  const concurrentPass = left?.id === target && right?.id === target && again?.id === target;
+  const again = await getRecord(db, baseline, baselineTarget);
+  const concurrentPass =
+    left?.id === baselineTarget && right?.id === secondTarget && again?.id === baselineTarget;
   rows.push(
-    row('bounded_concurrent_retry', concurrentPass, concurrentPass ? 'same_id' : 'retry_mismatch'),
+    row(
+      'bounded_concurrent_retry',
+      concurrentPass,
+      concurrentPass ? 'cross_user' : 'retry_mismatch',
+    ),
   );
   if (!concurrentPass) throw coded('retry_mismatch');
 
   const denied = await getRecord(
     db,
-    claims(DENIED_PRINCIPAL_ID, LOCAL_B_CLIENT_ID),
+    claims(DENIED_PRINCIPAL_ID, principals.bClientId),
     memory(manifest, 'denied').id,
   );
   rows.push(row('denied_identity', denied === null, denied === null ? 'denied' : 'denied_visible'));
   if (denied !== null) throw coded('denied_visible');
 
   const oneVariable = [
-    ['revoked_membership', 'membershipRevoked', claims(BASELINE_USER_ID, LOCAL_B_CLIENT_ID)],
-    ['expired_membership', 'membershipExpired', claims(BASELINE_USER_ID, LOCAL_B_CLIENT_ID)],
-    ['revoked_client', 'clientRevoked', claims(BASELINE_USER_ID, REVOKED_CLIENT_ID)],
-    ['expired_client', 'clientExpired', claims(BASELINE_USER_ID, EXPIRED_CLIENT_ID)],
-    ['revoked_read_grant', 'readRevoked', claims(BASELINE_USER_ID, LOCAL_B_CLIENT_ID)],
+    [
+      'revoked_membership',
+      'membershipRevoked',
+      claims(principals.baselineUserId, principals.bClientId),
+    ],
+    [
+      'expired_membership',
+      'membershipExpired',
+      claims(principals.baselineUserId, principals.bClientId),
+    ],
+    ['revoked_client', 'clientRevoked', claims(principals.baselineUserId, REVOKED_CLIENT_ID)],
+    ['expired_client', 'clientExpired', claims(principals.baselineUserId, EXPIRED_CLIENT_ID)],
+    ['revoked_read_grant', 'readRevoked', claims(principals.baselineUserId, principals.bClientId)],
   ];
   for (const [id, slot, claim] of oneVariable) {
     const record = await getRecord(db, claim, memory(manifest, slot).id);
@@ -666,7 +702,7 @@ async function prove(db, manifest, rows) {
 
   const ignored = await getRecord(
     db,
-    claims(BASELINE_USER_ID, LOCAL_B_CLIENT_ID, { metadata: 'user' }),
+    claims(principals.baselineUserId, principals.bClientId, { metadata: 'user' }),
     memory(manifest, 'a1').id,
   );
   rows.push(
@@ -680,7 +716,7 @@ async function prove(db, manifest, rows) {
 
   const fallback = await getRecord(
     db,
-    claims(BASELINE_USER_ID, LOCAL_B_CLIENT_ID, { metadata: 'app' }),
+    claims(principals.baselineUserId, principals.bClientId, { metadata: 'app' }),
     memory(manifest, 'a1').id,
   );
   const fallbackPass = fallback?.id === memory(manifest, 'a1').id;
@@ -756,10 +792,10 @@ function receiptShell(manifest, fields) {
     installerSha256: sqlSha256(installerSql()),
     expiresAt: manifest.expiresAt,
     subjectProvenance: {
-      baselineUserId: BASELINE_USER_ID,
-      secondUserId: SECOND_USER_ID,
-      secondUserIdentity: SECOND_USER_IDENTITY,
-      bClientId: LOCAL_B_CLIENT_ID,
+      baselineUserId: manifest.principals.baselineUserId,
+      secondUserId: manifest.principals.secondUserId,
+      secondUserIdentity: manifest.principals.secondUserIdentity,
+      bClientId: manifest.principals.bClientId,
       bClientBinding: 'local_synthetic_stand_in',
       sessionIds: [],
     },
@@ -788,7 +824,7 @@ export async function runLocalLab() {
   try {
     await cleanup(db, manifest);
     ownershipAfter = await countIds(db, manifest.memoryIds);
-    baselineRetained = await retainedBaseline(db);
+    baselineRetained = await retainedBaseline(db, manifest.principals);
     cleanupStatus = ownershipAfter === 0 && baselineRetained ? 'confirmed' : 'unresolved';
   } catch {
     cleanupStatus = 'unresolved';
@@ -818,8 +854,45 @@ async function main() {
     process.stdout.write(`${JSON.stringify(plan(), null, 2)}\n`);
     return;
   }
+  if (command === 'hosted' || command === 'hosted-synthetic') {
+    let release;
+    try {
+      const url = `${process.env.ARI_TEST_SUPABASE_URL ?? ''}${process.env.SUPABASE_URL ?? ''}`;
+      const executor = process.env.ARI_MEMORY_LAB_EXECUTOR === 'ariadne';
+      if (url.toLowerCase().includes(HOSTED_PROJECT_REF) && !executor) {
+        throw coded('hosted_execution_refused');
+      }
+      if (command === 'hosted' && !executor) throw coded('hosted_execution_refused');
+      assertCleanWorktree();
+      release = acquireControllerLock();
+      const { runHostedController } = await import('./ari-memory-read-lab-hosted.mjs');
+      const receipt = await runHostedController(
+        { transport: command === 'hosted' ? 'retained-test' : 'synthetic', acquireLock: false },
+        process.env,
+      );
+      process.stdout.write(`${JSON.stringify(receipt)}\n`);
+      if (receipt.rowsPass !== true || receipt.acceptance !== false) process.exitCode = 2;
+    } catch (error) {
+      const failure = {
+        type: 'receipt',
+        packet: 'ari-memory-read-lab',
+        acceptance: false,
+        hostedContact: false,
+        rowsPass: false,
+        reason: typeof error?.code === 'string' ? error.code : 'child_failed',
+        listenerCount: 0,
+      };
+      process.stdout.write(`${JSON.stringify(failure)}\n`);
+      process.exitCode = 2;
+    } finally {
+      release?.();
+    }
+    return;
+  }
   if (command !== 'run') {
-    process.stderr.write('usage: node scripts/ari-memory-read-lab.mjs [plan|run]\n');
+    process.stderr.write(
+      'usage: node scripts/ari-memory-read-lab.mjs [plan|run|hosted-synthetic|hosted]\n',
+    );
     process.exitCode = 2;
     return;
   }
