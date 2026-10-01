@@ -1,7 +1,7 @@
-import http from 'node:http';
 import type { IncomingMessage, ServerResponse } from 'node:http';
-import { createServer as createNetServer } from 'node:net';
+import http from 'node:http';
 import type { AddressInfo } from 'node:net';
+import { createServer as createNetServer } from 'node:net';
 import { Readable } from 'node:stream';
 
 import { LOCAL_LAB_MCP_RESOURCE_URI, MAX_RESPONSE_BYTES } from '@supabase-user-mcp/contracts';
@@ -9,13 +9,13 @@ import { describe, expect, it } from 'vitest';
 
 import { createAuthorizationServerMetadata } from './authorization-server-metadata.js';
 import {
+  createRemoteHttpHandlerFromEnvironment,
+  handleRemoteHttpConnection,
+  listenRemoteHttpHandler,
   OAUTH_CLIENT_ID_ENV,
   REMOTE_HTTP_INGRESS_MAX_BYTES,
   REMOTE_HTTP_STARTUP_ERROR,
   RemoteHttpIngressError,
-  createRemoteHttpHandlerFromEnvironment,
-  handleRemoteHttpConnection,
-  listenRemoteHttpHandler,
   readBoundedIncomingMessage,
 } from './remote-http-startup.js';
 
@@ -189,6 +189,21 @@ describe('remote HTTP startup', () => {
         authorizationServerMetadata: withoutJwks,
       }),
     ).toThrow(REMOTE_HTTP_STARTUP_ERROR);
+  });
+
+  it('derives the scheme from the socket and ignores forwarded headers', async () => {
+    const forwarded = incomingMessage({ chunks: [Buffer.from('{}')] });
+    forwarded.headers['x-forwarded-proto'] = 'https';
+    forwarded.headers['x-forwarded-host'] = 'evil.example';
+    const plain = await readBoundedIncomingMessage(forwarded);
+    expect(plain.url.startsWith('http://127.0.0.1/mcp')).toBe(true);
+    expect(plain.url).not.toContain('evil.example');
+
+    const tls = incomingMessage({ chunks: [Buffer.from('{}')] });
+    Object.assign(tls, { socket: { encrypted: true } });
+    tls.headers['x-forwarded-proto'] = 'http';
+    const secure = await readBoundedIncomingMessage(tls);
+    expect(secure.url.startsWith('https://127.0.0.1/mcp')).toBe(true);
   });
 
   it('rejects a 4MiB chunked body without Content-Length before concatenating it', async () => {

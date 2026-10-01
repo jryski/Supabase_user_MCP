@@ -3,6 +3,7 @@
   "compilerOptions": {
     "allowImportingTsExtensions": true,
     "noEmit": true,
+    "skipLibCheck": true,
     "types": ["node", "vitest/globals"]
   },
   "include": ["packages/**/*.test.ts", "test/**/*.ts"]

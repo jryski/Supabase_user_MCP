@@ -16,7 +16,8 @@
   "scripts": {
     "artifact:calibrate": "npm run build && node scripts/run-artifact-chunk-calibration.mjs",
     "build": "tsc -b",
-    "check": "npm run format:check && npm run lint && npm run typecheck && npm run test",
+    "check": "npm run format:check && npm run lint && npm run typecheck && npm run test && npm run test:ari-packet",
+    "test:ari-packet": "npm run build && node --test docs/evidence/ari-test-probe/decisions.test.mjs docs/evidence/ari-test-probe/hook-v2.test.mjs docs/evidence/ari-test-probe/hook-v2.pglite.test.mjs docs/evidence/ari-test-probe/mcp-ingress-role.pglite.test.mjs docs/evidence/ari-test-probe/consent-harness.test.mjs docs/evidence/ari-test-probe/lane-b.sql.test.mjs scripts/ari-test-external-ipc.test.mjs scripts/ari-test-n-gates.test.mjs scripts/ari-memory-read-lab.test.mjs",
     "clean": "tsc -b --clean",
     "dev": "tsx packages/server/src/cli.ts",
     "format": "biome format --write .",
@@ -38,6 +39,7 @@
   },
   "devDependencies": {
     "@biomejs/biome": "2.5.8",
+    "@electric-sql/pglite": "0.5.8",
     "@modelcontextprotocol/client": "2.0.0",
     "@supabase/auth-js": "2.112.4",
     "@supabase/mcp-utils": "0.7.0",

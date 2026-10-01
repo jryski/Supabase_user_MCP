@@ -21,6 +21,8 @@
   "dependencies": {
     "@modelcontextprotocol/server": "2.0.0",
     "@supabase-user-mcp/contracts": "0.1.0-alpha.1",
+    "@supabase/server": "1.7.2",
+    "@supabase/supabase-js": "2.117.2",
     "jose": "6.2.9"
   }
 }

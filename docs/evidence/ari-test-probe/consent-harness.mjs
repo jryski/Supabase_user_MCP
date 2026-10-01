@@ -1,0 +1,2253 @@
+/**
+ * Loopback consent and code exchange for the controller host.
+ * plan, redact, and listenOnce do not dial a network. performConsent,
+ * exchangeAuthorizationCode, runConsentExchange, and runOpenIdNegative dial
+ * only through the fetch function the caller passes. `run` keeps Token A and
+ * Token B in memory and passes them to runProbe. It does not export or print
+ * them. This packet does not install a hook. Do not put owner keys, refresh
+ * tokens, access tokens, authorization codes, or verifiers in a URL, log,
+ * channel, or artifact.
+ */
+import { createHash, randomBytes } from 'node:crypto';
+import { createServer } from 'node:http';
+import { pathToFileURL } from 'node:url';
+import {
+  ALLOWED_PROJECT_REF,
+  EXPECTED_ORIGIN,
+  MCP_RESOURCE,
+  SERVICE_ROLE_ENV_NAMES,
+  SYNTHETIC_EMAIL,
+  scrubRealtimeReason,
+} from './decisions.mjs';
+import { runProbe } from './probe.mjs';
+
+export const FORBIDDEN_PROJECT_REF = 'lygftpbjgqgvuunkwnxf';
+export const DISCOVERY = Object.freeze({
+  oauthAuthorizationServer: '/.well-known/oauth-authorization-server',
+  oidc: '/.well-known/openid-configuration',
+  fetchedByThisPacket: false,
+  pkce: 'S256',
+  oidcDiscoveryDoesNotAuthorizeIdToken: true,
+  note: 'OAuth AS metadata is the code+PKCE coverage note. OIDC discovery is recorded and not used to mint. An id_token in a token body fails the receipt.',
+});
+
+export const CONTROLS = Object.freeze([
+  'a_mint',
+  'auth_session_not_found',
+  'openid_exchange_no_id_token',
+  'unmapped_client_fails',
+  'password_login_unchanged',
+  'data_api_deny_with_b_positive',
+  'mcp_edge_downstream_credential_unresolved',
+]);
+
+const TOKEN_KEYS = new Set([
+  'access_token',
+  'refresh_token',
+  'id_token',
+  'provider_token',
+  'provider_refresh_token',
+]);
+
+function parseJson(body) {
+  if (typeof body !== 'string') return body;
+  try {
+    return JSON.parse(body);
+  } catch {
+    return undefined;
+  }
+}
+
+export function isLoopbackHostname(hostname) {
+  return hostname === '127.0.0.1' || hostname === 'localhost' || hostname === '::1';
+}
+
+/** Exact registered callbacks. No extra path, query, fragment, or userinfo. */
+export const CALLBACK_PROFILES = Object.freeze({
+  baseline_a: '/callback',
+  external_a: '/oauth/callback',
+  downstream_b: '/oauth/downstream/callback',
+});
+
+function redirectExpectation(options) {
+  const profile = options?.callbackProfile;
+  if (profile !== undefined && !Object.hasOwn(CALLBACK_PROFILES, profile)) {
+    return { ok: false, reason: 'redirect_not_exact' };
+  }
+  const pathname =
+    profile === undefined ? CALLBACK_PROFILES.baseline_a : CALLBACK_PROFILES[profile];
+  if (typeof options?.pathname === 'string' && options.pathname !== pathname) {
+    return { ok: false, reason: 'redirect_not_exact' };
+  }
+  return {
+    ok: true,
+    pathname,
+    origin: typeof options?.expectedOrigin === 'string' ? options.expectedOrigin : undefined,
+    requirePort: options?.requirePort === true,
+  };
+}
+
+export function assertRedirectUri(value, options = {}) {
+  const expected = redirectExpectation(options);
+  if (!expected.ok) return expected;
+  let url;
+  try {
+    url = new URL(value);
+  } catch {
+    return { ok: false, reason: 'redirect_not_loopback' };
+  }
+  if (url.protocol !== 'http:' || !isLoopbackHostname(url.hostname)) {
+    return { ok: false, reason: 'redirect_not_loopback' };
+  }
+  if (
+    url.username !== '' ||
+    url.password !== '' ||
+    url.search !== '' ||
+    url.hash !== '' ||
+    url.pathname !== expected.pathname
+  ) {
+    return { ok: false, reason: 'redirect_not_exact' };
+  }
+  if (expected.origin !== undefined && url.origin !== expected.origin) {
+    return { ok: false, reason: 'redirect_not_exact' };
+  }
+  if (expected.requirePort) {
+    const port = Number(url.port);
+    if (!Number.isSafeInteger(port) || port < 1 || port > 65535) {
+      return { ok: false, reason: 'redirect_not_exact' };
+    }
+  }
+  return { ok: true, redirectUri: url.origin + url.pathname };
+}
+
+function resourceMode(input) {
+  const downstream = input?.callbackProfile === 'downstream_b';
+  if (input?.omitResource === true && !downstream)
+    return { ok: false, reason: 'resource_omit_refused' };
+  if (downstream && input?.omitResource === false)
+    return { ok: false, reason: 'resource_not_omitted' };
+  const omitResource = input?.omitResource === true || downstream;
+  if (omitResource && typeof input?.resource === 'string' && input.resource.length > 0) {
+    return { ok: false, reason: 'resource_not_omitted' };
+  }
+  if (!omitResource && (typeof input?.resource !== 'string' || input.resource.length === 0)) {
+    return { ok: false, reason: 'mcp_resource_required' };
+  }
+  return { ok: true, omitResource };
+}
+
+export function assertScopes(scopes, options = {}) {
+  const allowOpenId = options.allowOpenId === true;
+  if (!Array.isArray(scopes) || scopes.length === 0) {
+    return { ok: false, reason: 'scope_not_configured' };
+  }
+  if (scopes.some((item) => typeof item !== 'string' || item.length === 0)) {
+    return { ok: false, reason: 'scope_not_configured' };
+  }
+  const openidSent = scopes.some((item) => item.toLowerCase() === 'openid');
+  if (openidSent && !allowOpenId) {
+    return { ok: false, reason: 'openid_scope_refused' };
+  }
+  return { ok: true, scope: scopes.join(' '), openidSent };
+}
+
+export function createPkce() {
+  const codeVerifier = randomBytes(32).toString('base64url');
+  const codeChallenge = createHash('sha256').update(codeVerifier).digest('base64url');
+  return { codeVerifier, codeChallenge, codeChallengeMethod: 'S256' };
+}
+
+export function buildAuthorizeUrl(input) {
+  if (`${input.authorizeEndpoint ?? ''} ${input.resource ?? ''}`.includes(FORBIDDEN_PROJECT_REF)) {
+    return { ok: false, reason: 'forbidden_target' };
+  }
+  const openidNegative = input.label === 'openid_negative';
+  const redirect = assertRedirectUri(input.redirectUri, {
+    callbackProfile: input.callbackProfile,
+    pathname: input.pathname,
+    expectedOrigin: input.expectedOrigin,
+    requirePort: input.requirePort,
+  });
+  if (!redirect.ok) return redirect;
+  const scopes = assertScopes(input.scopes, { allowOpenId: openidNegative });
+  if (!scopes.ok) return scopes;
+  if (typeof input.clientId !== 'string' || input.clientId.length === 0) {
+    return { ok: false, reason: 'oauth_client_id_required' };
+  }
+  const resource = resourceMode(input);
+  if (!resource.ok) return resource;
+  if (typeof input.codeChallenge !== 'string' || input.codeChallenge.length === 0) {
+    return { ok: false, reason: 'pkce_challenge_required' };
+  }
+  let authorize;
+  try {
+    authorize = new URL(input.authorizeEndpoint);
+  } catch {
+    return { ok: false, reason: 'authorize_endpoint_unreadable' };
+  }
+  authorize.searchParams.set('response_type', 'code');
+  authorize.searchParams.set('client_id', input.clientId);
+  authorize.searchParams.set('redirect_uri', redirect.redirectUri);
+  authorize.searchParams.set('scope', scopes.scope);
+  authorize.searchParams.set('code_challenge', input.codeChallenge);
+  authorize.searchParams.set('code_challenge_method', 'S256');
+  if (!resource.omitResource) authorize.searchParams.set('resource', input.resource);
+  if (typeof input.state === 'string' && input.state.length > 0) {
+    authorize.searchParams.set('state', input.state);
+  }
+  return {
+    ok: true,
+    url: authorize.toString(),
+    resourceOmitted: resource.omitResource === true,
+    ...(openidNegative ? { label: 'openid_negative', openidSent: true } : {}),
+  };
+}
+
+export function buildOpenIdNegativeAuthorizeUrl(input) {
+  const scopes = Array.isArray(input.scopes) ? input.scopes : ['openid'];
+  const hasOpenId = scopes.some(
+    (item) => typeof item === 'string' && item.toLowerCase() === 'openid',
+  );
+  if (!hasOpenId) {
+    return {
+      ok: false,
+      reason: 'openid_negative_scope_missing',
+      label: 'openid_negative',
+      openidSent: false,
+    };
+  }
+  return buildAuthorizeUrl({ ...input, scopes, label: 'openid_negative' });
+}
+
+export function redactCallback(value) {
+  let url;
+  try {
+    url = new URL(value, 'http://127.0.0.1');
+  } catch {
+    return { ok: false, reason: 'callback_unreadable' };
+  }
+  if (!isLoopbackHostname(url.hostname)) return { ok: false, reason: 'redirect_not_loopback' };
+  const keys = [...url.searchParams.keys()];
+  return {
+    ok: true,
+    hasCode: url.searchParams.has('code'),
+    hasToken: keys.some((key) => /token/iu.test(key)),
+  };
+}
+
+export function redactTokenBody(body) {
+  const parsed = parseJson(body);
+  if (
+    parsed === undefined ||
+    parsed === null ||
+    typeof parsed !== 'object' ||
+    Array.isArray(parsed)
+  ) {
+    return { ok: false, reason: 'token_body_unreadable', revocationClaimed: false };
+  }
+  const keys = Object.keys(parsed);
+  if (keys.includes('id_token')) {
+    return { ok: false, reason: 'id_token_present', revocationClaimed: false };
+  }
+  return {
+    ok: true,
+    reason: 'redacted',
+    secretKeyNames: keys.filter((key) => TOKEN_KEYS.has(key)),
+    revocationClaimed: false,
+  };
+}
+
+export function redactResponseBody(body) {
+  const parsed = parseJson(body);
+  if (
+    parsed === undefined ||
+    parsed === null ||
+    typeof parsed !== 'object' ||
+    Array.isArray(parsed)
+  ) {
+    return { ok: false, reason: 'body_unreadable', revocationClaimed: false };
+  }
+  if (Object.hasOwn(parsed, 'id_token')) {
+    return { ok: false, reason: 'id_token_present', revocationClaimed: false };
+  }
+  let hasCode = false;
+  let hasToken = false;
+  if (typeof parsed.redirect_url === 'string') {
+    const callback = redactCallback(parsed.redirect_url);
+    if (callback.ok) {
+      hasCode = callback.hasCode === true;
+      hasToken = callback.hasToken === true;
+    } else {
+      hasCode = /[?&]code=/u.test(parsed.redirect_url);
+      hasToken = /token/iu.test(parsed.redirect_url);
+    }
+  }
+  return {
+    ok: true,
+    reason: 'redacted',
+    secretKeyNames: Object.keys(parsed).filter((key) => TOKEN_KEYS.has(key)),
+    hasRedirect: typeof parsed.redirect_url === 'string',
+    hasCode,
+    hasToken,
+    revocationClaimed: false,
+  };
+}
+
+function baseReceipt(extra) {
+  return {
+    revocationClaimed: false,
+    hookInstalledByThisPacket: false,
+    acceptance: false,
+    ...extra,
+  };
+}
+
+function guardTarget(input) {
+  if (typeof input.fetch !== 'function') return 'fetch_required';
+  const haystack = `${input.authOrigin ?? ''} ${input.publishableKey ?? ''} ${input.resource ?? ''} ${input.clientId ?? ''}`;
+  if (haystack.includes(FORBIDDEN_PROJECT_REF)) return 'forbidden_target';
+  return null;
+}
+
+function userHeaders(input, json) {
+  return {
+    Authorization: `Bearer ${input.userAccessToken}`,
+    apikey: input.publishableKey,
+    ...(json ? { 'content-type': 'application/json' } : {}),
+  };
+}
+
+async function readBody(response) {
+  if (response === null || typeof response !== 'object' || typeof response.text !== 'function') {
+    return '';
+  }
+  return response.text();
+}
+
+function headerValue(response, name) {
+  const headers = response === null || typeof response !== 'object' ? undefined : response.headers;
+  if (headers === null || headers === undefined || typeof headers.get !== 'function') return null;
+  return headers.get(name);
+}
+
+function queryParam(value, key) {
+  if (typeof value !== 'string' || value.length === 0) return null;
+  try {
+    return new URL(value, 'http://127.0.0.1').searchParams.get(key);
+  } catch {
+    return null;
+  }
+}
+
+const OAUTH_ERROR_NAME = /^[a-z0-9_]{1,64}$/u;
+const CALLBACK_REJECTION_CODES = new Set([
+  'http_client_error',
+  'http_server_error',
+  'unexpected_status',
+]);
+const SESSION_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;
+
+// Generic OAuth client errors are inconclusive. They are not an openid denial.
+export const OPENID_POLICY_ERRORS = new Set([
+  'access_denied',
+  'invalid_client',
+  'invalid_grant',
+  'invalid_request',
+  'invalid_scope',
+  'unauthorized_client',
+  'unsupported_grant_type',
+  'unsupported_response_type',
+]);
+const HOOK_OPENID_MARKER = 'openid_scope_refused';
+
+function oauthErrorName(parsed) {
+  if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) return null;
+  const error = parsed.error ?? parsed.error_code;
+  if (typeof error !== 'string' || !OAUTH_ERROR_NAME.test(error)) return null;
+  return error;
+}
+
+function oauthErrorFrom(response, text) {
+  const fromLocation = queryParam(headerValue(response, 'location'), 'error');
+  if (typeof fromLocation === 'string' && OAUTH_ERROR_NAME.test(fromLocation)) return fromLocation;
+  return oauthErrorName(parseJson(text));
+}
+
+function jsonHasExactMarker(value, depth = 0) {
+  if (value === HOOK_OPENID_MARKER) return true;
+  if (depth > 4 || value === null || typeof value !== 'object') return false;
+  const items = Array.isArray(value) ? value : Object.values(value);
+  return items.some((item) => jsonHasExactMarker(item, depth + 1));
+}
+
+function responseHasHookMarker(response, text) {
+  if (jsonHasExactMarker(parseJson(text))) return true;
+  const location = headerValue(response, 'location');
+  if (typeof location !== 'string') return false;
+  for (const key of ['error', 'error_description', 'error_code', 'message']) {
+    if (queryParam(location, key) === HOOK_OPENID_MARKER) return true;
+  }
+  return false;
+}
+
+function responseHasAccessToken(response, text) {
+  const parsed = parseJson(text);
+  if (
+    parsed !== null &&
+    typeof parsed === 'object' &&
+    !Array.isArray(parsed) &&
+    Object.hasOwn(parsed, 'access_token')
+  ) {
+    return true;
+  }
+  return queryParam(headerValue(response, 'location'), 'access_token') !== null;
+}
+
+function authorizeClientScopeRefusal(status, errorName, response, text) {
+  return (
+    typeof status === 'number' &&
+    status < 500 &&
+    errorName === 'invalid_scope' &&
+    !idTokenIn(text) &&
+    !responseHasAccessToken(response, text) &&
+    !responseHasHookMarker(response, text)
+  );
+}
+
+function exchangeHookDenial(exchange) {
+  return (
+    exchange.status === 403 &&
+    exchange.hookMarker === true &&
+    exchange.idTokenPresent !== true &&
+    exchange.accessTokenPresent !== true
+  );
+}
+
+function passwordSessionId(accessToken) {
+  if (typeof accessToken !== 'string') return null;
+  const parts = accessToken.split('.');
+  if (parts.length < 2) return null;
+  try {
+    const claims = JSON.parse(Buffer.from(parts[1], 'base64url').toString('utf8'));
+    if (claims === null || typeof claims !== 'object' || Array.isArray(claims)) return null;
+    const sessionId = claims.session_id;
+    if (typeof sessionId !== 'string' || !SESSION_ID.test(sessionId)) return null;
+    return sessionId;
+  } catch {
+    return null;
+  }
+}
+
+function idTokenIn(text) {
+  const parsed = parseJson(text);
+  return (
+    parsed !== null &&
+    typeof parsed === 'object' &&
+    !Array.isArray(parsed) &&
+    Object.hasOwn(parsed, 'id_token')
+  );
+}
+
+function redirectTargetFrom(response, text) {
+  const located = headerValue(response, 'location');
+  if (typeof located === 'string' && located.length > 0 && queryParam(located, 'code') !== null) {
+    return located;
+  }
+  const parsed = parseJson(text);
+  if (
+    parsed !== null &&
+    typeof parsed === 'object' &&
+    !Array.isArray(parsed) &&
+    typeof parsed.redirect_url === 'string' &&
+    parsed.redirect_url.length > 0
+  ) {
+    return parsed.redirect_url;
+  }
+  return null;
+}
+
+const LOOPBACK_CODE_PATHS = new Set(['/callback', '/oauth/callback', '/oauth/downstream/callback']);
+
+function loopbackCodeRedirect(value) {
+  let url;
+  try {
+    url = new URL(value);
+  } catch {
+    return false;
+  }
+  if (url.protocol !== 'http:' || !isLoopbackHostname(url.hostname)) return false;
+  if (url.username !== '' || url.password !== '') return false;
+  if (!LOOPBACK_CODE_PATHS.has(url.pathname)) return false;
+  return queryParam(url.toString(), 'code') !== null;
+}
+
+function nullableStatus(value) {
+  return typeof value === 'number' && Number.isFinite(value) ? value : null;
+}
+
+function callbackRejectionFor(status) {
+  if (typeof status === 'number' && status >= 400 && status <= 499) return 'http_client_error';
+  if (typeof status === 'number' && status >= 500 && status <= 599) return 'http_server_error';
+  return 'unexpected_status';
+}
+
+function sanitizedOauthErrorCode(value) {
+  return typeof value === 'string' && OAUTH_ERROR_NAME.test(value) ? value : null;
+}
+
+function publicConsentFacts(input = {}) {
+  const consentFlow =
+    input.consentFlow === 'already_consented_get' || input.consentFlow === 'approval_post'
+      ? input.consentFlow
+      : null;
+  const deliveryResult =
+    input.deliveryResult === 'delivered' ||
+    input.deliveryResult === 'callback_rejected' ||
+    input.deliveryResult === 'transport_failed'
+      ? input.deliveryResult
+      : null;
+  const callbackRejection =
+    typeof input.callbackRejection === 'string' &&
+    CALLBACK_REJECTION_CODES.has(input.callbackRejection)
+      ? input.callbackRejection
+      : null;
+  return {
+    consentFlow,
+    authorizeStatus: nullableStatus(input.authorizeStatus),
+    authorizationGetStatus: nullableStatus(input.authorizationGetStatus),
+    consentPostStatus: nullableStatus(input.consentPostStatus),
+    oauthErrorCode: sanitizedOauthErrorCode(input.oauthErrorCode),
+    deliveryStatus: nullableStatus(input.deliveryStatus),
+    deliveryResult,
+    callbackRejection,
+  };
+}
+
+function redirectProblem(value) {
+  let url;
+  try {
+    url = new URL(value);
+  } catch {
+    return 'redirect_not_loopback';
+  }
+  if (
+    url.protocol === 'http:' &&
+    isLoopbackHostname(url.hostname) &&
+    url.username === '' &&
+    url.password === '' &&
+    LOOPBACK_CODE_PATHS.has(url.pathname)
+  ) {
+    return 'authorization_code_missing';
+  }
+  return 'redirect_not_loopback';
+}
+
+function loopbackRedirect(response, text) {
+  const redirectUrl = redirectTargetFrom(response, text);
+  if (typeof redirectUrl !== 'string') return { redirectUrl: null, code: null };
+  const code = queryParam(redirectUrl, 'code');
+  if (!loopbackCodeRedirect(redirectUrl) || typeof code !== 'string' || code.length === 0) {
+    return { redirectUrl, code: null };
+  }
+  return { redirectUrl, code };
+}
+
+function classifyAuthorizationGet(response, text) {
+  const status = nullableStatus(response?.status);
+  const oauthErrorCode = oauthErrorFrom(response, text);
+  const idTokenPresent = idTokenIn(text);
+  if (idTokenPresent) {
+    return {
+      outcome: 'failure',
+      reason: 'id_token_present',
+      status,
+      oauthErrorCode,
+      idTokenPresent,
+    };
+  }
+  const readable =
+    (typeof status === 'number' && status >= 200 && status < 300) ||
+    status === 302 ||
+    status === 303;
+  if (!readable) {
+    return {
+      outcome: 'failure',
+      reason:
+        typeof status === 'number' && status >= 500
+          ? 'consent_server_error'
+          : 'consent_inconclusive',
+      status,
+      oauthErrorCode,
+      idTokenPresent: false,
+    };
+  }
+  const located = loopbackRedirect(response, text);
+  if (located.code !== null) {
+    return {
+      outcome: 'already_consented',
+      status,
+      redirectUrl: located.redirectUrl,
+      code: located.code,
+      idTokenPresent: false,
+    };
+  }
+  if (located.redirectUrl !== null) {
+    return {
+      outcome: 'failure',
+      reason: redirectProblem(located.redirectUrl),
+      status,
+      oauthErrorCode,
+      idTokenPresent: false,
+    };
+  }
+  if (oauthErrorCode !== null || status === 302 || status === 303) {
+    return {
+      outcome: 'failure',
+      reason: 'consent_inconclusive',
+      status,
+      oauthErrorCode,
+      idTokenPresent: false,
+    };
+  }
+  return { outcome: 'needs_approval', status, idTokenPresent: false };
+}
+
+function classifyApprovalPost(response, text) {
+  const status = nullableStatus(response?.status);
+  const oauthErrorCode = oauthErrorFrom(response, text);
+  const idTokenPresent = idTokenIn(text);
+  if (idTokenPresent) {
+    return {
+      outcome: 'failure',
+      reason: 'id_token_present',
+      status,
+      oauthErrorCode,
+      idTokenPresent,
+    };
+  }
+  const expected = (typeof status === 'number' && status >= 200 && status < 300) || status === 303;
+  if (!expected) {
+    return {
+      outcome: 'failure',
+      reason:
+        typeof status === 'number' && status >= 500
+          ? 'consent_server_error'
+          : 'consent_inconclusive',
+      status,
+      oauthErrorCode,
+      idTokenPresent: false,
+    };
+  }
+  const located = loopbackRedirect(response, text);
+  if (located.code !== null) {
+    return {
+      outcome: 'approved',
+      status,
+      redirectUrl: located.redirectUrl,
+      code: located.code,
+      idTokenPresent: false,
+    };
+  }
+  return {
+    outcome: 'failure',
+    reason:
+      located.redirectUrl === null
+        ? 'authorization_code_missing'
+        : redirectProblem(located.redirectUrl),
+    status,
+    oauthErrorCode,
+    idTokenPresent: false,
+  };
+}
+
+function consentResult(fields) {
+  const oauthErrorCode = sanitizedOauthErrorCode(fields.oauthErrorCode);
+  return baseReceipt({
+    ok: false,
+    performed: false,
+    hasCode: false,
+    idTokenPresent: false,
+    getAuthorization: false,
+    postConsent: false,
+    consentFlow: null,
+    getStatus: null,
+    postStatus: null,
+    authorizationGetStatus: null,
+    consentPostStatus: null,
+    code: null,
+    redirectUrl: null,
+    ...fields,
+    oauthErrorCode,
+    oauthError: oauthErrorCode,
+  });
+}
+
+function authorizationIdFrom(response, text) {
+  const located = queryParam(headerValue(response, 'location'), 'authorization_id');
+  if (located) return located;
+  const parsed = parseJson(text);
+  if (
+    parsed !== null &&
+    typeof parsed === 'object' &&
+    !Array.isArray(parsed) &&
+    typeof parsed.authorization_id === 'string' &&
+    parsed.authorization_id.length > 0
+  ) {
+    return parsed.authorization_id;
+  }
+  return null;
+}
+
+async function consentWithCode(input) {
+  const guard = guardTarget(input);
+  if (guard) {
+    return baseReceipt({
+      ok: false,
+      reason: guard,
+      performed: false,
+      hasCode: false,
+      idTokenPresent: false,
+      getAuthorization: false,
+      postConsent: false,
+    });
+  }
+  if (typeof input.authorizationId !== 'string' || input.authorizationId.length === 0) {
+    return baseReceipt({
+      ok: false,
+      reason: 'authorization_id_required',
+      performed: false,
+      hasCode: false,
+      idTokenPresent: false,
+      getAuthorization: false,
+      postConsent: false,
+    });
+  }
+  if (typeof input.userAccessToken !== 'string' || input.userAccessToken.length === 0) {
+    return baseReceipt({
+      ok: false,
+      reason: 'synthetic_session_required',
+      performed: false,
+      hasCode: false,
+      idTokenPresent: false,
+      getAuthorization: false,
+      postConsent: false,
+    });
+  }
+  let origin;
+  try {
+    origin = new URL(input.authOrigin);
+  } catch {
+    return baseReceipt({
+      ok: false,
+      reason: 'auth_origin_unreadable',
+      performed: false,
+      hasCode: false,
+      idTokenPresent: false,
+      getAuthorization: false,
+      postConsent: false,
+    });
+  }
+  const authorizationUrl = new URL(
+    `/auth/v1/oauth/authorizations/${encodeURIComponent(input.authorizationId)}`,
+    origin,
+  );
+  const consentUrl = new URL(
+    `/auth/v1/oauth/authorizations/${encodeURIComponent(input.authorizationId)}/consent`,
+    origin,
+  );
+  let got;
+  let gotText;
+  try {
+    got = await input.fetch(authorizationUrl, {
+      method: 'GET',
+      headers: userHeaders(input, false),
+      redirect: 'manual',
+    });
+    gotText = await readBody(got);
+  } catch {
+    return consentResult({ reason: 'consent_transport_failed' });
+  }
+  const gotClass = classifyAuthorizationGet(got, gotText);
+  if (gotClass.outcome === 'failure') {
+    return consentResult({
+      reason: gotClass.reason,
+      getAuthorization: true,
+      getStatus: gotClass.status,
+      authorizationGetStatus: gotClass.status,
+      oauthErrorCode: gotClass.oauthErrorCode,
+      idTokenPresent: gotClass.idTokenPresent === true,
+    });
+  }
+  if (gotClass.outcome === 'already_consented') {
+    return consentResult({
+      ok: true,
+      reason: 'consent_performed',
+      performed: true,
+      label: 'synthetic_user_consent',
+      consentFlow: 'already_consented_get',
+      getAuthorization: true,
+      getStatus: gotClass.status,
+      authorizationGetStatus: gotClass.status,
+      hasCode: true,
+      code: gotClass.code,
+      redirectUrl: gotClass.redirectUrl,
+    });
+  }
+  let posted;
+  let postedText;
+  try {
+    posted = await input.fetch(consentUrl, {
+      method: 'POST',
+      headers: userHeaders(input, true),
+      body: JSON.stringify({ action: 'approve' }),
+      redirect: 'manual',
+    });
+    postedText = await readBody(posted);
+  } catch {
+    return consentResult({
+      reason: 'consent_transport_failed',
+      consentFlow: 'approval_post',
+      getAuthorization: true,
+      getStatus: gotClass.status,
+      authorizationGetStatus: gotClass.status,
+    });
+  }
+  const postedClass = classifyApprovalPost(posted, postedText);
+  if (postedClass.outcome !== 'approved') {
+    return consentResult({
+      reason: postedClass.reason,
+      consentFlow: 'approval_post',
+      getAuthorization: true,
+      postConsent: true,
+      getStatus: gotClass.status,
+      postStatus: postedClass.status,
+      authorizationGetStatus: gotClass.status,
+      consentPostStatus: postedClass.status,
+      oauthErrorCode: postedClass.oauthErrorCode,
+      idTokenPresent: postedClass.idTokenPresent === true,
+    });
+  }
+  return consentResult({
+    ok: true,
+    reason: 'consent_performed',
+    performed: true,
+    label: 'synthetic_user_consent',
+    consentFlow: 'approval_post',
+    getAuthorization: true,
+    postConsent: true,
+    getStatus: gotClass.status,
+    postStatus: postedClass.status,
+    authorizationGetStatus: gotClass.status,
+    consentPostStatus: postedClass.status,
+    hasCode: true,
+    code: postedClass.code,
+    redirectUrl: postedClass.redirectUrl,
+  });
+}
+
+export async function performConsent(input) {
+  const consent = await consentWithCode(input);
+  const receipt = { ...consent };
+  delete receipt.code;
+  delete receipt.redirectUrl;
+  return receipt;
+}
+
+function consentFailure(secrets, reason, extra = {}) {
+  return scrub(
+    baseReceipt({
+      ok: false,
+      reason,
+      consentPerformed: false,
+      redirectDelivered: false,
+      idTokenPresent: false,
+      ...extra,
+    }),
+    secrets,
+  );
+}
+
+/**
+ * Parent consent for one authorize URL.
+ * GET the URL with redirect manual, read authorization_id from Location,
+ * password-login when no session is retained, then GET authorization details.
+ * A valid loopback redirect with a code is already consented and is not
+ * posted. Otherwise POST approve and accept a redirect only from that
+ * successful POST. Then GET the loopback redirect so the code lands on the
+ * callback. The receipt keeps the password session id and drops the password,
+ * bearer, code, and URL.
+ * Callers that need the bearer for a second consent pass retainSession and
+ * must not serialize that bearer.
+ */
+export async function performLoopbackConsent(input) {
+  const secrets = [];
+  remember(secrets, input.password);
+  remember(secrets, input.userAccessToken);
+  remember(secrets, input.publishableKey);
+  const guard = guardTarget({
+    fetch: input.fetch,
+    authOrigin: input.authOrigin,
+    publishableKey: input.publishableKey ?? '',
+    resource: input.authorizationUrl ?? '',
+    clientId: '',
+  });
+  if (guard) return consentFailure(secrets, guard);
+  if (typeof input.authorizationUrl !== 'string' || input.authorizationUrl.length === 0) {
+    return consentFailure(secrets, 'authorization_url_required');
+  }
+  let authorized;
+  let authorizeStatus = null;
+  try {
+    const response = await input.fetch(input.authorizationUrl, {
+      method: 'GET',
+      redirect: 'manual',
+      headers: { apikey: input.publishableKey },
+    });
+    authorizeStatus = nullableStatus(response?.status);
+    authorized = { response, text: await readBody(response) };
+  } catch {
+    return consentFailure(secrets, 'authorize_transport_failed', {
+      ...publicConsentFacts({ authorizeStatus: null }),
+    });
+  }
+  const fail = (reason, extra = {}) => {
+    const {
+      consentFlow,
+      authorizationGetStatus,
+      consentPostStatus,
+      oauthErrorCode,
+      deliveryStatus,
+      deliveryResult,
+      callbackRejection,
+      ...rest
+    } = extra;
+    return consentFailure(secrets, reason, {
+      ...rest,
+      ...publicConsentFacts({
+        consentFlow,
+        authorizeStatus,
+        authorizationGetStatus,
+        consentPostStatus,
+        oauthErrorCode,
+        deliveryStatus,
+        deliveryResult,
+        callbackRejection,
+      }),
+    });
+  };
+  if (idTokenIn(authorized.text)) {
+    return fail('id_token_present', { idTokenPresent: true });
+  }
+  const authorizationId = authorizationIdFrom(authorized.response, authorized.text);
+  if (authorizationId === null) return fail('authorization_id_missing');
+  let accessToken = typeof input.userAccessToken === 'string' ? input.userAccessToken : '';
+  if (accessToken.length === 0) {
+    if (typeof input.password !== 'string' || input.password.length === 0) {
+      return fail('synthetic_password_required');
+    }
+    let login;
+    try {
+      login = await passwordLogin({
+        fetch: input.fetch,
+        authOrigin: input.authOrigin,
+        publishableKey: input.publishableKey,
+        password: input.password,
+        email: input.email,
+      });
+    } catch {
+      return fail('password_login_failed');
+    }
+    remember(secrets, login.accessToken);
+    if (
+      login.accessToken === null ||
+      login.receipt.idTokenPresent === true ||
+      login.receipt.ok !== true
+    ) {
+      return fail(
+        login.receipt.idTokenPresent === true ? 'id_token_present' : 'password_login_failed',
+        { idTokenPresent: login.receipt.idTokenPresent === true },
+      );
+    }
+    accessToken = login.accessToken;
+  }
+  const sessionId = passwordSessionId(accessToken);
+  if (sessionId === null) return fail('password_session_id_missing');
+  if (typeof input.retainSession === 'function') input.retainSession(accessToken);
+  const consent = await consentWithCode({
+    fetch: input.fetch,
+    authOrigin: input.authOrigin,
+    authorizationId,
+    userAccessToken: accessToken,
+    publishableKey: input.publishableKey,
+  });
+  remember(secrets, consent.code);
+  remember(secrets, consent.redirectUrl);
+  if (typeof input.retainCode === 'function' && typeof consent.code === 'string') {
+    input.retainCode(consent.code);
+  }
+  const session = { passwordSessionId: sessionId };
+  const facts = publicConsentFacts({
+    consentFlow: consent.consentFlow,
+    authorizeStatus,
+    authorizationGetStatus: consent.authorizationGetStatus,
+    consentPostStatus: consent.consentPostStatus,
+    oauthErrorCode: consent.oauthErrorCode,
+  });
+  const attempt = {
+    consentPerformed: consent.performed === true,
+    getAuthorization: consent.getAuthorization === true,
+    postConsent: consent.postConsent === true,
+    ...session,
+    ...facts,
+  };
+  if (consent.idTokenPresent === true) {
+    return fail('id_token_present', { idTokenPresent: true, ...attempt });
+  }
+  if (
+    consent.ok !== true ||
+    typeof consent.redirectUrl !== 'string' ||
+    consent.redirectUrl.length === 0
+  ) {
+    return fail(consent.ok === true ? 'authorization_code_missing' : consent.reason, attempt);
+  }
+  if (!loopbackCodeRedirect(consent.redirectUrl)) {
+    return fail('redirect_not_loopback', { ...attempt, consentPerformed: true });
+  }
+  let delivered;
+  try {
+    delivered = await input.fetch(consent.redirectUrl, { method: 'GET', redirect: 'manual' });
+  } catch {
+    return fail('redirect_transport_failed', {
+      ...attempt,
+      consentPerformed: true,
+      ...publicConsentFacts({ ...facts, deliveryResult: 'transport_failed' }),
+    });
+  }
+  try {
+    await readBody(delivered);
+  } catch {
+    // Callback status is the delivery fact. The body is never a receipt field.
+  }
+  const status = nullableStatus(delivered?.status);
+  const deliveredFacts = {
+    label: 'synthetic_user_consent',
+    ...attempt,
+    consentPerformed: true,
+    idTokenPresent: false,
+  };
+  if (status !== null && status >= 200 && status < 300) {
+    return scrub(
+      baseReceipt({
+        ok: true,
+        reason: 'consent_delivered',
+        redirectDelivered: true,
+        ...deliveredFacts,
+        ...publicConsentFacts({
+          ...facts,
+          deliveryStatus: status,
+          deliveryResult: 'delivered',
+        }),
+      }),
+      secrets,
+    );
+  }
+  return fail('callback_rejected', {
+    ...deliveredFacts,
+    redirectDelivered: false,
+    ...publicConsentFacts({
+      ...facts,
+      deliveryStatus: status,
+      deliveryResult: 'callback_rejected',
+      callbackRejection: callbackRejectionFor(status),
+    }),
+  });
+}
+
+function secretResult(receipt) {
+  return { accessToken: null, receipt };
+}
+
+async function exchangeWithSecrets(input) {
+  const guard = guardTarget(input);
+  if (guard) {
+    return secretResult(
+      baseReceipt({
+        ok: false,
+        reason: guard,
+        exchanged: false,
+        idTokenPresent: false,
+        status: null,
+      }),
+    );
+  }
+  if (typeof input.codeVerifier !== 'string' || input.codeVerifier.length === 0) {
+    return secretResult(
+      baseReceipt({
+        ok: false,
+        reason: 'pkce_verifier_required',
+        exchanged: false,
+        idTokenPresent: false,
+        status: null,
+      }),
+    );
+  }
+  const challenge = createHash('sha256').update(input.codeVerifier).digest('base64url');
+  if (typeof input.codeChallenge === 'string' && input.codeChallenge !== challenge) {
+    return secretResult(
+      baseReceipt({
+        ok: false,
+        reason: 'pkce_s256_mismatch',
+        exchanged: false,
+        idTokenPresent: false,
+        status: null,
+        codeChallengeMethod: 'S256',
+      }),
+    );
+  }
+  if (typeof input.code !== 'string' || input.code.length === 0) {
+    return secretResult(
+      baseReceipt({
+        ok: false,
+        reason: 'authorization_code_required',
+        exchanged: false,
+        idTokenPresent: false,
+        status: null,
+      }),
+    );
+  }
+  const redirect = assertRedirectUri(input.redirectUri, {
+    callbackProfile: input.callbackProfile,
+    expectedOrigin: input.expectedOrigin,
+    requirePort: input.requirePort,
+  });
+  if (!redirect.ok) {
+    return secretResult(
+      baseReceipt({
+        ok: false,
+        reason: redirect.reason,
+        exchanged: false,
+        idTokenPresent: false,
+        status: null,
+      }),
+    );
+  }
+  if (typeof input.clientId !== 'string' || input.clientId.length === 0) {
+    return secretResult(
+      baseReceipt({
+        ok: false,
+        reason: 'oauth_client_id_required',
+        exchanged: false,
+        idTokenPresent: false,
+        status: null,
+      }),
+    );
+  }
+  const resource = resourceMode(input);
+  if (!resource.ok) {
+    return secretResult(
+      baseReceipt({
+        ok: false,
+        reason: resource.reason,
+        exchanged: false,
+        idTokenPresent: false,
+        status: null,
+        resourceSent: false,
+      }),
+    );
+  }
+  let tokenUrl;
+  try {
+    tokenUrl = new URL('/auth/v1/oauth/token', input.authOrigin);
+  } catch {
+    return secretResult(
+      baseReceipt({
+        ok: false,
+        reason: 'auth_origin_unreadable',
+        exchanged: false,
+        idTokenPresent: false,
+        status: null,
+      }),
+    );
+  }
+  const bodyParams = new URLSearchParams({
+    grant_type: 'authorization_code',
+    client_id: input.clientId,
+    redirect_uri: redirect.redirectUri,
+    code: input.code,
+    code_verifier: input.codeVerifier,
+  });
+  if (!resource.omitResource) bodyParams.set('resource', input.resource);
+  const body = bodyParams.toString();
+  try {
+    const response = await input.fetch(tokenUrl, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/x-www-form-urlencoded',
+        apikey: input.publishableKey,
+      },
+      body,
+    });
+    const text = await readBody(response);
+    const redacted = redactResponseBody(text);
+    const parsed = parseJson(text);
+    const accessToken =
+      parsed !== null &&
+      typeof parsed === 'object' &&
+      !Array.isArray(parsed) &&
+      typeof parsed.access_token === 'string'
+        ? parsed.access_token
+        : null;
+    return {
+      accessToken,
+      receipt: baseReceipt({
+        ok: redacted.ok,
+        reason: redacted.reason,
+        exchanged: true,
+        status: response.status,
+        idTokenPresent: redacted.reason === 'id_token_present',
+        oauthError: oauthErrorName(parsed),
+        hookMarker: responseHasHookMarker(response, text),
+        accessTokenPresent: accessToken !== null,
+        refreshTokenPresent: (redacted.secretKeyNames ?? []).includes('refresh_token'),
+        secretKeyNames: redacted.secretKeyNames ?? [],
+        codeChallengeMethod: 'S256',
+        resourceSent: resource.omitResource !== true,
+      }),
+    };
+  } catch {
+    return secretResult(
+      baseReceipt({
+        ok: false,
+        reason: 'exchange_transport_failed',
+        exchanged: false,
+        idTokenPresent: false,
+        status: null,
+      }),
+    );
+  }
+}
+
+export async function exchangeAuthorizationCode(input) {
+  const exchanged = await exchangeWithSecrets(input);
+  return exchanged.receipt;
+}
+
+/** Caller keeps the bearer in memory. The receipt does not. */
+export async function exchangeNativeCode(input) {
+  const exchanged = await exchangeWithSecrets(input);
+  return {
+    accessToken: exchanged.accessToken,
+    sessionId: passwordSessionId(exchanged.accessToken),
+    receipt: exchanged.receipt,
+  };
+}
+
+export async function runConsentExchange(input) {
+  const consent = await consentWithCode(input);
+  const { code, redirectUrl, ...consentReceipt } = consent;
+  void redirectUrl;
+  if (consent.ok !== true || typeof code !== 'string' || code.length === 0) {
+    return {
+      ...consentReceipt,
+      consentPerformed: consent.performed === true,
+      exchangePerformed: false,
+      ok: false,
+      reason: consent.ok === true ? 'authorization_code_missing' : consent.reason,
+    };
+  }
+  const exchange = await exchangeAuthorizationCode({ ...input, code });
+  const httpOk =
+    typeof exchange.status === 'number' && exchange.status >= 200 && exchange.status < 300;
+  return baseReceipt({
+    ok: httpOk && exchange.ok === true && exchange.idTokenPresent !== true,
+    reason: exchange.idTokenPresent === true ? 'id_token_present' : exchange.reason,
+    label: 'synthetic_user_consent_exchange',
+    consentPerformed: true,
+    exchangePerformed: exchange.exchanged === true,
+    consentFlow: consent.consentFlow ?? null,
+    getAuthorization: consent.getAuthorization === true,
+    postConsent: consent.postConsent === true,
+    authorizationGetStatus: consent.authorizationGetStatus ?? null,
+    consentPostStatus: consent.consentPostStatus ?? null,
+    oauthErrorCode: sanitizedOauthErrorCode(consent.oauthErrorCode),
+    hasCode: true,
+    exchangeStatus: exchange.status,
+    idTokenPresent: exchange.idTokenPresent === true,
+    secretKeyNames: exchange.secretKeyNames ?? [],
+    codeChallengeMethod: 'S256',
+  });
+}
+
+function openIdReceipt(extra, sessionId = null) {
+  return baseReceipt({
+    label: 'openid_negative',
+    openidSent: false,
+    rejectionStage: null,
+    idTokenPresent: false,
+    accessTokenPresent: false,
+    policyMarker: null,
+    ...extra,
+    ...(typeof sessionId === 'string' ? { passwordSessionId: sessionId } : {}),
+  });
+}
+
+function exchangePolicyFacts(exchange) {
+  return {
+    idTokenPresent: exchange.idTokenPresent === true,
+    accessTokenPresent: exchange.accessTokenPresent === true,
+    refreshTokenPresent: exchange.refreshTokenPresent === true,
+    policyMarker: exchange.hookMarker === true ? HOOK_OPENID_MARKER : null,
+  };
+}
+
+export async function runOpenIdNegative(input) {
+  let sessionId = passwordSessionId(input.userAccessToken);
+  const receipt = (extra) => openIdReceipt(extra, sessionId);
+  const downstream = input.callbackProfile === 'downstream_b';
+  if (downstream && typeof input.resource === 'string' && input.resource.length > 0) {
+    return receipt({ ok: false, reason: 'resource_not_omitted' });
+  }
+  const guard = guardTarget(input);
+  if (guard) return receipt({ ok: false, reason: guard });
+  const redirect = assertRedirectUri(input.redirectUri, {
+    callbackProfile: input.callbackProfile,
+    expectedOrigin: input.expectedOrigin,
+    requirePort: input.callbackProfile !== undefined || input.requirePort === true,
+  });
+  if (!redirect.ok) return receipt({ ok: false, reason: redirect.reason });
+  const pkce =
+    typeof input.codeVerifier === 'string' && typeof input.codeChallenge === 'string'
+      ? { codeVerifier: input.codeVerifier, codeChallenge: input.codeChallenge }
+      : createPkce();
+  const expectedChallenge = createHash('sha256').update(pkce.codeVerifier).digest('base64url');
+  if (pkce.codeChallenge !== expectedChallenge) {
+    return receipt({ ok: false, reason: 'pkce_s256_mismatch' });
+  }
+  let authorizeEndpoint;
+  try {
+    authorizeEndpoint = new URL('/auth/v1/oauth/authorize', input.authOrigin).toString();
+  } catch {
+    return receipt({ ok: false, reason: 'auth_origin_unreadable' });
+  }
+  const built = buildOpenIdNegativeAuthorizeUrl({
+    authorizeEndpoint,
+    clientId: input.clientId,
+    redirectUri: redirect.redirectUri,
+    scopes: input.scopes ?? ['openid', 'email'],
+    ...(downstream
+      ? { omitResource: true, callbackProfile: 'downstream_b' }
+      : { resource: input.resource }),
+    ...(input.callbackProfile !== undefined && !downstream
+      ? { callbackProfile: input.callbackProfile }
+      : {}),
+    codeChallenge: pkce.codeChallenge,
+    state: input.state ?? 'openid-negative',
+    expectedOrigin: input.expectedOrigin,
+    requirePort: input.callbackProfile !== undefined || input.requirePort === true,
+  });
+  if (!built.ok) return receipt({ ok: false, reason: built.reason });
+  let authorized;
+  try {
+    const response = await input.fetch(built.url, {
+      method: 'GET',
+      redirect: 'manual',
+      headers: { apikey: input.publishableKey },
+    });
+    authorized = { response, text: await readBody(response) };
+  } catch {
+    return receipt({
+      ok: false,
+      reason: 'authorize_transport_failed',
+      openidSent: true,
+      rejectionStage: 'authorize',
+    });
+  }
+  if (idTokenIn(authorized.text)) {
+    return receipt({
+      ok: false,
+      reason: 'id_token_present',
+      openidSent: true,
+      rejectionStage: 'authorize',
+      idTokenPresent: true,
+    });
+  }
+  const authorizeStatus = authorized.response.status;
+  const authorizeErrorName = oauthErrorFrom(authorized.response, authorized.text);
+  const authorizationId = authorizationIdFrom(authorized.response, authorized.text);
+  if (typeof authorizeStatus === 'number' && authorizeStatus >= 500) {
+    return receipt({
+      ok: false,
+      reason: 'authorize_server_error',
+      openidSent: true,
+      rejectionStage: 'authorize',
+      authorizeStatus,
+    });
+  }
+  if (
+    authorizeClientScopeRefusal(
+      authorizeStatus,
+      authorizeErrorName,
+      authorized.response,
+      authorized.text,
+    )
+  ) {
+    return receipt({
+      ok: true,
+      reason: 'openid_refused_client_scope',
+      openidSent: true,
+      rejectionStage: 'authorize',
+      authorizeStatus,
+    });
+  }
+  if (authorizationId === null) {
+    return receipt({
+      ok: false,
+      reason: 'authorize_inconclusive',
+      openidSent: true,
+      rejectionStage: 'authorize',
+      authorizeStatus,
+    });
+  }
+  let consentInput = input;
+  if (typeof input.userAccessToken !== 'string' || input.userAccessToken.length === 0) {
+    if (typeof input.password !== 'string' || input.password.length === 0) {
+      return receipt({
+        ok: false,
+        reason: 'synthetic_password_required',
+        openidSent: true,
+        rejectionStage: 'consent',
+      });
+    }
+    let login;
+    try {
+      login = await passwordLogin({
+        fetch: input.fetch,
+        authOrigin: input.authOrigin,
+        publishableKey: input.publishableKey,
+        password: input.password,
+        email: input.email,
+      });
+    } catch {
+      return receipt({
+        ok: false,
+        reason: 'password_login_failed',
+        openidSent: true,
+        rejectionStage: 'consent',
+      });
+    }
+    if (login.accessToken === null || login.receipt.ok !== true) {
+      return receipt({
+        ok: false,
+        reason: 'password_login_failed',
+        openidSent: true,
+        rejectionStage: 'consent',
+      });
+    }
+    sessionId = passwordSessionId(login.accessToken);
+    consentInput = { ...input, userAccessToken: login.accessToken };
+  }
+  const consent = await consentWithCode({ ...consentInput, authorizationId });
+  if (consent.idTokenPresent === true) {
+    return receipt({
+      ok: false,
+      reason: 'id_token_present',
+      openidSent: true,
+      rejectionStage: 'authorize',
+      idTokenPresent: true,
+    });
+  }
+  if (consent.reason === 'consent_transport_failed') {
+    return receipt({
+      ok: false,
+      reason: 'consent_transport_failed',
+      openidSent: true,
+      rejectionStage: 'consent',
+    });
+  }
+  const consentStatus =
+    typeof consent.postStatus === 'number' ? consent.postStatus : consent.getStatus;
+  if (typeof consentStatus === 'number' && consentStatus >= 500) {
+    return receipt({
+      ok: false,
+      reason: 'consent_server_error',
+      openidSent: true,
+      rejectionStage: 'consent',
+      consentStatus,
+    });
+  }
+  if (consent.ok !== true || typeof consent.code !== 'string' || consent.code.length === 0) {
+    return receipt({
+      ok: false,
+      reason:
+        consent.reason === 'authorization_id_required'
+          ? 'authorize_inconclusive'
+          : 'consent_inconclusive',
+      openidSent: true,
+      rejectionStage: consent.reason === 'authorization_id_required' ? 'authorize' : 'consent',
+      consentStatus: consentStatus ?? null,
+    });
+  }
+  const exchange = await exchangeAuthorizationCode({
+    ...input,
+    code: consent.code,
+    codeVerifier: pkce.codeVerifier,
+    codeChallenge: pkce.codeChallenge,
+    redirectUri: redirect.redirectUri,
+    callbackProfile: input.callbackProfile,
+    expectedOrigin: input.expectedOrigin,
+    requirePort: input.callbackProfile !== undefined || input.requirePort === true,
+    ...(downstream ? { resource: undefined, omitResource: true } : {}),
+  });
+  const policyFacts = {
+    ...exchangePolicyFacts(exchange),
+    consentFlow: consent.consentFlow ?? null,
+    resourceOnAuthorize: built.resourceOmitted !== true,
+    resourceOnExchange: exchange.resourceSent === true,
+  };
+  const resourceOk = downstream
+    ? built.resourceOmitted === true && exchange.resourceSent !== true
+    : built.resourceOmitted !== true && exchange.resourceSent === true;
+  if (exchange.idTokenPresent === true) {
+    return receipt({
+      ok: false,
+      reason: 'id_token_present',
+      openidSent: true,
+      rejectionStage: 'exchange',
+      exchangeStatus: exchange.status,
+      ...policyFacts,
+    });
+  }
+  if (exchange.reason === 'exchange_transport_failed' || exchange.exchanged !== true) {
+    return receipt({
+      ok: false,
+      reason:
+        exchange.reason === 'exchange_transport_failed'
+          ? 'exchange_transport_failed'
+          : (exchange.reason ?? 'exchange_failed'),
+      openidSent: true,
+      rejectionStage: 'exchange',
+      exchangeStatus: typeof exchange.status === 'number' ? exchange.status : null,
+      codeChallengeMethod: 'S256',
+      ...policyFacts,
+    });
+  }
+  if (typeof exchange.status === 'number' && exchange.status >= 500) {
+    return receipt({
+      ok: false,
+      reason: 'exchange_server_error',
+      openidSent: true,
+      rejectionStage: 'exchange',
+      exchangeStatus: exchange.status,
+      codeChallengeMethod: 'S256',
+      ...policyFacts,
+    });
+  }
+  const httpOk =
+    typeof exchange.status === 'number' && exchange.status >= 200 && exchange.status < 300;
+  if (httpOk && exchange.ok === true) {
+    return receipt({
+      ok: false,
+      reason: 'openid_exchange_succeeded',
+      openidSent: true,
+      exchangeStatus: exchange.status,
+      ...policyFacts,
+    });
+  }
+  if (
+    exchange.status === 403 &&
+    exchange.hookMarker === true &&
+    exchange.accessTokenPresent === true
+  ) {
+    return receipt({
+      ok: false,
+      reason: 'access_token_present',
+      openidSent: true,
+      rejectionStage: 'exchange',
+      exchangeStatus: exchange.status,
+      codeChallengeMethod: 'S256',
+      ...policyFacts,
+    });
+  }
+  if (exchange.refreshTokenPresent === true) {
+    return receipt({
+      ok: false,
+      reason: 'refresh_token_present',
+      openidSent: true,
+      rejectionStage: 'exchange',
+      exchangeStatus: exchange.status,
+      codeChallengeMethod: 'S256',
+      ...policyFacts,
+    });
+  }
+  if (exchangeHookDenial(exchange) && !resourceOk) {
+    return receipt({
+      ok: false,
+      reason: 'resource_not_omitted',
+      openidSent: true,
+      rejectionStage: 'exchange',
+      exchangeStatus: exchange.status,
+      codeChallengeMethod: 'S256',
+      ...policyFacts,
+    });
+  }
+  if (exchangeHookDenial(exchange)) {
+    return receipt({
+      ok: true,
+      reason: 'openid_rejected',
+      openidSent: true,
+      rejectionStage: 'exchange',
+      exchangeStatus: exchange.status,
+      codeChallengeMethod: 'S256',
+      ...policyFacts,
+    });
+  }
+  if (typeof exchange.oauthError === 'string' && OPENID_POLICY_ERRORS.has(exchange.oauthError)) {
+    return receipt({
+      ok: false,
+      reason: 'exchange_inconclusive',
+      openidSent: true,
+      rejectionStage: 'exchange',
+      exchangeStatus: typeof exchange.status === 'number' ? exchange.status : null,
+      codeChallengeMethod: 'S256',
+      ...policyFacts,
+    });
+  }
+  return receipt({
+    ok: false,
+    reason: 'exchange_inconclusive',
+    openidSent: true,
+    rejectionStage: 'exchange',
+    exchangeStatus: typeof exchange.status === 'number' ? exchange.status : null,
+    codeChallengeMethod: 'S256',
+    ...policyFacts,
+  });
+}
+
+export function authSessionControl(status, body) {
+  const text = typeof body === 'string' ? body : JSON.stringify(body ?? '');
+  if (/access_token|refresh_token|id_token/u.test(text)) {
+    return { ok: false, reason: 'credential_in_body', revocationClaimed: false };
+  }
+  const parsed = parseJson(body);
+  if (
+    status === 403 &&
+    parsed !== null &&
+    typeof parsed === 'object' &&
+    !Array.isArray(parsed) &&
+    parsed.error === 'session_not_found'
+  ) {
+    return { ok: true, reason: 'session_not_found', revocationClaimed: false };
+  }
+  return { ok: false, reason: 'auth_session_control_missed', revocationClaimed: false };
+}
+
+export function planConsent() {
+  return {
+    packet: 'ari-test-consent',
+    executed: false,
+    hookInstalledByThisPacket: false,
+    roleSqlAppliedByThisPacket: false,
+    acceptance: false,
+    revocationClaimed: false,
+    tokenBCustody: false,
+    redirectShape: 'http://127.0.0.1:<port>/callback',
+    scopeConfiguredByController: true,
+    openidScopeRefused: true,
+    openidNegativeLabel: 'openid_negative',
+    consentExchangeImplemented: true,
+    inProcessProbe: true,
+    discovery: DISCOVERY,
+    controls: CONTROLS,
+    forbiddenProjectRef: FORBIDDEN_PROJECT_REF,
+  };
+}
+
+export function listenOnce({ port = 0 } = {}) {
+  const server = createServer((request, response) => {
+    let receipt = { ok: false, reason: 'callback_unreadable' };
+    try {
+      receipt = redactCallback(new URL(request.url ?? '/', 'http://127.0.0.1'));
+    } catch {
+      receipt = { ok: false, reason: 'callback_unreadable' };
+    }
+    server.receipt = receipt;
+    response.writeHead(200, { 'content-type': 'text/plain', 'cache-control': 'no-store' });
+    response.end(receipt.hasToken === true ? 'rejected' : 'received');
+  });
+  return new Promise((resolve, reject) => {
+    server.once('error', reject);
+    server.listen(port, '127.0.0.1', () => {
+      const address = server.address();
+      resolve({
+        port: typeof address === 'object' && address !== null ? address.port : port,
+        receipt: () => server.receipt,
+        close: () =>
+          new Promise((done, fail) => {
+            server.close((error) => (error ? fail(error) : done()));
+          }),
+      });
+    });
+  });
+}
+
+function remember(secrets, value) {
+  if (typeof value === 'string' && value.length >= 8) secrets.push(value);
+}
+
+function scrub(receipt, secrets) {
+  const text = JSON.stringify(receipt);
+  for (const secret of secrets) {
+    if (text.includes(secret)) {
+      return {
+        ok: false,
+        reason: 'receipt_included_credential',
+        packet: 'ari-test-consent-probe',
+        hookInstalledByThisPacket: false,
+        acceptance: false,
+        revocationClaimed: false,
+        exportedToEnv: false,
+        probeRan: false,
+      };
+    }
+  }
+  return receipt;
+}
+
+function packetFlags(extra) {
+  return {
+    packet: 'ari-test-consent-probe',
+    hookInstalledByThisPacket: false,
+    acceptance: false,
+    revocationClaimed: false,
+    exportedToEnv: false,
+    tokenBLabel: 'POSITIVE_CONTROL_NOT_MCP',
+    tokenBSource: 'password_login',
+    ...extra,
+  };
+}
+
+function claimSummary(value) {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return null;
+  const text = (key) => (typeof value[key] === 'string' ? value[key] : null);
+  return {
+    role: text('role'),
+    aud: value.aud ?? null,
+    iss: text('iss'),
+    sub: text('sub'),
+    session_id: text('session_id'),
+    source_session_id: text('source_session_id'),
+    agent_id: text('agent_id'),
+    client_id: text('client_id'),
+  };
+}
+
+const SAFE_AUTH_ERROR_CODE = /^[a-z0-9_]{1,64}$/u;
+const SAFE_REALTIME_TOKEN = /^[a-z0-9_.:-]{1,64}$/iu;
+
+function safeAuthErrorCode(value) {
+  return typeof value === 'string' && SAFE_AUTH_ERROR_CODE.test(value) ? value : null;
+}
+
+function safeRealtimeToken(value) {
+  if (typeof value !== 'string' || !SAFE_REALTIME_TOKEN.test(value)) return null;
+  return value;
+}
+
+function closeCodeClass(diagnostic) {
+  if (diagnostic.socketClose === true) {
+    const code = diagnostic.code;
+    if (typeof code === 'number' && Number.isInteger(code) && code >= 1000 && code <= 4999) {
+      return `socket_close_${code}`;
+    }
+    return 'socket_close';
+  }
+  if (diagnostic.timeoutClass === 'realtime_timeout') return 'realtime_timeout';
+  return null;
+}
+
+function scrubbedRealtimeDiagnostic(row) {
+  const diagnostic = row.diagnostic;
+  const isRealtime = typeof row.id === 'string' && row.id.startsWith('L5-realtime-');
+  const hasDiagnostic =
+    diagnostic !== null && typeof diagnostic === 'object' && !Array.isArray(diagnostic);
+  if (!isRealtime && !hasDiagnostic) return undefined;
+  if (!hasDiagnostic) return undefined;
+  const replyStatus = diagnostic.payloadStatus ?? diagnostic.status;
+  return {
+    reason: scrubRealtimeReason(diagnostic.reason),
+    status: safeRealtimeToken(replyStatus),
+    closeCodeClass: closeCodeClass(diagnostic),
+  };
+}
+
+function projectProbeRow(row) {
+  if (row === null || typeof row !== 'object') {
+    return { id: null, credential: null, status: null, verdict: null, label: null };
+  }
+  const projected = {
+    id: row.id ?? null,
+    credential: row.credential ?? null,
+    status: row.status ?? null,
+    verdict: row.verdict ?? null,
+    label: row.label ?? null,
+  };
+  if (typeof row.id === 'string' && row.id.startsWith('L6-auth')) {
+    projected.error_code = safeAuthErrorCode(row.error_code);
+  }
+  const diagnostic = scrubbedRealtimeDiagnostic(row);
+  if (diagnostic !== undefined) projected.diagnostic = diagnostic;
+  return projected;
+}
+
+function publicProbeSummary(probe) {
+  if (probe === null || typeof probe !== 'object') {
+    return { ok: false, reason: 'probe_unreadable' };
+  }
+  return {
+    ok: probe.ok === true,
+    exitCode: typeof probe.exitCode === 'number' ? probe.exitCode : null,
+    reason: typeof probe.reason === 'string' ? probe.reason : null,
+    requests: typeof probe.requests === 'number' ? probe.requests : 0,
+    rows: Array.isArray(probe.rows) ? probe.rows.map((row) => projectProbeRow(row)) : [],
+    tokenA: claimSummary(probe.tokenA),
+    tokenB: claimSummary(probe.tokenB),
+  };
+}
+
+async function passwordLogin(input) {
+  const supplied = typeof input.email === 'string' ? input.email : '';
+  if (supplied.includes(FORBIDDEN_PROJECT_REF)) {
+    return {
+      accessToken: null,
+      receipt: baseReceipt({
+        ok: false,
+        reason: 'forbidden_target',
+        label: 'POSITIVE_CONTROL_NOT_MCP',
+        status: null,
+        idTokenPresent: false,
+        secretKeyNames: [],
+      }),
+    };
+  }
+  const email = supplied.length > 0 ? supplied : SYNTHETIC_EMAIL;
+  const url = new URL('/auth/v1/token', input.authOrigin);
+  url.searchParams.set('grant_type', 'password');
+  const response = await input.fetch(url, {
+    method: 'POST',
+    headers: {
+      apikey: input.publishableKey,
+      'content-type': 'application/json',
+    },
+    body: JSON.stringify({ email, password: input.password }),
+  });
+  const text = await readBody(response);
+  const parsed = parseJson(text);
+  const accessToken =
+    parsed !== null &&
+    typeof parsed === 'object' &&
+    !Array.isArray(parsed) &&
+    typeof parsed.access_token === 'string'
+      ? parsed.access_token
+      : null;
+  const redacted = redactResponseBody(text);
+  const httpOk = response.status >= 200 && response.status < 300;
+  return {
+    accessToken,
+    receipt: baseReceipt({
+      ok: httpOk && redacted.ok === true && accessToken !== null,
+      reason: redacted.reason === 'id_token_present' || !httpOk ? redacted.reason : 'redacted',
+      label: 'POSITIVE_CONTROL_NOT_MCP',
+      status: response.status,
+      idTokenPresent: redacted.reason === 'id_token_present',
+      secretKeyNames: redacted.secretKeyNames ?? [],
+    }),
+  };
+}
+
+async function startAuthorization(input) {
+  const pkce = createPkce();
+  let authorizeEndpoint;
+  try {
+    authorizeEndpoint = new URL('/auth/v1/oauth/authorize', input.authOrigin).toString();
+  } catch {
+    return {
+      ok: false,
+      reason: 'auth_origin_unreadable',
+      pkce,
+      authorizationId: null,
+      idTokenPresent: false,
+      status: null,
+    };
+  }
+  const built = buildAuthorizeUrl({
+    authorizeEndpoint,
+    clientId: input.clientId,
+    redirectUri: input.redirectUri,
+    scopes: input.scopes ?? ['email'],
+    resource: input.resource ?? MCP_RESOURCE,
+    codeChallenge: pkce.codeChallenge,
+    state: input.state ?? 'ari-probe',
+  });
+  if (!built.ok) {
+    return {
+      ok: false,
+      reason: built.reason,
+      pkce,
+      authorizationId: null,
+      idTokenPresent: false,
+      status: null,
+    };
+  }
+  try {
+    const response = await input.fetch(built.url, {
+      method: 'GET',
+      redirect: 'manual',
+      headers: { apikey: input.publishableKey },
+    });
+    const text = await readBody(response);
+    const authorizationId = authorizationIdFrom(response, text);
+    const idTokenPresent = idTokenIn(text);
+    return {
+      ok: typeof authorizationId === 'string' && authorizationId.length > 0 && !idTokenPresent,
+      reason: idTokenPresent
+        ? 'id_token_present'
+        : authorizationId
+          ? 'authorized'
+          : 'authorization_id_missing',
+      pkce,
+      authorizationId,
+      idTokenPresent,
+      status: response.status,
+    };
+  } catch {
+    return {
+      ok: false,
+      reason: 'authorize_transport_failed',
+      pkce,
+      authorizationId: null,
+      idTokenPresent: false,
+      status: null,
+    };
+  }
+}
+
+export async function runInProcessProbe(input) {
+  const secrets = [];
+  const fetchImpl = input.fetch;
+  remember(secrets, input.password);
+  remember(secrets, input.publishableKey);
+  remember(secrets, input.env?.ARI_TEST_TOKEN_A);
+  remember(secrets, input.env?.ARI_TEST_TOKEN_B);
+  for (const name of SERVICE_ROLE_ENV_NAMES) remember(secrets, input.env?.[name]);
+  const guard = guardTarget({
+    ...input,
+    fetch: fetchImpl,
+    resource: input.resource ?? MCP_RESOURCE,
+  });
+  if (guard) {
+    return scrub(
+      packetFlags({ ok: false, reason: guard, stage: 'guard', probeRan: false }),
+      secrets,
+    );
+  }
+  if (input.projectRef !== ALLOWED_PROJECT_REF || input.authOrigin !== EXPECTED_ORIGIN) {
+    return scrub(
+      packetFlags({ ok: false, reason: 'target_not_ari_test', stage: 'guard', probeRan: false }),
+      secrets,
+    );
+  }
+  if (typeof input.clientId !== 'string' || input.clientId.length === 0) {
+    return scrub(
+      packetFlags({
+        ok: false,
+        reason: 'oauth_client_id_required',
+        stage: 'guard',
+        probeRan: false,
+      }),
+      secrets,
+    );
+  }
+  if (typeof input.password !== 'string' || input.password.length === 0) {
+    return scrub(
+      packetFlags({
+        ok: false,
+        reason: 'synthetic_password_required',
+        stage: 'password_login',
+        probeRan: false,
+      }),
+      secrets,
+    );
+  }
+  const started = await startAuthorization({ ...input, fetch: fetchImpl });
+  remember(secrets, started.pkce?.codeVerifier);
+  if (!started.ok) {
+    return scrub(
+      packetFlags({
+        ok: false,
+        reason: started.reason,
+        stage: 'authorize',
+        probeRan: false,
+        openidSent: false,
+        idTokenPresent: started.idTokenPresent === true,
+      }),
+      secrets,
+    );
+  }
+  const login = await passwordLogin({ ...input, fetch: fetchImpl });
+  remember(secrets, login.accessToken);
+  if (login.accessToken === null || login.receipt.ok !== true) {
+    return scrub(
+      packetFlags({
+        ok: false,
+        reason:
+          login.receipt.idTokenPresent === true ? 'id_token_present' : 'password_login_failed',
+        stage: 'password_login',
+        probeRan: false,
+        idTokenPresent: login.receipt.idTokenPresent === true,
+        tokenBInMemory: false,
+      }),
+      secrets,
+    );
+  }
+  const residualSessionId = passwordSessionId(login.accessToken);
+  const residualSession =
+    typeof residualSessionId === 'string' ? { passwordSessionId: residualSessionId } : {};
+  const consent = await consentWithCode({
+    fetch: fetchImpl,
+    authOrigin: input.authOrigin,
+    authorizationId: started.authorizationId,
+    userAccessToken: login.accessToken,
+    publishableKey: input.publishableKey,
+  });
+  const code = typeof consent.code === 'string' ? consent.code : null;
+  remember(secrets, code);
+  if (consent.ok !== true || code === null) {
+    return scrub(
+      packetFlags({
+        ok: false,
+        reason: consent.ok === true ? 'authorization_code_missing' : consent.reason,
+        stage: 'consent',
+        consentPerformed: consent.performed === true,
+        probeRan: false,
+        idTokenPresent: consent.idTokenPresent === true,
+        tokenBInMemory: true,
+        ...residualSession,
+      }),
+      secrets,
+    );
+  }
+  const exchanged = await exchangeWithSecrets({
+    fetch: fetchImpl,
+    authOrigin: input.authOrigin,
+    clientId: input.clientId,
+    redirectUri: input.redirectUri,
+    resource: input.resource ?? MCP_RESOURCE,
+    publishableKey: input.publishableKey,
+    code,
+    codeVerifier: started.pkce.codeVerifier,
+    codeChallenge: started.pkce.codeChallenge,
+  });
+  const tokenA = exchanged.accessToken;
+  const exchange = exchanged.receipt;
+  remember(secrets, tokenA);
+  if (typeof tokenA !== 'string' || exchange.ok !== true || exchange.idTokenPresent === true) {
+    return scrub(
+      packetFlags({
+        ok: false,
+        reason:
+          exchange.idTokenPresent === true
+            ? 'id_token_present'
+            : (exchange.reason ?? 'exchange_failed'),
+        stage: 'exchange',
+        consentPerformed: true,
+        exchangePerformed: exchange.exchanged === true,
+        probeRan: false,
+        idTokenPresent: exchange.idTokenPresent === true,
+        tokenAInMemory: false,
+        tokenBInMemory: true,
+        codeChallengeMethod: 'S256',
+        ...residualSession,
+      }),
+      secrets,
+    );
+  }
+  const probeImpl = input.runProbe ?? runProbe;
+  let probe;
+  try {
+    probe = await probeImpl({
+      projectRef: input.projectRef,
+      supabaseUrl: input.authOrigin,
+      publishableKey: input.publishableKey,
+      expectedClientId: input.clientId,
+      jwks: input.jwks,
+      tokenA,
+      tokenB: login.accessToken,
+      env: input.env ?? {},
+      fetch: fetchImpl,
+      allowLoopback: input.allowLoopback === true,
+      mcpEdge: input.mcpEdge,
+      joinRealtime: input.joinRealtime,
+    });
+  } catch {
+    probe = { ok: false, exitCode: 4, reason: 'probe_failed', rows: [], requests: 0 };
+  }
+  return scrub(
+    packetFlags({
+      ok: probe?.ok === true,
+      reason: typeof probe?.reason === 'string' ? probe.reason : 'probe_finished',
+      stage: 'probe',
+      order: ['authorize', 'password_login', 'consent', 'exchange', 'probe'],
+      consentPerformed: true,
+      exchangePerformed: true,
+      probeRan: true,
+      tokenAInMemory: true,
+      tokenBInMemory: true,
+      idTokenPresent: false,
+      codeChallengeMethod: 'S256',
+      openidSent: false,
+      probe: publicProbeSummary(probe),
+      ...(probe?.ok === true ? {} : residualSession),
+    }),
+    secrets,
+  );
+}
+
+export async function runLabelledOpenIdNegative(input) {
+  const secrets = [];
+  remember(secrets, input.password);
+  remember(secrets, input.publishableKey);
+  remember(secrets, input.env?.ARI_TEST_TOKEN_A);
+  remember(secrets, input.env?.ARI_TEST_TOKEN_B);
+  let userAccessToken = typeof input.userAccessToken === 'string' ? input.userAccessToken : '';
+  remember(secrets, userAccessToken);
+  if (typeof input.password === 'string' && input.password.length > 0) {
+    const login = await passwordLogin({ ...input, fetch: input.fetch });
+    remember(secrets, login.accessToken);
+    if (login.accessToken === null || login.receipt.idTokenPresent === true) {
+      return scrub(
+        packetFlags({
+          ok: false,
+          label: 'openid_negative',
+          reason:
+            login.receipt.idTokenPresent === true ? 'id_token_present' : 'password_login_failed',
+          openidSent: false,
+          probeRan: false,
+          rejectionStage: null,
+          idTokenPresent: login.receipt.idTokenPresent === true,
+        }),
+        secrets,
+      );
+    }
+    userAccessToken = login.accessToken;
+  }
+  const result = await runOpenIdNegative({
+    ...input,
+    userAccessToken,
+    resource: input.resource ?? MCP_RESOURCE,
+    scopes: input.scopes ?? ['openid', 'email'],
+  });
+  return scrub(
+    {
+      ...result,
+      probeRan: false,
+      exportedToEnv: false,
+      tokenAInMemory: false,
+      acceptance: false,
+      hookInstalledByThisPacket: false,
+    },
+    secrets,
+  );
+}
+
+export function runConfigFromEnv(env) {
+  return {
+    authOrigin: env.ARI_TEST_SUPABASE_URL,
+    publishableKey: env.ARI_TEST_PUBLISHABLE_KEY,
+    clientId: env.ARI_TEST_EXPECTED_CLIENT_ID,
+    redirectUri:
+      typeof env.ARI_TEST_REDIRECT_URI === 'string' && env.ARI_TEST_REDIRECT_URI.length > 0
+        ? env.ARI_TEST_REDIRECT_URI
+        : 'http://127.0.0.1:8787/callback',
+    resource: MCP_RESOURCE,
+    projectRef: env.ARI_TEST_PROJECT_REF,
+    jwks: env.ARI_TEST_JWKS_JSON,
+    password: env.ARI_TEST_SYNTHETIC_PASSWORD,
+    email: SYNTHETIC_EMAIL,
+    env,
+    allowLoopback: env.ARI_TEST_ALLOW_LOOPBACK === '1',
+  };
+}
+
+function writeReceipt(receipt, stdout, stderr) {
+  stdout.write(`${JSON.stringify(receipt)}\n`);
+  if (receipt?.reason === 'receipt_included_credential') {
+    stderr.write('receipt included a credential\n');
+    return 2;
+  }
+  if (receipt?.ok === true) return 0;
+  if (typeof receipt?.probe?.exitCode === 'number') return receipt.probe.exitCode;
+  return 4;
+}
+
+export async function runCli(argv, io = {}) {
+  const stdout = io.stdout ?? process.stdout;
+  const stderr = io.stderr ?? process.stderr;
+  const env = io.env ?? process.env;
+  const fetchImpl = io.fetch ?? globalThis.fetch;
+  const command = argv[2] ?? 'plan';
+  if (command === 'plan') {
+    stdout.write(`${JSON.stringify(planConsent(), null, 2)}\n`);
+    return 0;
+  }
+  if (command === 'redact') {
+    try {
+      const receipt = redactResponseBody(await (io.readStdin ?? readStdin)());
+      stdout.write(`${JSON.stringify(receipt)}\n`);
+      return receipt.ok ? 0 : 4;
+    } catch {
+      stderr.write('token body was not redacted\n');
+      return 2;
+    }
+  }
+  if (command === 'run') {
+    const receipt = await runInProcessProbe({
+      ...runConfigFromEnv(env),
+      fetch: fetchImpl,
+      runProbe: io.runProbe,
+      mcpEdge: io.mcpEdge,
+      joinRealtime: io.joinRealtime,
+    });
+    return writeReceipt(receipt, stdout, stderr);
+  }
+  if (command === 'openid-negative') {
+    const receipt = await runLabelledOpenIdNegative({
+      ...runConfigFromEnv(env),
+      fetch: fetchImpl,
+    });
+    return writeReceipt(receipt, stdout, stderr);
+  }
+  stderr.write(
+    'usage: node docs/evidence/ari-test-probe/consent-harness.mjs [plan|redact|run|openid-negative]\n',
+  );
+  return 2;
+}
+
+async function readStdin() {
+  const chunks = [];
+  let size = 0;
+  for await (const chunk of process.stdin) {
+    size += chunk.length;
+    if (size > 65_536) throw new Error('token_body_too_large');
+    chunks.push(chunk);
+  }
+  return Buffer.concat(chunks).toString('utf8');
+}
+
+async function main() {
+  process.exitCode = await runCli(process.argv);
+}
+
+const invokedPath = process.argv[1];
+if (invokedPath !== undefined && import.meta.url === pathToFileURL(invokedPath).href) {
+  main();
+}

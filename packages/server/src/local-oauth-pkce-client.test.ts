@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 
 import {
   approveLocalAuthorization,
+  buildLocalAuthorizationUrl,
   denyLocalAuthorization,
   extractAuthorizationCode,
   extractAuthorizationId,
@@ -21,6 +22,23 @@ function jsonResponse(status: number, body: unknown): Response {
 }
 
 describe('local OAuth PKCE client helpers', () => {
+  it('omits resource for the TEST-only public PKCE grant', () => {
+    const url = new URL(
+      buildLocalAuthorizationUrl({
+        authOrigin: AUTH,
+        clientId: 'smp-downstream-b',
+        redirectUri: 'http://127.0.0.1:8788/oauth/downstream/callback',
+        state: 'handshake-state',
+        codeChallenge: 'challenge',
+        scope: 'email',
+      }),
+    );
+    expect(url.searchParams.get('scope')).toBe('email');
+    expect(url.searchParams.get('resource')).toBeNull();
+    expect(url.searchParams.get('code_challenge_method')).toBe('S256');
+    expect(url.searchParams.has('client_secret')).toBe(false);
+  });
+
   it('extracts authorization_id, code, and redirect_url from official Auth fields', () => {
     expect(
       extractAuthorizationId('http://127.0.0.1:3000/oauth/consent?authorization_id=abc123'),

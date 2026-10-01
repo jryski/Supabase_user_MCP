@@ -1,0 +1,297 @@
+import { createMcpHandler } from '@modelcontextprotocol/server';
+import {
+  DOWNSTREAM_CREDENTIAL_UNRESOLVED,
+  RemoteOAuthClientIdSchema,
+} from '@supabase-user-mcp/contracts';
+
+import { readAriTestMarker } from './ari-test-marker.js';
+import {
+  DOWNSTREAM_AUTHORIZATION_REQUIRED,
+  DOWNSTREAM_B_GRANT_PROFILE,
+  type DownstreamGrantPublicFact,
+  type DownstreamHandshakePrincipal,
+  DownstreamOAuthGrantStore,
+} from './downstream-oauth-grant.js';
+import { createFixedSupabaseClient } from './fixed-supabase-client.js';
+import {
+  createNativeUserMcpHandler,
+  MCP_INGRESS_ROLE,
+  type NativeUserMcpConfig,
+  NativeUserMcpConfigError,
+  nativeUserMcpIssuer,
+  type VerifiedNativeUserPrincipal,
+} from './native-user-mcp.js';
+import { createReadOnlyServer } from './server.js';
+import { classifySourceSessionLiveness } from './source-session-liveness.js';
+
+export { DOWNSTREAM_AUTHORIZATION_REQUIRED, DOWNSTREAM_B_GRANT_PROFILE };
+
+const JSON_HEADERS = Object.freeze({
+  'content-type': 'application/json',
+  'cache-control': 'no-store',
+});
+
+export interface NativeUserMcpReadHandlerConfig {
+  readonly resourceServer: string;
+  readonly supabaseUrl: string;
+  readonly expectedClientId: string;
+  readonly expectedAgentId: string;
+  readonly ingressRole: string;
+  readonly publishableKey: string;
+  readonly jwks: NativeUserMcpConfig['jwks'];
+  readonly downstreamClientId: string;
+  readonly downstreamRedirectUri: string;
+  /** Programmatic TEST marker. Default CLI leaves this off. */
+  readonly enableAriTestMarker?: boolean;
+  readonly fetch?: typeof globalThis.fetch;
+  readonly now?: () => number;
+  readonly handshakeTtlMs?: number;
+  readonly livenessTimeoutMs?: number;
+  /** In-process counters for the Lane B parent. Never store a bearer here. */
+  readonly observation?: LaneBRunObservation;
+  /**
+   * Loopback diagnostic injection. Called only after liveness reports live.
+   * A returned response replaces tool dispatch. It does not skip liveness
+   * and it does not grant a credential.
+   */
+  readonly dispatchGate?: (
+    request: Request,
+  ) => Response | undefined | Promise<Response | undefined>;
+  /** UUIDs only. The handler does not copy bearers into this callback. */
+  readonly onGrantFact?: (fact: DownstreamGrantPublicFact) => void;
+}
+
+export interface LaneBRunObservation {
+  livenessChecks: number;
+  livenessDenials: number;
+  markerReads: number;
+  tokenAOfferedAsB: boolean;
+  tokenARejectedAsB: boolean;
+  sourceSessionId: string | null;
+  bSessionId: string | null;
+}
+
+function invalidConfig(): never {
+  throw new NativeUserMcpConfigError();
+}
+
+function bearerToken(request: Request): string {
+  const header = request.headers.get('authorization');
+  if (header === null) return '';
+  const match = /^Bearer\s+(\S+)$/u.exec(header);
+  return match?.[1] ?? '';
+}
+
+function jsonResponse(status: number, body: Readonly<Record<string, unknown>>): Response {
+  return new Response(JSON.stringify(body), { status, headers: JSON_HEADERS });
+}
+
+function livenessDenial(result: {
+  readonly category?: string;
+  readonly httpStatus?: number;
+}): Response {
+  const body: Record<string, unknown> = {
+    error: DOWNSTREAM_CREDENTIAL_UNRESOLVED,
+    stage: 'liveness',
+    category: result.category ?? 'service_error',
+  };
+  if (result.httpStatus !== undefined) body.httpStatus = result.httpStatus;
+  return jsonResponse(403, body);
+}
+
+function principalBinding(principal: VerifiedNativeUserPrincipal): DownstreamHandshakePrincipal {
+  return {
+    sourceSessionId: principal.sourceSessionId,
+    sub: principal.sub,
+    agentId: principal.agentId,
+    aClientId: principal.clientId,
+  };
+}
+
+function isLoopbackHostname(hostname: string): boolean {
+  return hostname === 'localhost' || hostname === '::1' || hostname.startsWith('127.');
+}
+
+/**
+ * Callback GET only. Same Host rule as the remote HTTP profile: a present
+ * Host must be the redirect host. http is accepted only for loopback.
+ * A mismatch is hostile and must not fall through to code exchange.
+ */
+function callbackUrl(request: Request, redirectUri: string): URL | 'hostile' | undefined {
+  let actual: URL;
+  let expected: URL;
+  try {
+    actual = new URL(request.url);
+    expected = new URL(redirectUri);
+  } catch {
+    return undefined;
+  }
+  if (actual.origin !== expected.origin || actual.pathname !== expected.pathname) return undefined;
+  const loopback = expected.protocol === 'http:' && isLoopbackHostname(expected.hostname);
+  if (!loopback) return 'hostile';
+  const host = request.headers.get('host');
+  if (host !== null && host.length > 0 && host !== expected.host && host !== expected.hostname) {
+    return 'hostile';
+  }
+  return actual;
+}
+
+/**
+ * TEST-only composition: verify A, bind B from the one-time handshake, check
+ * source-session liveness with B, then dispatch tools with B.
+ * Token A is never placed on the Data API client.
+ * Without this handler, `createNativeUserMcpHandler` stays fail-closed.
+ */
+export function createNativeUserMcpReadHandler(
+  config: NativeUserMcpReadHandlerConfig,
+): (request: Request) => Promise<Response> {
+  if (!RemoteOAuthClientIdSchema.safeParse(config.downstreamClientId).success) invalidConfig();
+  if (config.downstreamClientId === config.expectedClientId) invalidConfig();
+  if (config.ingressRole !== MCP_INGRESS_ROLE) invalidConfig();
+  const issuer = nativeUserMcpIssuer(config.supabaseUrl);
+  let authOrigin: string;
+  try {
+    const project = new URL(config.supabaseUrl);
+    authOrigin = project.origin + project.pathname.replace(/\/$/u, '');
+  } catch {
+    invalidConfig();
+  }
+  const fetchImpl = config.fetch;
+  const store = new DownstreamOAuthGrantStore({
+    issuer,
+    authOrigin,
+    expectedBClientId: config.downstreamClientId,
+    expectedAgentId: config.expectedAgentId,
+    redirectUri: config.downstreamRedirectUri,
+    jwks: config.jwks,
+    ...(config.handshakeTtlMs === undefined ? {} : { handshakeTtlMs: config.handshakeTtlMs }),
+    ...(config.now === undefined ? {} : { now: config.now }),
+    ...(fetchImpl === undefined ? {} : { fetch: fetchImpl }),
+    ...(config.onGrantFact === undefined ? {} : { onGrantFact: config.onGrantFact }),
+  });
+  const enableMarker = config.enableAriTestMarker === true;
+
+  const dispatchWithTokenB = async (request: Request, accessToken: string): Promise<Response> => {
+    const mcp = createMcpHandler(async () => {
+      const client = createFixedSupabaseClient({
+        origin: authOrigin,
+        credentials: {
+          projectPublishableKey: config.publishableKey,
+          userAccessToken: accessToken,
+        },
+        ...(fetchImpl === undefined ? {} : { fetch: fetchImpl }),
+      });
+      return createReadOnlyServer({
+        client,
+        ...(enableMarker
+          ? {
+              ariTestMarker: {
+                readMarker: (signal) => {
+                  if (config.observation !== undefined) config.observation.markerReads += 1;
+                  return readAriTestMarker({
+                    origin: authOrigin,
+                    accessToken,
+                    publishableKey: config.publishableKey,
+                    signal,
+                    ...(fetchImpl === undefined ? {} : { fetch: fetchImpl }),
+                  });
+                },
+              },
+            }
+          : {}),
+      });
+    });
+    try {
+      return await mcp.fetch(request);
+    } finally {
+      await mcp.close();
+    }
+  };
+
+  const onVerified = async (
+    principal: VerifiedNativeUserPrincipal,
+    request: Request,
+  ): Promise<Response> => {
+    const binding = principalBinding(principal);
+    const observation = config.observation;
+    if (observation !== undefined) {
+      observation.sourceSessionId = principal.sourceSessionId;
+      if (!observation.tokenAOfferedAsB) {
+        const offered = bearerToken(request);
+        if (offered.length > 0) {
+          observation.tokenAOfferedAsB = true;
+          observation.tokenARejectedAsB = await store.rejectsOfferedAccessToken(offered, binding);
+        }
+      }
+    }
+    const grant = store.resolve(binding);
+    if (grant.status === 'missing') {
+      const handshake = store.beginHandshake(binding);
+      return jsonResponse(403, {
+        error: DOWNSTREAM_AUTHORIZATION_REQUIRED,
+        handshake_id: handshake.id,
+        state: handshake.state,
+        authorization_url: handshake.authorizationUrl,
+        expires_at: handshake.expiresAtMs,
+        profile: DOWNSTREAM_B_GRANT_PROFILE,
+      });
+    }
+    if (grant.status !== 'live') {
+      return jsonResponse(403, { error: DOWNSTREAM_CREDENTIAL_UNRESOLVED });
+    }
+    if (observation !== undefined) observation.bSessionId = store.boundSessionId(binding);
+    const liveness = await classifySourceSessionLiveness(
+      {
+        supabaseUrl: config.supabaseUrl,
+        publishableKey: config.publishableKey,
+        ...(config.livenessTimeoutMs === undefined ? {} : { timeoutMs: config.livenessTimeoutMs }),
+        ...(fetchImpl === undefined ? {} : { fetch: fetchImpl }),
+      },
+      {
+        accessToken: grant.accessToken,
+        sourceSessionId: principal.sourceSessionId,
+        aClientId: principal.clientId,
+      },
+    );
+    if (observation !== undefined) {
+      observation.livenessChecks += 1;
+      if (!liveness.live) observation.livenessDenials += 1;
+    }
+    if (!liveness.live) return livenessDenial(liveness);
+    if (config.dispatchGate !== undefined) {
+      const gated = await config.dispatchGate(request.clone());
+      if (gated !== undefined) return gated;
+    }
+    return dispatchWithTokenB(request, grant.accessToken);
+  };
+
+  const native = createNativeUserMcpHandler({
+    resourceServer: config.resourceServer,
+    supabaseUrl: config.supabaseUrl,
+    expectedClientId: config.expectedClientId,
+    ingressRole: config.ingressRole,
+    publishableKey: config.publishableKey,
+    jwks: config.jwks,
+    expectedAgentId: config.expectedAgentId,
+    onVerified,
+  });
+
+  return async (request: Request): Promise<Response> => {
+    if (request.method === 'GET') {
+      const url = callbackUrl(request, config.downstreamRedirectUri);
+      if (url === 'hostile') return jsonResponse(400, { error: 'invalid_request' });
+      if (url !== undefined) {
+        const code = url.searchParams.get('code') ?? '';
+        const state = url.searchParams.get('state') ?? '';
+        const bound = await store.completeCallback({
+          code,
+          state,
+          redirectUri: config.downstreamRedirectUri,
+        });
+        if (!bound) return jsonResponse(403, { error: DOWNSTREAM_CREDENTIAL_UNRESOLVED });
+        return jsonResponse(200, { bound: true, profile: DOWNSTREAM_B_GRANT_PROFILE });
+      }
+    }
+    return native(request);
+  };
+}
