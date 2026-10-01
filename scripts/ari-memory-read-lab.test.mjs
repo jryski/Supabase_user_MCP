@@ -1414,6 +1414,29 @@ test('cancellation latch refuses a later request after the first refusal', async
   assert.equal(signal.aborted, true);
 });
 
+test('settle returns by its absolute deadline and keeps unresolved issuance ids', async () => {
+  const tracker = createIssuanceTracker([], { gate: 'retained' }, { onAbort() {} });
+  const stalled = tracker.wrap(() => new Promise(() => {}))(
+    'https://127.0.0.1/auth/v1/oauth/token',
+    { method: 'POST' },
+  );
+  void stalled.catch(() => undefined);
+  const started = Date.now();
+  const result = await Promise.race([
+    tracker.settle(20).then(() => 'done'),
+    new Promise((resolve) => setTimeout(() => resolve('pending'), 200)),
+  ]);
+  assert.equal(result, 'done');
+  assert.equal(Date.now() - started < 200, true);
+  const ids = tracker.unresolvedAttemptIds();
+  assert.equal(ids.length, 1);
+  assert.match(
+    ids[0],
+    /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i,
+  );
+  assert.equal(tracker.ambiguous(), true);
+});
+
 test('prepared seed keeps baseline rows across two runs', async () => {
   const lab = await openRetainedLab();
   try {

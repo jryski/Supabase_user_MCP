@@ -616,17 +616,24 @@ export function createIssuanceTracker(ledger, cursor, signal) {
     },
     async settle(graceMs) {
       const deadline = Date.now() + graceMs;
+      const wait = async (current) => {
+        let timer;
+        try {
+          await Promise.race([
+            Promise.allSettled(current),
+            new Promise((resolve) => {
+              timer = setTimeout(resolve, Math.max(0, deadline - Date.now()));
+            }),
+          ]);
+        } finally {
+          clearTimeout(timer);
+        }
+      };
       while (pending.size > 0 && Date.now() < deadline) {
-        const current = [...pending];
-        await Promise.race([
-          Promise.allSettled(current),
-          new Promise((resolve) => {
-            setTimeout(resolve, Math.max(0, deadline - Date.now()));
-          }),
-        ]);
+        await wait([...pending]);
       }
       if (pending.size > 0) abort();
-      await Promise.allSettled([...pending]);
+      if (pending.size > 0 && Date.now() < deadline) await wait([...pending]);
     },
     attempted() {
       return attempts.length > 0;
