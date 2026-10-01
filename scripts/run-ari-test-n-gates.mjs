@@ -333,6 +333,21 @@ function lineReader(stream) {
   };
 }
 
+function cancellationLatched(signal) {
+  if (signal === undefined) return false;
+  let latched = false;
+  const probe = () => {
+    latched = true;
+  };
+  signal.onAbort(probe);
+  signal.offAbort(probe);
+  return latched;
+}
+
+function recoverySignal(signal) {
+  return cancellationLatched(signal) ? undefined : signal;
+}
+
 function withTimeout(promise, timeoutMs, signal) {
   let timer;
   const timeout = new Promise((_, reject) => {
@@ -1960,7 +1975,7 @@ function gateIds(ledger, cleared, gate) {
   return ids;
 }
 
-async function confirmCleanup(reader, ctx, timeoutMs, gate) {
+async function confirmCleanup(reader, ctx, timeoutMs, gate, signal = ctx.signal) {
   const ids = gateIds(ctx.ledger, ctx.cleared, gate);
   if (ids.length === 0) return 'not_required';
   const readback = await pauseForReadback(
@@ -1973,7 +1988,7 @@ async function confirmCleanup(reader, ctx, timeoutMs, gate) {
       expectedSessions: ids.length,
     },
     timeoutMs,
-    ctx.signal,
+    signal,
   );
   if (readback.sessionsRows !== 0 || readback.refreshRows !== 0) {
     throw coded('cleanup_unconfirmed');
@@ -2717,6 +2732,7 @@ export async function runNGates(env, stdin) {
     thrown = error;
     if (error !== null && typeof error === 'object') error.sessionLedger = ledger;
   } finally {
+    const ipc = recoverySignal(signal);
     try {
       await ctx.issuance.settle(Math.min(Math.max(timeoutMs, 3_000), 5_000));
       const ambiguous = ctx.issuance.ambiguous();
@@ -2733,17 +2749,17 @@ export async function runNGates(env, stdin) {
             attemptIds: ctx.issuance.unresolvedAttemptIds(),
           },
           timeoutMs,
-          signal,
+          ipc,
         );
         const known = gateIds(ledger, ctx.cleared);
-        if (known.length > 0) await confirmCleanup(reader, ctx, timeoutMs);
+        if (known.length > 0) await confirmCleanup(reader, ctx, timeoutMs, undefined, ipc);
         cleanupStatus = 'unresolved';
       } else {
         if (ctx.issuance.attempted()) issuanceStatus = 'resolved';
         const recorded = gateIds(ledger, new Set());
         const leftover = gateIds(ledger, ctx.cleared);
         if (leftover.length > 0) {
-          await confirmCleanup(reader, ctx, timeoutMs);
+          await confirmCleanup(reader, ctx, timeoutMs, undefined, ipc);
           cleanupStatus = gateIds(ledger, ctx.cleared).length === 0 ? 'confirmed' : 'failed';
         } else if (recorded.length > 0) {
           cleanupStatus = 'confirmed';
@@ -2779,7 +2795,7 @@ export async function runNGates(env, stdin) {
             secondUserId: ctx.eligibleSecondUserId,
           },
           timeoutMs,
-          signal,
+          ipc,
         );
         if (deleted.secondUserId === ctx.eligibleSecondUserId) ctx.secondDeleted = true;
       } catch {
@@ -2788,7 +2804,7 @@ export async function runNGates(env, stdin) {
     }
     if (restoreState.needed && !restoreState.confirmed) {
       try {
-        await restoreHook(reader, restoreState, timeoutMs, signal, hookBound(env), env);
+        await restoreHook(reader, restoreState, timeoutMs, ipc, hookBound(env), env);
       } catch (restoreError) {
         if (restoreState.mismatch !== true) restoreState.error = safeCode(restoreError?.code);
       }
