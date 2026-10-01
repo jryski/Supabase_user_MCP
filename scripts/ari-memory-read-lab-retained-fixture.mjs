@@ -68,6 +68,7 @@ export async function startRetainedTransportFixture({
   memories,
   publishableKey,
   alreadyConsented = [],
+  tempRoot,
 }) {
   const { privateKey, publicKey } = await generateKeyPair('ES256', { extractable: true });
   const jwk = await exportJWK(publicKey);
@@ -85,7 +86,8 @@ export async function startRetainedTransportFixture({
   const consentFlows = [];
   let rejectedApiKey = 0;
   let openidRefusals = 0;
-  const dir = mkdtempSync(join(tmpdir(), 'ari-memory-retained-fixture-'));
+  const root = typeof tempRoot === 'string' && tempRoot.length > 0 ? tempRoot : tmpdir();
+  const dir = mkdtempSync(join(root, 'ari-memory-retained-fixture-'));
   const certPath = join(dir, 'cert.pem');
   const keyPath = join(dir, 'key.pem');
   execFileSync(
@@ -111,8 +113,10 @@ export async function startRetainedTransportFixture({
   );
   const cert = readFileSync(certPath);
   const key = readFileSync(keyPath);
-  const server = createServer({ cert, key }, (req, res) => {
-    const origin = `https://127.0.0.1:${server.address().port}`;
+  const server = createServer({ cert, key });
+  const port = await listen(server);
+  const origin = `https://127.0.0.1:${port}`;
+  server.on('request', (req, res) => {
     const issuer = `${origin}/auth/v1`;
     const send = (status, body, type = 'application/json') => {
       if (res.writableEnded) return;
@@ -442,9 +446,8 @@ export async function startRetainedTransportFixture({
       send(404, { error: 'not_found' });
     })().catch(() => send(500, { message: 'upstream' }));
   });
-  const port = await listen(server);
   return {
-    origin: `https://127.0.0.1:${port}`,
+    origin,
     jwks,
     fetchImpl: trustedFetch(cert),
     hits,

@@ -79,7 +79,8 @@ code, or admin key.
    Until that readback matches, restoration is `pending` or `failed`,
    never `not_required`. The recovery file is in the process temporary
    directory. A spawned runner must receive the same `TMPDIR` as the
-   process that checks the locator.
+   process that checks the locator. That shared `TMPDIR` is the temp root.
+   The checkout does not need to be bind-mounted on `/tmp`.
 
 N6 passes only when a cryptographically verified hook-off A for the same
 synthetic owner returns HTTP 200 with an empty marker, the owner marker

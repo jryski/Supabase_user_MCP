@@ -288,7 +288,7 @@ export function nGatesPlan() {
       'N6: read back the enabled hook and the effective restrictive F1, prove the exact owner marker for the verified owner, arm restoration, then disable only that hook.',
       'Hook-off A is verified with issuer and JWKS before the marker read. HTTP 401, HTTP 403, and HTTP 500 are inconclusive.',
       'Hook-off GET /auth/v1/user and the N6 marker read include their response bodies in the run timeout and in SIGINT or SIGTERM. A stall after disable still reaches exact restore or a pending or failed recovery receipt, and it is not an F1 pass.',
-      'The N6 recovery file is in the process temporary directory. A spawned runner must receive the same TMPDIR as the process that checks the locator.',
+      'The N6 recovery file is in the process temporary directory. A spawned runner must receive the same TMPDIR as the process that checks the locator. That shared TMPDIR is the temp root. The checkout does not need to be bind-mounted on /tmp.',
       'Clean every minted auth session, with sessions and refresh rows at zero, then restore the saved configuration and canary.',
       'cleanupStatus is confirmed when every recorded session id was cleaned. It is not_required only when the run recorded no session id. failed and unresolved take priority. Per-action cleanup readbacks stay mandatory.',
       'Restore stays armed until the readback hash matches the saved configuration. A failed readback is pending or failed, never not_required.',
@@ -657,13 +657,18 @@ export function createIssuanceTracker(ledger, cursor, signal) {
   };
 }
 
-function recoveryFile(runId) {
-  return join(tmpdir(), 'ari-n-gates-recovery', `${runId}.json`);
+function recoveryRoot(root) {
+  return typeof root === 'string' && root.length > 0 ? root : tmpdir();
+}
+
+function recoveryFile(runId, root) {
+  return join(recoveryRoot(root), 'ari-n-gates-recovery', `${runId}.json`);
 }
 
 function armRecovery(state) {
-  const path = recoveryFile(state.runId);
-  mkdirSync(join(tmpdir(), 'ari-n-gates-recovery'), { recursive: true, mode: 0o700 });
+  const root = recoveryRoot(state.tempRoot);
+  const path = recoveryFile(state.runId, root);
+  mkdirSync(join(root, 'ari-n-gates-recovery'), { recursive: true, mode: 0o700 });
   writeFileSync(
     path,
     JSON.stringify({
@@ -682,48 +687,47 @@ function armRecovery(state) {
 
 function clearRecovery(state) {
   try {
-    rmSync(recoveryFile(state.runId), { force: true });
+    rmSync(recoveryFile(state.runId, state.tempRoot), { force: true });
   } catch {
     // The locator remains on the receipt when removal fails.
   }
 }
 
-function createSignal() {
-  let signaled = false;
-  let waiter;
+export function createSignal() {
   const aborters = new Set();
-  const onSignal = () => {
+  const controller = new AbortController();
+  let latched = false;
+  let waiter;
+  const trip = () => {
+    if (latched) return;
+    latched = true;
     for (const abort of aborters) abort();
+    controller.abort();
     if (waiter !== undefined) {
       const current = waiter;
       waiter = undefined;
-      signaled = false;
       current();
-      return;
     }
-    signaled = true;
   };
-  process.on('SIGINT', onSignal);
-  process.on('SIGTERM', onSignal);
+  process.on('SIGINT', trip);
+  process.on('SIGTERM', trip);
   return {
     interrupt() {
-      if (signaled) {
-        signaled = false;
-        return Promise.reject(coded('signal_received'));
-      }
+      if (latched) return Promise.reject(coded('signal_received'));
       return new Promise((_, reject) => {
         waiter = () => reject(coded('signal_received'));
       });
     },
     onAbort(abort) {
       aborters.add(abort);
+      if (latched) abort();
     },
     offAbort(abort) {
       aborters.delete(abort);
     },
     dispose() {
-      process.off('SIGINT', onSignal);
-      process.off('SIGTERM', onSignal);
+      process.off('SIGINT', trip);
+      process.off('SIGTERM', trip);
       waiter = undefined;
       aborters.clear();
     },
@@ -2690,6 +2694,7 @@ export async function runNGates(env, stdin) {
     runId: ctx.runId,
     projectRef: env.ARI_TEST_PROJECT_REF,
     locator: undefined,
+    tempRoot: recoveryRoot(env.TMPDIR),
   };
   let thrown;
   let cleanupStatus = 'not_required';

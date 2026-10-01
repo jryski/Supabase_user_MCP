@@ -94,7 +94,10 @@ not reset.
 `ARI_MEMORY_LAB_MODE=local` is required. A URL that names the hosted ref is
 refused before any database opens. The runner does not start
 `supabase/tests/run-m2-memory-lab.sh` and does not listen on a port. One
-controller lock is held for the process. The receipt pins the git head, the
+controller lock is held for the process. The lock directory is in the process
+temporary directory. A spawned runner must receive the same `TMPDIR` as the
+process that holds the lock. The suite does not require the working checkout
+to be bind-mounted on `/tmp`. The receipt pins the git head, the
 tree, the installer hash, and the run id.
 
 Admin seeding on the hosted project is a separate Ariadne step. Admin

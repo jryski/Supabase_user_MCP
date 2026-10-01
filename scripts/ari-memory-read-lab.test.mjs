@@ -7,12 +7,14 @@ import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
+import tls from 'node:tls';
 
 import {
   acquireControllerLock,
   assertLocalOnly,
   BASELINE_ONLY_TOKEN,
   BASELINE_USER_ID,
+  controllerLockDir,
   HOSTED_PROJECT_REF,
   HOSTILE_SENTINEL,
   hostedExitCode,
@@ -28,7 +30,7 @@ import {
 } from './ari-memory-read-lab.mjs';
 import { prepareRetainedPlan, runHostedController } from './ari-memory-read-lab-hosted.mjs';
 import { startRetainedTransportFixture } from './ari-memory-read-lab-retained-fixture.mjs';
-import { createIssuanceTracker } from './run-ari-test-n-gates.mjs';
+import { createIssuanceTracker, createSignal } from './run-ari-test-n-gates.mjs';
 
 async function apply(db, sql) {
   try {
@@ -521,11 +523,7 @@ test('runner refuses hosted contact, a held lock, and the memory lab shell', asy
   const release = acquireControllerLock();
   try {
     const child = spawn(process.execPath, ['scripts/ari-memory-read-lab.mjs', 'run'], {
-      env: {
-        PATH: process.env.PATH,
-        HOME: process.env.HOME ?? '/tmp',
-        ARI_MEMORY_LAB_MODE: 'local',
-      },
+      env: memoryLabChildEnv({ ARI_MEMORY_LAB_MODE: 'local' }),
     });
     let stdout = '';
     child.stdout.on('data', (chunk) => {
@@ -553,9 +551,18 @@ function gitValue(args) {
   return execFileSync('git', args, { encoding: 'utf8' }).trim();
 }
 
+function memoryLabChildEnv(extra = {}) {
+  return {
+    PATH: process.env.PATH,
+    HOME: process.env.HOME ?? '/tmp',
+    ...(typeof process.env.TMPDIR === 'string' ? { TMPDIR: process.env.TMPDIR } : {}),
+    ...extra,
+  };
+}
+
 async function runCli(args, env) {
   const child = spawn(process.execPath, ['scripts/ari-memory-read-lab.mjs', ...args], {
-    env: { PATH: process.env.PATH, HOME: process.env.HOME ?? '/tmp', ...env },
+    env: memoryLabChildEnv(env),
   });
   let stdout = '';
   child.stdout.on('data', (chunk) => {
@@ -1412,6 +1419,102 @@ test('cancellation latch refuses a later request after the first refusal', async
   );
   assert.equal(issued.length, 0);
   assert.equal(signal.aborted, true);
+});
+
+function signalOutcome(signal) {
+  return Promise.race([
+    signal.interrupt().then(
+      () => 'fulfilled',
+      (error) => error?.code ?? 'rejected',
+    ),
+    new Promise((resolve) => setTimeout(() => resolve('pending'), 50)),
+  ]);
+}
+
+test('one signal refuses every later interrupt guard', { concurrency: false }, async () => {
+  const signal = createSignal();
+  try {
+    process.emit('SIGINT');
+    assert.equal(await signalOutcome(signal), 'signal_received');
+    assert.equal(await signalOutcome(signal), 'signal_received');
+  } finally {
+    signal.dispose();
+  }
+});
+
+test('onAbort registered after the signal fires immediately', { concurrency: false }, async () => {
+  const signal = createSignal();
+  try {
+    process.emit('SIGINT');
+    let fired = false;
+    signal.onAbort(() => {
+      fired = true;
+    });
+    assert.equal(fired, true);
+  } finally {
+    signal.dispose();
+  }
+});
+
+test('spawned runner resolves the controller lock on the parent temp root', async () => {
+  const parentLock = controllerLockDir();
+  const child = spawn(
+    process.execPath,
+    [
+      '--input-type=module',
+      '-e',
+      "import { controllerLockDir } from './scripts/ari-memory-read-lab.mjs'; process.stdout.write(controllerLockDir());",
+    ],
+    { env: memoryLabChildEnv() },
+  );
+  let stdout = '';
+  child.stdout.on('data', (chunk) => {
+    stdout += chunk.toString('utf8');
+  });
+  const [code] = await once(child, 'exit');
+  assert.equal(code, 0);
+  assert.equal(stdout, parentLock);
+});
+
+test('request during fixture shutdown does not throw', { concurrency: false }, async () => {
+  const errors = [];
+  const onUncaught = (error) => {
+    errors.push(error);
+  };
+  process.on('uncaughtException', onUncaught);
+  const fixture = await startRetainedTransportFixture({
+    users: [
+      {
+        sub: '1928e465-6ab9-439c-9ab8-d7d0c8bba16d',
+        email: 'baseline@loopback.invalid',
+        password: 'retained-fixture-password',
+      },
+    ],
+    aClientId: 'external-a-client',
+    bClientId: 'a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d',
+    agentId: 'hook-only-agent',
+    memories: [],
+    publishableKey: 'sb_publishable_retained_fixture_not_a_secret',
+  });
+  const socket = tls.connect({
+    host: '127.0.0.1',
+    port: Number(new URL(fixture.origin).port),
+    rejectUnauthorized: false,
+  });
+  socket.on('error', () => {});
+  try {
+    await once(socket, 'secureConnect');
+    socket.write('GET /auth/v1/user HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n');
+    const outcome = await Promise.race([
+      fixture.close().then(() => 'closed'),
+      new Promise((resolve) => setTimeout(() => resolve('pending'), 1000)),
+    ]);
+    assert.equal(errors.length, 0);
+    assert.equal(outcome, 'closed');
+  } finally {
+    process.off('uncaughtException', onUncaught);
+    socket.destroy();
+  }
 });
 
 test('settle returns by its absolute deadline and keeps unresolved issuance ids', async () => {

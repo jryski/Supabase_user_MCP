@@ -30,7 +30,13 @@ const ROLLBACK = new URL(
   '../docs/evidence/ari-test-probe/sql/08-memory-read-lab-rollback.sql',
   import.meta.url,
 );
-const LOCK_DIR = join(tmpdir(), 'ari-memory-read-lab.lock');
+export function controllerLockDir(root = tmpdir()) {
+  return join(root, 'ari-memory-read-lab.lock');
+}
+
+function configuredTempRoot(env = process.env) {
+  return typeof env.TMPDIR === 'string' && env.TMPDIR.length > 0 ? env.TMPDIR : tmpdir();
+}
 
 function coded(code) {
   return Object.assign(new Error(code), { code });
@@ -63,16 +69,17 @@ export function assertCleanWorktree() {
   if (dirty.length > 0) throw coded('worktree_dirty');
 }
 
-export function acquireControllerLock() {
+export function acquireControllerLock(root = tmpdir()) {
+  const lockDir = controllerLockDir(root);
   try {
-    mkdirSync(LOCK_DIR);
+    mkdirSync(lockDir);
   } catch (error) {
     if (error !== null && typeof error === 'object' && error.code === 'EEXIST') {
       throw coded('controller_lock_held');
     }
     throw error;
   }
-  return () => rmSync(LOCK_DIR, { recursive: true, force: true });
+  return () => rmSync(lockDir, { recursive: true, force: true });
 }
 
 export function plan() {
@@ -911,7 +918,7 @@ async function main() {
       const credentialsPath = takeOption('--credentials');
       hostedPreflight(command, { manifestPath, credentialsPath }, process.env);
       assertCleanWorktree();
-      release = acquireControllerLock();
+      release = acquireControllerLock(configuredTempRoot(process.env));
       const { runHostedController } = await import('./ari-memory-read-lab-hosted.mjs');
       const receipt = await runHostedController(
         {
@@ -953,7 +960,7 @@ async function main() {
   try {
     assertLocalOnly(process.env);
     assertCleanWorktree();
-    release = acquireControllerLock();
+    release = acquireControllerLock(configuredTempRoot(process.env));
     const receipt = await runLocalLab();
     process.stdout.write(`${JSON.stringify(receipt)}\n`);
     if (receipt.rowsPass !== true || receipt.acceptance !== false) process.exitCode = 2;

@@ -166,9 +166,19 @@ test('plan stays closed and false passes stay false', () => {
   );
 });
 
+function scrubbedRunnerEnv(extra = {}) {
+  return {
+    PATH: process.env.PATH,
+    HOME: process.env.HOME ?? '/tmp',
+    ...(typeof process.env.TMPDIR === 'string' ? { TMPDIR: process.env.TMPDIR } : {}),
+    ...extra,
+  };
+}
+
 test('plan command opens no runtime and run stays closed', async () => {
   const planRun = spawn(process.execPath, ['scripts/run-ari-test-n-gates.mjs', 'plan'], {
     stdio: ['ignore', 'pipe', 'pipe'],
+    env: scrubbedRunnerEnv(),
   });
   const out = [];
   planRun.stdout.on('data', (chunk) => out.push(chunk));
@@ -179,6 +189,7 @@ test('plan command opens no runtime and run stays closed', async () => {
   assert.equal(printed.acceptance, false);
   const run = spawn(process.execPath, ['scripts/run-ari-test-n-gates.mjs', 'run'], {
     stdio: ['ignore', 'pipe', 'pipe'],
+    env: scrubbedRunnerEnv(),
   });
   const err = [];
   run.stderr.on('data', (chunk) => err.push(chunk));
@@ -766,9 +777,7 @@ async function drive(mode, gates, fault = 'none', options = {}) {
   });
   const proc = spawn(process.execPath, ['scripts/run-ari-test-n-gates.mjs', 'run'], {
     stdio: ['pipe', 'pipe', 'pipe'],
-    env: {
-      PATH: process.env.PATH,
-      HOME: process.env.HOME ?? '/tmp',
+    env: scrubbedRunnerEnv({
       NODE_EXTRA_CA_CERTS: issuer.certPath,
       ARI_LANE_B_LIVE: 'controller-g5',
       ARI_N_GATES_EXECUTE: '1',
@@ -792,7 +801,7 @@ async function drive(mode, gates, fault = 'none', options = {}) {
       ARI_N2_SECOND_EMAIL: EMAIL2,
       ARI_N2_SECOND_PASSWORD: PASSWORD2,
       TMPDIR: recoveryTmp,
-    },
+    }),
   });
   const stderr = [];
   proc.stderr.on('data', (chunk) => {

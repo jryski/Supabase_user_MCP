@@ -799,7 +799,13 @@ export async function runHostedController(input = {}, env = process.env) {
     return driveRetained(frozen, env);
   }
   if (refusesHosted(frozen, env)) throw coded('hosted_execution_refused');
-  return driveSynthetic(frozen);
+  return driveSynthetic(frozen, env);
+}
+
+function hostedTempRoot(input, env = process.env) {
+  if (typeof input?.tempRoot === 'string' && input.tempRoot.length > 0) return input.tempRoot;
+  if (typeof env?.TMPDIR === 'string' && env.TMPDIR.length > 0) return env.TMPDIR;
+  return tmpdir();
 }
 
 const SHA = /^[0-9a-f]{40}$/;
@@ -1358,8 +1364,8 @@ function issuanceStatusOf(issuance) {
   return 'not_required';
 }
 
-function journalRetained(runId, fields) {
-  const dir = join(tmpdir(), 'ari-memory-retained-journal');
+function journalRetained(runId, fields, root = tmpdir()) {
+  const dir = join(root, 'ari-memory-retained-journal');
   mkdirSync(dir, { recursive: true, mode: 0o700 });
   const name = `${runId}.json`;
   writeFileSync(
@@ -1744,7 +1750,8 @@ async function proveRetained(options) {
   return phases;
 }
 
-async function driveRetained(input) {
+async function driveRetained(input, env = process.env) {
+  const root = hostedTempRoot(input, env);
   const manifest = loadRetainedManifest(input.manifestPath);
   assertRetainedTarget(manifest.supabaseUrl, input.fetchImpl);
   assertReviewedHead(manifest);
@@ -1753,7 +1760,7 @@ async function driveRetained(input) {
   const injected = input.fetchImpl !== undefined;
   const timeoutMs = input.timeoutMs ?? 8000;
   let release;
-  if (input.acquireLock === true) release = acquireControllerLock();
+  if (input.acquireLock === true) release = acquireControllerLock(root);
   const sessionRecords = [];
   const decoys = [];
   const grantFacts = [];
@@ -1902,14 +1909,18 @@ async function driveRetained(input) {
       }
       delete receipt.ledgerReconciled;
       try {
-        receipt.journalLocator = journalRetained(manifest.fixtures.runId, {
-          cleanupStatus: receipt.cleanupStatus,
-          issuanceStatus: receipt.issuanceStatus,
-          sessionLedger: receipt.sessionLedger,
-          decoySessionIds: receipt.decoySessionIds,
-          unresolvedAttemptIds: receipt.unresolvedAttemptIds,
-          reason: receipt.reason,
-        });
+        receipt.journalLocator = journalRetained(
+          manifest.fixtures.runId,
+          {
+            cleanupStatus: receipt.cleanupStatus,
+            issuanceStatus: receipt.issuanceStatus,
+            sessionLedger: receipt.sessionLedger,
+            decoySessionIds: receipt.decoySessionIds,
+            unresolvedAttemptIds: receipt.unresolvedAttemptIds,
+            reason: receipt.reason,
+          },
+          root,
+        );
       } catch {
         receipt.journalLocator = null;
       }
@@ -1921,7 +1932,8 @@ async function driveRetained(input) {
   return receipt;
 }
 
-async function driveSynthetic(input) {
+async function driveSynthetic(input, env = process.env) {
+  const root = hostedTempRoot(input, env);
   const bound = manifestUsers(input);
   const runId = randomUUID();
   const manifest = buildManifest(runId, {
@@ -1931,8 +1943,8 @@ async function driveSynthetic(input) {
     secondUserIdentity: bound.secondUserIdentity,
   });
   let release;
-  if (input.acquireLock === true) release = acquireControllerLock();
-  const dir = mkdtempSync(join(tmpdir(), 'ari-memory-hosted-'));
+  if (input.acquireLock === true) release = acquireControllerLock(root);
+  const dir = mkdtempSync(join(root, 'ari-memory-hosted-'));
   const certPath = join(dir, 'cert.pem');
   const keyPath = join(dir, 'key.pem');
   execFileSync(
