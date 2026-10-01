@@ -28,6 +28,15 @@ partial schema, a different version, an extra relation, or
 `public.policy_lab_memory_read` fails closed. There is no
 `CREATE IF NOT EXISTS`.
 
+The constraint fingerprint hashes check, foreign-key, primary-key,
+unique, and exclusion constraints. It omits `pg_constraint` rows whose
+`contype` is `n`. PostgreSQL 18 records table `NOT NULL` there, and
+PostgreSQL 17 keeps that fact only on `pg_attribute.attnotnull`. The
+column fingerprint still includes `attnotnull`, so dropping `NOT NULL`
+stops on the column manifest. Changing a check, foreign key, or primary
+key still stops on the constraint manifest. The pinned digest is the
+value both catalogs produce for this reviewed schema.
+
 Cherry-picked shape: principals, clients, memberships, capability grants, and
 memories with `content`, `created_at`, `provenance_summary`, and `tags` in
 the original `CREATE TABLE`. `verified_client_id()` reads top-level
@@ -225,7 +234,8 @@ exits nonzero with `acceptance` false.
 
 `sql/08-memory-read-lab-rollback.sql` is a separate reviewed recovery for
 version `ari-memory-read-lab-v1`. Before any drop it revalidates the same
-owned manifest and the same authenticated-select ownership check. Policy
+owned manifest, including the version-neutral constraint digest, and the
+same authenticated-select ownership check. Policy
 fingerprints include the target, command, permissive mode, roles, and a
 literal-aware expression. Function fingerprints include volatility.
 Whitespace inside a quoted literal is not removed. An unknown policy,

@@ -7,6 +7,9 @@
 -- The owned internal manifest is revalidated before any drop: policy
 -- target, command, permissive mode, roles, and expression; function
 -- volatility and body; triggers, constraints, columns, and indexes.
+-- The constraint digest matches the installer: contype n is omitted
+-- because nullability is pinned by attnotnull. Other constraint types
+-- still stop the rollback.
 -- Quoted literals stay intact. The same authenticated-select ownership
 -- check runs before any drop. An unknown or drifted object stops the
 -- transaction. There is no CASCADE.
@@ -162,6 +165,8 @@ begin
     raise exception 'STOP owned manifest drift: column %', owned_column;
   end if;
 
+  -- Same version-neutral constraint digest as the installer. Catalog
+  -- NOT NULL rows (contype n) stay out; attnotnull remains the column pin.
   select md5(string_agg(
       constraint_row.conname || ':' ||
       pg_temp.manifest_text(pg_get_constraintdef(constraint_row.oid)),
@@ -171,8 +176,9 @@ begin
   from pg_constraint as constraint_row
   join pg_class as relation on relation.oid = constraint_row.conrelid
   join pg_namespace as namespace on namespace.oid = relation.relnamespace
-  where namespace.nspname = 'policy_lab';
-  if owned_constraint is distinct from 'e3b651e76ca74fcb9874d6cf5604de97' then
+  where namespace.nspname = 'policy_lab'
+    and constraint_row.contype <> 'n';
+  if owned_constraint is distinct from 'd9dddccaf2dc69008f0cfb4b3f2d9c4a' then
     raise exception 'STOP owned manifest drift: constraint %', owned_constraint;
   end if;
 

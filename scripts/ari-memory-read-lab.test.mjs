@@ -150,6 +150,136 @@ test('reentry stops on weakened policy, user_metadata helper, and extra column',
   await column.close();
 });
 
+test('not-null weakening stops on the column manifest and other constraints still stop', async () => {
+  const sql = installerSql();
+  const rollback = rollbackSql();
+  const neutralDigest = 'd9dddccaf2dc69008f0cfb4b3f2d9c4a';
+  const columnDigest = 'f06ed9f3f3ae1a8f415af98885130761';
+  assert.match(sql, /constraint_row\.contype <> 'n'/);
+  assert.match(rollback, /constraint_row\.contype <> 'n'/);
+  assert.equal(sql.includes(neutralDigest), true);
+  assert.equal(rollback.includes(neutralDigest), true);
+  assert.equal(sql.includes('e3b651e76ca74fcb9874d6cf5604de97'), false);
+  assert.equal(rollback.includes('e3b651e76ca74fcb9874d6cf5604de97'), false);
+  assert.equal(sql.includes(columnDigest), true);
+  assert.equal(rollback.includes(columnDigest), true);
+  assert.match(sql, /attribute\.attnotnull::text/);
+  assert.match(rollback, /attribute\.attnotnull::text/);
+
+  const catalog = await openLabDatabase();
+  const hashes = await catalog.query(`
+    select
+      current_setting('server_version_num') as version_num,
+      md5(string_agg(
+        constraint_row.conname || ':' || pg_get_constraintdef(constraint_row.oid),
+        '|' order by constraint_row.conname
+      )) as all_constraints,
+      md5(string_agg(
+        constraint_row.conname || ':' || pg_get_constraintdef(constraint_row.oid),
+        '|' order by constraint_row.conname
+      ) filter (where constraint_row.contype <> 'n')) as neutral_constraints,
+      count(*) filter (where constraint_row.contype = 'c')::int as check_rows,
+      count(*) filter (where constraint_row.contype = 'f')::int as foreign_key_rows,
+      count(*) filter (where constraint_row.contype = 'p')::int as primary_key_rows,
+      count(*) filter (where constraint_row.contype = 'n')::int as not_null_rows
+    from pg_constraint as constraint_row
+    join pg_class as relation on relation.oid = constraint_row.conrelid
+    join pg_namespace as namespace on namespace.oid = relation.relnamespace
+    where namespace.nspname = 'policy_lab'
+  `);
+  assert.equal(hashes.rows[0].neutral_constraints, neutralDigest);
+  assert.equal(hashes.rows[0].check_rows, 7);
+  assert.equal(hashes.rows[0].foreign_key_rows, 4);
+  assert.equal(hashes.rows[0].primary_key_rows, 5);
+  const versionNum = Number(hashes.rows[0].version_num);
+  if (versionNum >= 180000) {
+    assert.equal(hashes.rows[0].not_null_rows, 24);
+    assert.notEqual(hashes.rows[0].all_constraints, neutralDigest);
+  } else {
+    assert.equal(hashes.rows[0].not_null_rows, 0);
+    assert.equal(hashes.rows[0].all_constraints, neutralDigest);
+  }
+  await catalog.close();
+
+  const nullable = await openLabDatabase();
+  await nullable.exec('alter table policy_lab.memories alter column title drop not null');
+  const nullableRefused = await apply(nullable, sql);
+  assert.equal(nullableRefused.ok, false, nullableRefused.message);
+  assert.match(nullableRefused.message, /STOP owned manifest drift: column/);
+  assert.doesNotMatch(nullableRefused.message, /STOP owned manifest drift: constraint/);
+  const title = await nullable.query(`
+    select attribute.attnotnull
+    from pg_attribute as attribute
+    join pg_class as relation on relation.oid = attribute.attrelid
+    join pg_namespace as namespace on namespace.oid = relation.relnamespace
+    where namespace.nspname = 'policy_lab'
+      and relation.relname = 'memories'
+      and attribute.attname = 'title'
+  `);
+  assert.equal(title.rows[0].attnotnull, false);
+  await nullable.close();
+
+  const check = await openLabDatabase();
+  await check.exec(`
+    alter table policy_lab.clients drop constraint clients_state_check;
+    alter table policy_lab.clients add constraint clients_state_check
+      check (state in ('active', 'expired', 'revoked', 'drifted'));
+  `);
+  const checkRefused = await apply(check, sql);
+  assert.equal(checkRefused.ok, false, checkRefused.message);
+  assert.match(checkRefused.message, /STOP owned manifest drift: constraint/);
+  const checkDef = await check.query(`
+    select pg_get_constraintdef(constraint_row.oid) as definition
+    from pg_constraint as constraint_row
+    where constraint_row.conname = 'clients_state_check'
+  `);
+  assert.match(checkDef.rows[0].definition, /drifted/);
+  await check.close();
+
+  const foreignKey = await openLabDatabase();
+  await foreignKey.exec(`
+    alter table policy_lab.memberships drop constraint memberships_principal_id_fkey;
+    alter table policy_lab.memberships add constraint memberships_principal_id_fkey
+      foreign key (principal_id) references policy_lab.principals (principal_id)
+      on delete cascade;
+  `);
+  const foreignKeyRefused = await apply(foreignKey, rollback);
+  assert.equal(foreignKeyRefused.ok, false, foreignKeyRefused.message);
+  assert.match(foreignKeyRefused.message, /STOP owned manifest drift: constraint/);
+  const foreignKeyDef = await foreignKey.query(`
+    select pg_get_constraintdef(constraint_row.oid) as definition
+    from pg_constraint as constraint_row
+    where constraint_row.conname = 'memberships_principal_id_fkey'
+  `);
+  assert.match(foreignKeyDef.rows[0].definition, /ON DELETE CASCADE/);
+  const schemaRemains = await foreignKey.query(`select to_regnamespace('policy_lab') as name`);
+  assert.notEqual(schemaRemains.rows[0].name, null);
+  await foreignKey.close();
+
+  const rollbackNullable = await openLabDatabase();
+  await rollbackNullable.exec(
+    'alter table policy_lab.principals alter column principal_kind drop not null',
+  );
+  const rollbackNullableRefused = await apply(rollbackNullable, rollback);
+  assert.equal(rollbackNullableRefused.ok, false, rollbackNullableRefused.message);
+  assert.match(rollbackNullableRefused.message, /STOP owned manifest drift: column/);
+  const kind = await rollbackNullable.query(`
+    select attribute.attnotnull
+    from pg_attribute as attribute
+    join pg_class as relation on relation.oid = attribute.attrelid
+    join pg_namespace as namespace on namespace.oid = relation.relnamespace
+    where namespace.nspname = 'policy_lab'
+      and relation.relname = 'principals'
+      and attribute.attname = 'principal_kind'
+  `);
+  assert.equal(kind.rows[0].attnotnull, false);
+  const rollbackSchema = await rollbackNullable.query(
+    `select to_regnamespace('policy_lab') as name`,
+  );
+  assert.notEqual(rollbackSchema.rows[0].name, null);
+  await rollbackNullable.close();
+});
+
 test('reentry and rollback stop on quoted-key whitespace, volatility, and policy roles', async () => {
   const sql = installerSql();
   const quoted = await openLabDatabase();

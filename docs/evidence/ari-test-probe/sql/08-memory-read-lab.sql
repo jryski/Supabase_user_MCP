@@ -15,8 +15,13 @@
 -- target, command, permissive mode, roles, and expression; helper and
 -- RPC bodies, volatility, security, and configuration; columns,
 -- defaults, constraints, indexes, and triggers. Expression text keeps
--- quoted literals intact. Drift stops the transaction. Reentry does
--- not bless it and does not overwrite it. There is no CREATE IF NOT EXISTS.
+-- quoted literals intact. The constraint digest omits catalog NOT NULL
+-- rows (pg_constraint.contype n). PostgreSQL 18 stores those rows and
+-- PostgreSQL 17 does not. Nullability stays on attnotnull in the column
+-- digest. Check, foreign-key, primary-key, unique, and exclusion
+-- constraints still stop on drift. Drift stops the transaction.
+-- Reentry does not bless it and does not overwrite it. There is no
+-- CREATE IF NOT EXISTS.
 --
 -- Cherry-picked shape only. No access-token hook, no public view, no
 -- audit table, no artifact or storage object, no write capability.
@@ -957,6 +962,9 @@ begin
     raise exception 'STOP owned manifest drift: column %', owned_column;
   end if;
 
+  -- Nullability is already pinned by attnotnull above. PostgreSQL 18
+  -- also records each table NOT NULL as pg_constraint contype 'n'.
+  -- PostgreSQL 17 does not. Omit only that catalog form.
   select md5(string_agg(
       constraint_row.conname || ':' ||
       pg_temp.manifest_text(pg_get_constraintdef(constraint_row.oid)),
@@ -966,8 +974,9 @@ begin
   from pg_constraint as constraint_row
   join pg_class as relation on relation.oid = constraint_row.conrelid
   join pg_namespace as namespace on namespace.oid = relation.relnamespace
-  where namespace.nspname = 'policy_lab';
-  if owned_constraint is distinct from 'e3b651e76ca74fcb9874d6cf5604de97' then
+  where namespace.nspname = 'policy_lab'
+    and constraint_row.contype <> 'n';
+  if owned_constraint is distinct from 'd9dddccaf2dc69008f0cfb4b3f2d9c4a' then
     raise exception 'STOP owned manifest drift: constraint %', owned_constraint;
   end if;
 
