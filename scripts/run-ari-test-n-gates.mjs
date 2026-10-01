@@ -345,7 +345,11 @@ function cancellationLatched(signal) {
 }
 
 function recoverySignal(signal) {
-  return cancellationLatched(signal) ? undefined : signal;
+  return cancellationLatched(signal) ? null : signal;
+}
+
+function openSignal(signal) {
+  return signal === null ? undefined : signal;
 }
 
 function withTimeout(promise, timeoutMs, signal) {
@@ -1975,7 +1979,7 @@ function gateIds(ledger, cleared, gate) {
   return ids;
 }
 
-async function confirmCleanup(reader, ctx, timeoutMs, gate, signal = ctx.signal) {
+async function confirmCleanup(reader, ctx, timeoutMs, gate, signal) {
   const ids = gateIds(ctx.ledger, ctx.cleared, gate);
   if (ids.length === 0) return 'not_required';
   const readback = await pauseForReadback(
@@ -1988,7 +1992,7 @@ async function confirmCleanup(reader, ctx, timeoutMs, gate, signal = ctx.signal)
       expectedSessions: ids.length,
     },
     timeoutMs,
-    signal,
+    signal === null ? undefined : (signal ?? ctx.signal),
   );
   if (readback.sessionsRows !== 0 || readback.refreshRows !== 0) {
     throw coded('cleanup_unconfirmed');
@@ -2749,7 +2753,7 @@ export async function runNGates(env, stdin) {
             attemptIds: ctx.issuance.unresolvedAttemptIds(),
           },
           timeoutMs,
-          ipc,
+          openSignal(ipc),
         );
         const known = gateIds(ledger, ctx.cleared);
         if (known.length > 0) await confirmCleanup(reader, ctx, timeoutMs, undefined, ipc);
@@ -2795,7 +2799,7 @@ export async function runNGates(env, stdin) {
             secondUserId: ctx.eligibleSecondUserId,
           },
           timeoutMs,
-          ipc,
+          openSignal(ipc),
         );
         if (deleted.secondUserId === ctx.eligibleSecondUserId) ctx.secondDeleted = true;
       } catch {
@@ -2804,7 +2808,7 @@ export async function runNGates(env, stdin) {
     }
     if (restoreState.needed && !restoreState.confirmed) {
       try {
-        await restoreHook(reader, restoreState, timeoutMs, ipc, hookBound(env), env);
+        await restoreHook(reader, restoreState, timeoutMs, openSignal(ipc), hookBound(env), env);
       } catch (restoreError) {
         if (restoreState.mismatch !== true) restoreState.error = safeCode(restoreError?.code);
       }
