@@ -569,6 +569,9 @@ export function createIssuanceTracker(ledger, cursor, signal) {
     abort,
     wrap(inner = globalThis.fetch) {
       return async (input, init) => {
+        if (signal?.aborted === true || init?.signal?.aborted === true) {
+          throw coded('signal_received');
+        }
         const gate = cursor.gate;
         const controller = new AbortController();
         controllers.add(controller);

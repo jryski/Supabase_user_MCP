@@ -28,6 +28,7 @@ import {
 } from './ari-memory-read-lab.mjs';
 import { prepareRetainedPlan, runHostedController } from './ari-memory-read-lab-hosted.mjs';
 import { startRetainedTransportFixture } from './ari-memory-read-lab-retained-fixture.mjs';
+import { createIssuanceTracker } from './run-ari-test-n-gates.mjs';
 
 async function apply(db, sql) {
   try {
@@ -278,6 +279,27 @@ test('not-null weakening stops on the column manifest and other constraints stil
   );
   assert.notEqual(rollbackSchema.rows[0].name, null);
   await rollbackNullable.close();
+
+  const mutatePrimaryKey = `
+    alter table policy_lab.memories drop constraint memories_pkey;
+    alter table policy_lab.memories add constraint memories_pkey
+      primary key (memory_id, workspace_id);
+  `;
+  const installerKey = await openLabDatabase();
+  await installerKey.exec(mutatePrimaryKey);
+  const installerKeyRefused = await apply(installerKey, sql);
+  assert.equal(installerKeyRefused.ok, false, installerKeyRefused.message);
+  assert.match(installerKeyRefused.message, /STOP owned manifest drift: constraint/);
+  await installerKey.close();
+
+  const rollbackKey = await openLabDatabase();
+  await rollbackKey.exec(mutatePrimaryKey);
+  const rollbackKeyRefused = await apply(rollbackKey, rollback);
+  assert.equal(rollbackKeyRefused.ok, false, rollbackKeyRefused.message);
+  assert.match(rollbackKeyRefused.message, /STOP owned manifest drift: constraint/);
+  const keySchema = await rollbackKey.query(`select to_regnamespace('policy_lab') as name`);
+  assert.notEqual(keySchema.rows[0].name, null);
+  await rollbackKey.close();
 });
 
 test('reentry and rollback stop on quoted-key whitespace, volatility, and policy roles', async () => {
@@ -922,7 +944,42 @@ test('retained driver reaches auth and data reads and refuses a bad manifest', {
   }
 });
 
-function hangNthPassword(inner, nth) {
+function requestUrl(input) {
+  if (typeof input === 'string') return input;
+  if (input instanceof URL) return input.toString();
+  return String(input?.url ?? '');
+}
+
+function runRetained(lab, fetchImpl, extra = {}) {
+  return runHostedController(
+    {
+      transport: 'retained-test',
+      manifestPath: lab.manifestPath,
+      credentialsPath: lab.credentialsPath,
+      fetchImpl,
+      acquireLock: false,
+      timeoutMs: 15000,
+      ...extra,
+    },
+    { ARI_MEMORY_LAB_EXECUTOR: 'ariadne' },
+  );
+}
+
+function assertInterruptedReceipt(receipt) {
+  assert.equal(receipt.type, 'receipt');
+  assert.equal(receipt.rowsPass, false);
+  assert.equal(receipt.reason, 'signal_received');
+  assert.notEqual(receipt.reason, 'retained_transport_proved');
+  assert.notEqual(receipt.reason, 'hosted_execution_refused');
+  assert.equal(receipt.cleanupStatus, 'unresolved');
+  assert.equal(receipt.hostedContact, false);
+  assert.equal(Array.isArray(receipt.sessionLedger), true);
+  assert.equal(Array.isArray(receipt.unresolvedAttemptIds), true);
+  assert.equal(receipt.listenerCount, 1);
+  assert.equal(hostedExitCode(receipt), 2);
+}
+
+function hangNthPassword(inner, nth, onHang) {
   let seen = 0;
   return (input, init = {}) => {
     const raw =
@@ -930,6 +987,7 @@ function hangNthPassword(inner, nth) {
     if (String(raw).includes('grant_type=password')) {
       seen += 1;
       if (seen === nth) {
+        if (typeof onHang === 'function') onHang();
         return new Promise((_, reject) => {
           const abort = () => reject(Object.assign(new Error('aborted'), { name: 'AbortError' }));
           if (init.signal?.aborted) abort();
@@ -1160,19 +1218,23 @@ test('retained failures keep issued sessions and refuse a missing row', {
   const signaled = await openRetainedLab();
   try {
     const holder = {};
+    let hung;
+    const passwordHung = new Promise((resolve) => {
+      hung = resolve;
+    });
     const pending = runHostedController(
       {
         transport: 'retained-test',
         manifestPath: signaled.manifestPath,
         credentialsPath: signaled.credentialsPath,
-        fetchImpl: hangNthPassword(signaled.fixture.fetchImpl, 2),
+        fetchImpl: hangNthPassword(signaled.fixture.fetchImpl, 2, hung),
         acquireLock: false,
         timeoutMs: 15000,
         signalHolder: holder,
       },
       { ARI_MEMORY_LAB_EXECUTOR: 'ariadne' },
     );
-    while (holder.trip === undefined) await new Promise((resolve) => setTimeout(resolve, 20));
+    await passwordHung;
     holder.trip();
     const receipt = await pending;
     assert.equal(receipt.rowsPass, false);
@@ -1272,6 +1334,84 @@ test('retained failures keep issued sessions and refuse a missing row', {
   } finally {
     await missing.close();
   }
+});
+
+test('cancellation during a read issues no later requests', { concurrency: false }, async () => {
+  const lab = await openRetainedLab();
+  const holder = {};
+  let hitsAtLatch = null;
+  let sawGet = false;
+  const fetchImpl = async (input, init) => {
+    const raw = requestUrl(input);
+    if (!sawGet && raw.includes('/authorized_memory_get_v1')) {
+      sawGet = true;
+      const response = await lab.fixture.fetchImpl(input, init);
+      hitsAtLatch = lab.fixture.hits.length;
+      holder.trip();
+      return response;
+    }
+    return lab.fixture.fetchImpl(input, init);
+  };
+  try {
+    const receipt = await runRetained(lab, fetchImpl, { signalHolder: holder });
+    assert.equal(sawGet, true);
+    assert.equal(lab.fixture.hits.length, hitsAtLatch);
+    assertInterruptedReceipt(receipt);
+    assert.equal(receipt.sessionLedger.length, 6);
+  } finally {
+    await lab.close();
+  }
+});
+
+test('cancellation between requests refuses the next request', { concurrency: false }, async () => {
+  const lab = await openRetainedLab();
+  const holder = {};
+  const issued = [];
+  const fetchImpl = async (input, init) => {
+    issued.push(requestUrl(input));
+    const response = await lab.fixture.fetchImpl(input, init);
+    if (issued.length === 1) holder.trip();
+    return response;
+  };
+  try {
+    const receipt = await runRetained(lab, fetchImpl, { signalHolder: holder });
+    assert.equal(issued.length, 1);
+    assertInterruptedReceipt(receipt);
+  } finally {
+    await lab.close();
+  }
+});
+
+test('cancellation latch refuses a later request after the first refusal', async () => {
+  let latched = false;
+  const signal = {
+    get aborted() {
+      return latched;
+    },
+    onAbort(abort) {
+      if (latched) abort();
+    },
+    trip() {
+      latched = true;
+    },
+  };
+  const tracker = createIssuanceTracker([], { gate: 'retained' }, signal);
+  const issued = [];
+  const fetchImpl = tracker.wrap(async (input) => {
+    issued.push(requestUrl(input));
+    return new Response('{}', { status: 200 });
+  });
+  signal.trip();
+  await assert.rejects(
+    () => fetchImpl('https://127.0.0.1/auth/v1/token?grant_type=password', { method: 'POST' }),
+    (error) => error?.code === 'signal_received',
+  );
+  await assert.rejects(
+    () => fetchImpl('https://127.0.0.1/auth/v1/oauth/token', { method: 'POST' }),
+    (error) => error?.code === 'signal_received',
+  );
+  assert.equal(issued.length, 0);
+  assert.equal(signal.aborted, true);
 });
 
 test('prepared seed keeps baseline rows across two runs', async () => {

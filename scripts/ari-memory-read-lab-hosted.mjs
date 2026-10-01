@@ -64,6 +64,7 @@ function withTimeout(promise, timeoutMs, signal) {
 }
 
 async function callBounded(timeoutMs, signal, work) {
+  if (signal?.aborted) throw coded('signal_received');
   const controller = new AbortController();
   let reason = 'orchestration_timeout';
   let settled = false;
@@ -72,6 +73,10 @@ async function callBounded(timeoutMs, signal, work) {
     controller.abort();
   };
   signal?.addEventListener('abort', onAbort, { once: true });
+  if (signal?.aborted) {
+    signal?.removeEventListener('abort', onAbort);
+    throw coded('signal_received');
+  }
   const attempt = (async () => {
     try {
       const value = await work(controller.signal);
@@ -115,6 +120,10 @@ function headerRecord(headers) {
 export function trustedFetch(ca) {
   return (input, init = {}) =>
     new Promise((resolve, reject) => {
+      if (init.signal?.aborted) {
+        reject(coded('signal_received'));
+        return;
+      }
       const raw =
         typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url;
       const url = new URL(raw);
@@ -137,6 +146,17 @@ export function trustedFetch(ca) {
       if (payload !== undefined && headers['content-length'] === undefined) {
         headers['content-length'] = String(Buffer.byteLength(payload));
       }
+      let settled = false;
+      const finish = (fn) => {
+        if (settled) return;
+        settled = true;
+        init.signal?.removeEventListener('abort', onAbort);
+        fn();
+      };
+      const onAbort = () => {
+        req.destroy();
+        finish(() => reject(coded('signal_received')));
+      };
       const req = httpsRequest(
         {
           protocol: url.protocol,
@@ -152,21 +172,32 @@ export function trustedFetch(ca) {
           const chunks = [];
           res.on('data', (chunk) => chunks.push(chunk));
           res.on('end', () => {
+            if (init.signal?.aborted) {
+              finish(() => reject(coded('signal_received')));
+              return;
+            }
             const flat = {};
             for (const [key, value] of Object.entries(res.headers)) {
               if (value === undefined) continue;
               flat[key] = Array.isArray(value) ? value.join(', ') : value;
             }
-            resolve(
-              new Response(Buffer.concat(chunks), {
-                status: res.statusCode ?? 500,
-                headers: flat,
-              }),
+            finish(() =>
+              resolve(
+                new Response(Buffer.concat(chunks), {
+                  status: res.statusCode ?? 500,
+                  headers: flat,
+                }),
+              ),
             );
           });
+          res.on('error', (error) => finish(() => reject(error)));
         },
       );
-      req.on('error', reject);
+      req.on('error', (error) => {
+        if (init.signal?.aborted) finish(() => reject(coded('signal_received')));
+        else finish(() => reject(error));
+      });
+      if (init.signal !== undefined) init.signal.addEventListener('abort', onAbort, { once: true });
       if (payload !== undefined) req.write(payload);
       req.end();
     });
@@ -682,11 +713,40 @@ function mcpRequest(url, token, body, signal) {
 }
 
 async function readResponse(response, signal) {
+  if (signal?.aborted) throw coded('signal_received');
+  const body = response.text();
+  if (signal === undefined) {
+    try {
+      return await body;
+    } catch {
+      throw coded('unreadable');
+    }
+  }
+  let onAbort;
   try {
-    return await response.text();
+    return await new Promise((resolve, reject) => {
+      onAbort = () => {
+        reject(coded('signal_received'));
+        void response.body?.cancel?.().catch(() => undefined);
+      };
+      signal.addEventListener('abort', onAbort, { once: true });
+      if (signal.aborted) onAbort();
+      body.then(
+        (value) => {
+          if (signal.aborted) reject(coded('signal_received'));
+          else resolve(value);
+        },
+        (error) => {
+          if (signal.aborted) reject(coded('signal_received'));
+          else reject(error);
+        },
+      );
+    });
   } catch (error) {
-    if (signal?.aborted) throw error;
+    if (error?.code === 'signal_received' || signal.aborted) throw coded('signal_received');
     throw coded('unreadable');
+  } finally {
+    if (onAbort !== undefined) signal.removeEventListener('abort', onAbort);
   }
 }
 
@@ -1246,16 +1306,28 @@ function reconcileOwned(records, decoys, grantFacts, users) {
 
 function createRetainedSignal() {
   const aborters = new Set();
+  const controller = new AbortController();
+  let latched = false;
   const trip = () => {
+    if (latched) return;
+    latched = true;
     for (const abort of aborters) abort();
+    controller.abort();
   };
   const onInt = () => trip();
   const onTerm = () => trip();
   process.on('SIGINT', onInt);
   process.on('SIGTERM', onTerm);
   return {
+    get aborted() {
+      return latched;
+    },
+    get signal() {
+      return controller.signal;
+    },
     onAbort(abort) {
       aborters.add(abort);
+      if (latched) abort();
     },
     trip,
     dispose() {
@@ -1768,7 +1840,7 @@ async function driveRetained(input) {
       listener,
       users: credentials.users,
       timeoutMs,
-      signal: input.signal,
+      signal: signals.signal,
       decoys,
       phases,
       consentFlows,
