@@ -1,0 +1,150 @@
+{
+ "phase": "run",
+ "results": [
+  {
+   "id": "as_metadata",
+   "pass": true,
+   "metadata_path": "/auth/v1/.well-known/oauth-authorization-server",
+   "issuer_matches": true,
+   "dcr": true
+  },
+  {
+   "id": "unauthenticated_401",
+   "pass": true,
+   "status": 401,
+   "metadata_url": "http://127.0.0.1:64321/functions/v1/mcp/oauth-protected-resource"
+  },
+  {
+   "id": "protected_resource_metadata",
+   "pass": true,
+   "resource": "http://127.0.0.1:64321/functions/v1/mcp",
+   "authorization_servers": [
+    "http://127.0.0.1:64321/auth/v1"
+   ]
+  },
+  {
+   "id": "oauth_grant_client_a",
+   "pass": true,
+   "claims": {
+    "keys": [
+     "aal",
+     "amr",
+     "app_metadata",
+     "aud",
+     "client_id",
+     "email",
+     "exp",
+     "iat",
+     "is_anonymous",
+     "iss",
+     "phone",
+     "role",
+     "scope",
+     "session_id",
+     "sub",
+     "user_metadata"
+    ],
+    "aud": "authenticated",
+    "iss": "http://127.0.0.1:64321/auth/v1",
+    "role": "authenticated",
+    "client_id_present": true,
+    "session_id_present": true,
+    "ttl_seconds": 90
+   }
+  },
+  {
+   "id": "oauth_grant_without_resource",
+   "pass": true,
+   "claims": {
+    "keys": [
+     "aal",
+     "amr",
+     "app_metadata",
+     "aud",
+     "client_id",
+     "email",
+     "exp",
+     "iat",
+     "is_anonymous",
+     "iss",
+     "phone",
+     "role",
+     "scope",
+     "session_id",
+     "sub",
+     "user_metadata"
+    ],
+    "aud": "authenticated",
+    "iss": "http://127.0.0.1:64321/auth/v1",
+    "role": "authenticated",
+    "client_id_present": true,
+    "session_id_present": true,
+    "ttl_seconds": 90
+   }
+  },
+  {
+   "id": "whoami_oauth_token",
+   "pass": true,
+   "status": 200,
+   "sub_matches": true,
+   "client_matches": true
+  },
+  {
+   "id": "data_tool_fail_closed",
+   "pass": true,
+   "status": 200
+  },
+  {
+   "id": "oversized_body_413",
+   "pass": true,
+   "status": 413
+  },
+  {
+   "id": "first_party_session_refused",
+   "pass": true,
+   "status": 403,
+   "error": "oauth_client_required"
+  },
+  {
+   "id": "client_b_not_allowlisted_refused",
+   "pass": true,
+   "status": 403
+  },
+  {
+   "id": "unknown_key_refused",
+   "pass": true,
+   "status": 401
+  },
+  {
+   "id": "wrong_issuer_refused",
+   "pass": true,
+   "status": 401
+  },
+  {
+   "id": "wrong_audience_refused",
+   "pass": true,
+   "status": 401
+  },
+  {
+   "id": "expired_refused",
+   "pass": true,
+   "status": 401
+  },
+  {
+   "id": "minted_positive_control",
+   "pass": true,
+   "status": 200
+  },
+  {
+   "id": "revocation_observed",
+   "pass": true,
+   "revoke_status": 204,
+   "access_token_still_accepted_after_revoke": true,
+   "refresh_after_revoke_status": 400,
+   "refresh_error": "refresh_token_not_found",
+   "userinfo_after_revoke_status": 403,
+   "auth_user_after_revoke_status": 403
+  }
+ ],
+ "failed": []
+}

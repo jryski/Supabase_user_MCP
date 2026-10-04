@@ -1,0 +1,8 @@
+{
+ "probe": "chunked POST to local Kong /functions/v1/mcp, first chunk then 3.5 s gap, no auth",
+ "result": {
+  "seconds": 3.52,
+  "status_line": "HTTP/1.1 401 Unauthorized"
+ },
+ "interpretation": "Gateway or runtime buffered the request body before invoking the function; function deadline (2 s) did not observe the slow body. Local Kong only; hosted gateway behavior unmeasured."
+}

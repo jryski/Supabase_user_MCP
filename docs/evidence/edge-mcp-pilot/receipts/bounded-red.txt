@@ -1,0 +1,111 @@
+Download https://jsr.io/@std/assert/meta.json
+Download https://jsr.io/@std/assert/1.0.19_meta.json
+Download https://jsr.io/@std/internal/meta.json
+Download https://jsr.io/@std/internal/1.0.14_meta.json
+Download https://jsr.io/@std/assert/1.0.19/mod.ts
+Download https://jsr.io/@std/assert/1.0.19/almost_equals.ts
+Download https://jsr.io/@std/assert/1.0.19/array_includes.ts
+Download https://jsr.io/@std/assert/1.0.19/equals.ts
+Download https://jsr.io/@std/assert/1.0.19/exists.ts
+Download https://jsr.io/@std/assert/1.0.19/false.ts
+Download https://jsr.io/@std/assert/1.0.19/greater_or_equal.ts
+Download https://jsr.io/@std/assert/1.0.19/greater.ts
+Download https://jsr.io/@std/assert/1.0.19/instance_of.ts
+Download https://jsr.io/@std/assert/1.0.19/is_error.ts
+Download https://jsr.io/@std/assert/1.0.19/less_or_equal.ts
+Download https://jsr.io/@std/assert/1.0.19/less.ts
+Download https://jsr.io/@std/assert/1.0.19/match.ts
+Download https://jsr.io/@std/assert/1.0.19/not_equals.ts
+Download https://jsr.io/@std/assert/1.0.19/not_instance_of.ts
+Download https://jsr.io/@std/assert/1.0.19/not_match.ts
+Download https://jsr.io/@std/assert/1.0.19/not_strict_equals.ts
+Download https://jsr.io/@std/assert/1.0.19/object_match.ts
+Download https://jsr.io/@std/assert/1.0.19/rejects.ts
+Download https://jsr.io/@std/assert/1.0.19/strict_equals.ts
+Download https://jsr.io/@std/assert/1.0.19/string_includes.ts
+Download https://jsr.io/@std/assert/1.0.19/throws.ts
+Download https://jsr.io/@std/assert/1.0.19/assert.ts
+Download https://jsr.io/@std/assert/1.0.19/assertion_error.ts
+Download https://jsr.io/@std/assert/1.0.19/equal.ts
+Download https://jsr.io/@std/assert/1.0.19/fail.ts
+Download https://jsr.io/@std/assert/1.0.19/unimplemented.ts
+Download https://jsr.io/@std/assert/1.0.19/unreachable.ts
+Download https://jsr.io/@std/internal/1.0.14/format.ts
+Download https://jsr.io/@std/internal/1.0.14/build_message.ts
+Download https://jsr.io/@std/internal/1.0.14/diff.ts
+Download https://jsr.io/@std/internal/1.0.14/diff_str.ts
+Download https://jsr.io/@std/internal/1.0.14/styles.ts
+Download https://jsr.io/@std/internal/1.0.14/types.ts
+Check bounded_test.ts
+running 6 tests from ./bounded_test.ts
+positive control: a small request passes through with its body and method ... ok (15ms)
+deadline covers a slow request body and cancels the reader ... FAILED (432ms)
+deadline aborts a slow handler and the handler settles promptly ... FAILED (238ms)
+an already-aborted client signal stops before the handler runs ... FAILED (55ms)
+a client disconnect during handling aborts the handler ... FAILED (204ms)
+oversized bodies are refused, declared or streamed, and the stream is cancelled ... ok (2ms)
+
+ ERRORS 
+
+deadline covers a slow request body and cancels the reader => ./bounded_test.ts:64:6
+error: AssertionError: Values are not equal.
+
+
+    [Diff] Actual / Expected
+
+
+-   200
++   504
+
+  throw new AssertionError(message);
+        ^
+    at assertEquals (https://jsr.io/@std/assert/1.0.19/equals.ts:67:9)
+    at file://<pilot>/tests/bounded_test.ts:75:3
+
+deadline aborts a slow handler and the handler settles promptly => ./bounded_test.ts:81:6
+error: AssertionError: handler never observed the deadline abort
+    throw new AssertionError(msg);
+          ^
+    at assert (https://jsr.io/@std/assert/1.0.19/assert.ts:22:11)
+    at file://<pilot>/tests/bounded_test.ts:89:3
+
+an already-aborted client signal stops before the handler runs => ./bounded_test.ts:93:6
+error: AssertionError: Values are not equal.
+
+
+    [Diff] Actual / Expected
+
+
+-   200
++   499
+
+  throw new AssertionError(message);
+        ^
+    at assertEquals (https://jsr.io/@std/assert/1.0.19/equals.ts:67:9)
+    at file://<pilot>/tests/bounded_test.ts:100:3
+
+a client disconnect during handling aborts the handler => ./bounded_test.ts:104:6
+error: AssertionError: Values are not equal.
+
+
+    [Diff] Actual / Expected
+
+
+-   504
++   499
+
+  throw new AssertionError(message);
+        ^
+    at assertEquals (https://jsr.io/@std/assert/1.0.19/equals.ts:67:9)
+    at file://<pilot>/tests/bounded_test.ts:113:3
+
+ FAILURES 
+
+deadline covers a slow request body and cancels the reader => ./bounded_test.ts:64:6
+deadline aborts a slow handler and the handler settles promptly => ./bounded_test.ts:81:6
+an already-aborted client signal stops before the handler runs => ./bounded_test.ts:93:6
+a client disconnect during handling aborts the handler => ./bounded_test.ts:104:6
+
+FAILED | 2 passed | 4 failed (971ms)
+
+error: Test failed
