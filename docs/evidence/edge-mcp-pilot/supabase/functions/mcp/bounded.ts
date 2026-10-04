@@ -46,7 +46,7 @@ async function readBounded(
       if (done) break;
       total += value.byteLength;
       if (total > maxBytes) {
-        await reader.cancel().catch(() => {});
+        reader.cancel().catch(() => {});
         return TOO_LARGE;
       }
       chunks.push(value);
@@ -81,11 +81,23 @@ export function createBounded(handler: Handler, limits: Limits): Handler {
     if (signal.aborted) onSignal();
     else signal.addEventListener('abort', onSignal, { once: true });
 
+    let released = false;
+    const release = () => {
+      if (released) return;
+      released = true;
+      clearTimeout(timer);
+      req.signal.removeEventListener('abort', relay);
+      signal.removeEventListener('abort', onSignal);
+    };
+    // When a streamed response is returned, the budget stays active until that body ends.
+    let handedOff = false;
+
     try {
       if (signal.aborted) throw signal.reason;
       const declared = Number(req.headers.get('content-length') ?? '0');
       if (Number.isFinite(declared) && declared > limits.maxBodyBytes) {
-        await req.body?.cancel().catch(() => {});
+        // Refuse at once; do not wait for the client stream to acknowledge cancellation.
+        req.body?.cancel().catch(() => {});
         return jsonError(413, 'body_too_large');
       }
       let body: Uint8Array<ArrayBuffer> | undefined;
@@ -104,15 +116,78 @@ export function createBounded(handler: Handler, limits: Limits): Handler {
         body,
         signal,
       });
-      return await Promise.race([handler(inner), aborted]);
+      const response = await Promise.race([handler(inner), aborted]);
+      if (response.body === null) return response;
+      handedOff = true;
+      return new Response(boundedBody(response.body, controller, release), {
+        status: response.status,
+        statusText: response.statusText,
+        headers: response.headers,
+      });
     } catch (error) {
       if (signal.reason instanceof DeadlineExceeded) return jsonError(504, 'deadline_exceeded');
       if (signal.aborted) return jsonError(499, 'client_closed_request');
       throw error;
     } finally {
-      clearTimeout(timer);
-      req.signal.removeEventListener('abort', relay);
-      signal.removeEventListener('abort', onSignal);
+      if (!handedOff) release();
     }
   };
+}
+
+/**
+ * Relays a handler's response body under the request budget. The deadline or a client
+ * disconnect terminates the stream and cancels its source. A consumer cancel aborts the
+ * work signal. The budget is released only when the body finishes.
+ */
+function boundedBody(
+  source: ReadableStream<Uint8Array>,
+  controller: AbortController,
+  release: () => void,
+): ReadableStream<Uint8Array> {
+  const signal = controller.signal;
+  const reader = source.getReader();
+  let onAbort: (() => void) | undefined;
+  const finish = () => {
+    if (onAbort) signal.removeEventListener('abort', onAbort);
+    release();
+  };
+  return new ReadableStream<Uint8Array>({
+    start(out) {
+      onAbort = () => {
+        reader.cancel(signal.reason).catch(() => {});
+        try {
+          out.error(signal.reason);
+        } catch {
+          /* already closed */
+        }
+        finish();
+      };
+      if (signal.aborted) onAbort();
+      else signal.addEventListener('abort', onAbort, { once: true });
+    },
+    async pull(out) {
+      try {
+        const { done, value } = await reader.read();
+        if (signal.aborted) return;
+        if (done) {
+          out.close();
+          finish();
+        } else {
+          out.enqueue(value);
+        }
+      } catch (error) {
+        try {
+          out.error(error);
+        } catch {
+          /* already errored */
+        }
+        finish();
+      }
+    },
+    cancel(reason) {
+      controller.abort(reason ?? new Error('client_closed_response'));
+      reader.cancel(reason).catch(() => {});
+      finish();
+    },
+  });
 }

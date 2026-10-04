@@ -134,15 +134,23 @@
       "status": 200
     },
     {
-      "id": "revocation_observed",
+      "id": "revocation_expected_observations",
       "pass": true,
+      "before_revoke_status": 200,
       "revoke_status": 204,
-      "access_token_still_accepted_after_revoke": true,
       "refresh_after_revoke_status": 400,
       "refresh_error": "refresh_token_not_found",
       "userinfo_after_revoke_status": 403,
       "auth_user_after_revoke_status": 403
     }
   ],
+  "measurements": [
+    {
+      "id": "jwks_only_acceptance_after_revoke",
+      "access_token_still_accepted_after_revoke": true,
+      "note": "Known gap of JWKS-only verification; not live revocation and not counted as a pass."
+    }
+  ],
+  "missing": [],
   "failed": []
 }

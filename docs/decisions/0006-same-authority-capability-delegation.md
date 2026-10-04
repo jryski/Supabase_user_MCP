@@ -89,9 +89,11 @@ refresh token encrypted and presents a fresh B access token to the Data API.
   - Laboratory evidence exists (the N8 gates).
 - **Against:**
   - A second consent for every user.
-  - The server becomes a store of long-lived refresh tokens, and compromising the server
-    compromises every connected user's downstream credential. That is a larger blast radius than
-    the problem it solves.
+  - The server becomes a store of long-lived refresh tokens. Under a threat model where an
+    attacker obtains both the stored ciphertext and the decryption key (for example, full server
+    compromise without key isolation), every connected user's downstream credential is exposed.
+    Strong key isolation (an external KMS, per-user wrapping, limited decrypt rights) narrows
+    this exposure, but it adds operational cost.
   - Refresh rotation, replay and concurrency must be serialized and proven. The N8 intermittent
     failure in this area remains unexplained.
   - Stateless Edge Functions need durable encrypted storage and key management.
@@ -307,3 +309,5 @@ conformance receipts CT-1 to CT-22 against that exact deployment.
 - Adversarial review of profile 0.1 (SOUND_WITH_GAPS; addressed in 0.2).
 - ATLAS review of 0.2 (MC1810; PR #102 review 5407645463): rejected for adoption, accepted as a
   research direction with conditions; addressed in 0.3 (profile §10).
+- ATLAS scoped re-review of 0.3 (MC1812; PR #102 review 5408073603): local research direction and
+  minimal proof accepted with conditions; addressed in 0.4 (profile §10).

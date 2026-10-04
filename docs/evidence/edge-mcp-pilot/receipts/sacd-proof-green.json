@@ -1,0 +1,551 @@
+{
+  "run": "02d5632d",
+  "results": [
+    {
+      "id": "CT-2_issuance_claims",
+      "pass": true,
+      "claims": {
+        "aud": "http://127.0.0.1:64321/functions/v1/mcp",
+        "role": "mcp_ingress",
+        "iss": "http://127.0.0.1:64321/auth/v1",
+        "client_id": "f46f5f7a-b256-4c4e-8862-dc4992f407dc",
+        "session_id_present": true,
+        "keys": [
+          "aal",
+          "amr",
+          "app_metadata",
+          "aud",
+          "client_id",
+          "email",
+          "exp",
+          "iat",
+          "is_anonymous",
+          "iss",
+          "phone",
+          "role",
+          "scope",
+          "session_id",
+          "sub",
+          "user_metadata"
+        ]
+      }
+    },
+    {
+      "id": "CT-2_refresh_claims",
+      "pass": true,
+      "status": 200,
+      "claims": {
+        "aud": "http://127.0.0.1:64321/functions/v1/mcp",
+        "role": "mcp_ingress",
+        "iss": "http://127.0.0.1:64321/auth/v1",
+        "client_id": "f46f5f7a-b256-4c4e-8862-dc4992f407dc",
+        "session_id_present": true,
+        "keys": [
+          "aal",
+          "amr",
+          "app_metadata",
+          "aud",
+          "client_id",
+          "email",
+          "exp",
+          "iat",
+          "is_anonymous",
+          "iss",
+          "phone",
+          "role",
+          "scope",
+          "session_id",
+          "sub",
+          "user_metadata"
+        ]
+      }
+    },
+    {
+      "id": "CT-9_positive_own_rows",
+      "pass": true,
+      "status": 200,
+      "rows": 50
+    },
+    {
+      "id": "CT-9_row_cap_100",
+      "pass": true,
+      "status": 200,
+      "rows": 100
+    },
+    {
+      "id": "CT-9_query_params_cannot_exceed_cap",
+      "pass": true,
+      "status": 200,
+      "rows": 100
+    },
+    {
+      "id": "CT-9_input_cap",
+      "pass": true,
+      "status": 400
+    },
+    {
+      "id": "CT-10_isolation",
+      "pass": true,
+      "bob_rows": 2,
+      "alice_prefix_bob_rows": 0
+    },
+    {
+      "id": "CT-3_declared_non_mcp_unchanged_and_refused",
+      "pass": true,
+      "claims": {
+        "aud": "authenticated",
+        "role": "authenticated",
+        "iss": "http://127.0.0.1:64321/auth/v1",
+        "client_id": "82780720-a386-4e7e-9423-ca39b39769fe",
+        "session_id_present": true,
+        "keys": [
+          "aal",
+          "amr",
+          "app_metadata",
+          "aud",
+          "client_id",
+          "email",
+          "exp",
+          "iat",
+          "is_anonymous",
+          "iss",
+          "phone",
+          "role",
+          "scope",
+          "session_id",
+          "sub",
+          "user_metadata"
+        ]
+      },
+      "rpc_status": 403
+    },
+    {
+      "id": "CT-3_first_party_refused",
+      "pass": true,
+      "status": 403,
+      "code": "42501"
+    },
+    {
+      "id": "CT-4_unknown_client_refused_by_hook",
+      "pass": true,
+      "result": {
+        "ok": false,
+        "step": "token",
+        "status": 403,
+        "error": "unknown",
+        "message": "sacd_hook:client_not_approved"
+      },
+      "token_issued": false
+    },
+    {
+      "id": "CT-4_missing_client_refresh_not_downgraded",
+      "pass": true,
+      "oauth_session": {
+        "message": "sacd_hook:oauth_session_missing_client",
+        "http_code": 403
+      },
+      "first_party_unchanged": true
+    },
+    {
+      "id": "CT-5D_minted_positive_control",
+      "pass": true,
+      "status": 200
+    },
+    {
+      "id": "CT-5D_singleton_array_aud_accepted",
+      "pass": true,
+      "status": 200
+    },
+    {
+      "id": "CT-5D_wrong_issuer",
+      "pass": true,
+      "status": 403,
+      "guard": "sacd_guard:issuer_mismatch"
+    },
+    {
+      "id": "CT-5D_extra_audience",
+      "pass": true,
+      "status": 403,
+      "guard": "sacd_guard:audience_not_singleton"
+    },
+    {
+      "id": "CT-5D_general_audience",
+      "pass": true,
+      "status": 403,
+      "guard": "sacd_guard:audience_mismatch"
+    },
+    {
+      "id": "CT-5D_missing_client_id",
+      "pass": true,
+      "status": 403,
+      "guard": "sacd_guard:client_id_missing"
+    },
+    {
+      "id": "CT-5D_client_not_in_registry",
+      "pass": true,
+      "status": 403,
+      "guard": "sacd_guard:client_not_approved"
+    },
+    {
+      "id": "CT-5D_client_b_claim_on_session_a",
+      "pass": true,
+      "status": 403,
+      "guard": "sacd_guard:session_client_mismatch"
+    },
+    {
+      "id": "CT-5D_session_of_other_user",
+      "pass": true,
+      "status": 403,
+      "guard": "sacd_guard:session_user_mismatch"
+    },
+    {
+      "id": "CT-5D_first_party_session",
+      "pass": true,
+      "status": 403,
+      "guard": "sacd_guard:session_client_mismatch"
+    },
+    {
+      "id": "CT-5D_unknown_session",
+      "pass": true,
+      "status": 403,
+      "guard": "sacd_guard:session_not_live"
+    },
+    {
+      "id": "CT-5D_missing_session",
+      "pass": true,
+      "status": 403,
+      "guard": "sacd_guard:session_id_invalid"
+    },
+    {
+      "id": "CT-5D_missing_exp",
+      "pass": true,
+      "status": 403,
+      "guard": "sacd_guard:token_expired"
+    },
+    {
+      "id": "CT-5D_malformed_sub",
+      "pass": true,
+      "status": 403,
+      "guard": "sacd_guard:subject_unreadable"
+    },
+    {
+      "id": "CT-5D_refused_before_guard_expired",
+      "pass": true,
+      "status": 401,
+      "code": "PGRST303",
+      "message": "JWT expired"
+    },
+    {
+      "id": "CT-5D_refused_before_guard_role_authenticated",
+      "pass": true,
+      "status": 403,
+      "code": "42501",
+      "message": "permission denied for schema mcp_api"
+    },
+    {
+      "id": "CT-5D_refused_before_guard_role_anon",
+      "pass": true,
+      "status": 401,
+      "code": "42501",
+      "message": "permission denied for schema mcp_api"
+    },
+    {
+      "id": "CT-5D_refused_before_guard_role_unknown",
+      "pass": true,
+      "status": 401,
+      "code": "22023",
+      "message": "role \"no_such_role\" does not exist"
+    },
+    {
+      "id": "CT-6_relations_denied",
+      "pass": true,
+      "relations": [
+        {
+          "rel": "public.app_notes",
+          "sacd_status": 403,
+          "sacd_code": "42501",
+          "first_party_status": 200,
+          "first_party_rows": 1
+        }
+      ],
+      "private_schema_route_status": 406
+    },
+    {
+      "id": "CT-7_functions_denied",
+      "pass": true,
+      "functions": [
+        {
+          "fn": "graphql_public.graphql",
+          "sacd_status": 403,
+          "sacd_code": "42501",
+          "first_party_status": 200
+        },
+        {
+          "fn": "public.app_ping",
+          "sacd_status": 403,
+          "sacd_code": "42501",
+          "first_party_status": 200
+        }
+      ],
+      "guard_route_status": 406,
+      "graphql_status": 403,
+      "graphql_code": "42501"
+    },
+    {
+      "id": "CT-14_role_timeouts_applied",
+      "pass": true,
+      "status": 200,
+      "settings": {
+        "role": "mcp_ingress",
+        "lock_timeout": "1s",
+        "statement_timeout": "2s"
+      }
+    },
+    {
+      "id": "CT-14_statement_timeout",
+      "pass": true,
+      "status": 500,
+      "code": "57014",
+      "elapsed_ms": 2004
+    },
+    {
+      "id": "CT-14_lock_timeout",
+      "pass": true,
+      "status": 500,
+      "code": "55P03",
+      "elapsed_ms": 1009
+    },
+    {
+      "id": "CT-13_not_after",
+      "pass": true,
+      "before": 200,
+      "after": 403,
+      "guard": "sacd_guard:session_expired"
+    },
+    {
+      "id": "CT-13_timebox",
+      "pass": true,
+      "before": 200,
+      "after": 403,
+      "guard": "sacd_guard:session_timebox_expired"
+    },
+    {
+      "id": "CT-13_inactivity",
+      "pass": true,
+      "before": 200,
+      "idle": 403,
+      "guard": "sacd_guard:session_inactive",
+      "after_refresh": 200,
+      "note": "refresh updates refreshed_at; Auth-side inactivity enforcement is not configured locally"
+    },
+    {
+      "id": "CT-20_registry_removal",
+      "pass": true,
+      "rpc_status": 403,
+      "guard": "sacd_guard:client_not_approved",
+      "refresh_status": 403,
+      "refresh_error": "unknown"
+    },
+    {
+      "id": "CT-12_revocation",
+      "pass": true,
+      "before_status": 200,
+      "revoke_status": 204,
+      "session_rows_after_revoke": 0,
+      "token_unexpired": true,
+      "after_status": 403,
+      "guard": "sacd_guard:session_not_live"
+    },
+    {
+      "id": "CT-19_pooled_reuse_after_revoke",
+      "pass": true,
+      "warm_ok": 30,
+      "after_refused": 30,
+      "total": 30,
+      "postgrest_pool_size": 10
+    },
+    {
+      "id": "CT-19_concurrent_revoke",
+      "pass": true,
+      "revoke_status": 204,
+      "revoke_done_ms": 227,
+      "started_after_revoke": 17,
+      "accepted_before_revoke": 23,
+      "accepted_after_revoke": 0
+    },
+    {
+      "id": "CT-19_refresh_revoke_race",
+      "pass": true,
+      "refresh_status": 400,
+      "refresh_issued_token": false,
+      "revoke_status": 204,
+      "refreshed_token_guard": null,
+      "old_token_guard": "sacd_guard:session_not_live"
+    },
+    {
+      "id": "CT-15_catalog_lint",
+      "pass": true,
+      "lint": {
+        "ingress_exec_in_exposed": [
+          "mcp_api.proof_probe_v1(integer)",
+          "mcp_api.list_own_v1(integer,text)",
+          "mcp_api.proof_lock_v1()"
+        ],
+        "ingress_exec_without_schema_usage": ["graphql_public.graphql(text,text,jsonb,jsonb)"],
+        "ingress_relation_privs": [],
+        "ingress_relations_without_schema_usage": [
+          "extensions.pg_stat_statements_info",
+          "extensions.pg_stat_statements"
+        ],
+        "ingress_schema_usage": ["public", "mcp_api"],
+        "ingress_memberships": [],
+        "ingress_members": ["postgres:set=false:admin=true", "authenticator:set=true:admin=false"],
+        "owner_members": ["postgres:set=false:admin=true"],
+        "owner_relation_privs": ["mcp_cap.client_registry", "mcp_cap.fixture"],
+        "owner_schema_usage": ["public", "mcp_cap"],
+        "roles": [
+          {
+            "role": "mcp_capability_owner",
+            "super": false,
+            "bypassrls": false,
+            "login": false,
+            "inherit": false,
+            "config": null
+          },
+          {
+            "role": "mcp_ingress",
+            "super": false,
+            "bypassrls": false,
+            "login": false,
+            "inherit": false,
+            "config": ["statement_timeout=2s", "lock_timeout=1s"]
+          }
+        ],
+        "definers": [
+          {
+            "fn": "mcp_cap.session_status(uuid,uuid,text)",
+            "owner": "postgres",
+            "secdef": true,
+            "config": ["search_path=\"\""]
+          },
+          {
+            "fn": "mcp_cap.claims_sub()",
+            "owner": "postgres",
+            "secdef": false,
+            "config": ["search_path=\"\""]
+          },
+          {
+            "fn": "mcp_api.proof_probe_v1(integer)",
+            "owner": "mcp_capability_owner",
+            "secdef": true,
+            "config": ["search_path=\"\""]
+          },
+          {
+            "fn": "mcp_cap.custom_access_token_hook(jsonb)",
+            "owner": "postgres",
+            "secdef": false,
+            "config": ["search_path=\"\""]
+          },
+          {
+            "fn": "mcp_cap.sacd_guard()",
+            "owner": "mcp_capability_owner",
+            "secdef": true,
+            "config": ["search_path=\"\""]
+          },
+          {
+            "fn": "mcp_api.list_own_v1(integer,text)",
+            "owner": "mcp_capability_owner",
+            "secdef": true,
+            "config": ["search_path=\"\""]
+          },
+          {
+            "fn": "mcp_api.proof_lock_v1()",
+            "owner": "mcp_capability_owner",
+            "secdef": true,
+            "config": ["search_path=\"\""]
+          }
+        ],
+        "oracle_executors": ["mcp_capability_owner"],
+        "rls": [
+          {
+            "t": "client_registry",
+            "enabled": true,
+            "forced": true
+          },
+          {
+            "t": "declared_non_mcp_client",
+            "enabled": true,
+            "forced": true
+          },
+          {
+            "t": "fixture",
+            "enabled": true,
+            "forced": true
+          },
+          {
+            "t": "session_policy",
+            "enabled": true,
+            "forced": true
+          }
+        ],
+        "public_exec_in_exposed": [
+          "graphql_public.graphql(text,text,jsonb,jsonb) owner=supabase_admin"
+        ],
+        "default_function_acl": [
+          {
+            "role": "supabase_admin",
+            "schema": "public",
+            "acl": "{postgres=X/supabase_admin,anon=X/supabase_admin,authenticated=X/supabase_admin,service_role=X/supabase_admin}"
+          },
+          {
+            "role": "postgres",
+            "schema": "storage",
+            "acl": "{postgres=X/postgres,anon=X/postgres,authenticated=X/postgres,service_role=X/postgres}"
+          },
+          {
+            "role": "supabase_auth_admin",
+            "schema": "auth",
+            "acl": "{postgres=X/supabase_auth_admin,dashboard_user=X/supabase_auth_admin}"
+          },
+          {
+            "role": "supabase_admin",
+            "schema": "realtime",
+            "acl": "{postgres=X/supabase_admin,dashboard_user=X/supabase_admin}"
+          },
+          {
+            "role": "supabase_admin",
+            "schema": "graphql_public",
+            "acl": "{postgres=X/supabase_admin,anon=X/supabase_admin,authenticated=X/supabase_admin,service_role=X/supabase_admin}"
+          },
+          {
+            "role": "supabase_admin",
+            "schema": "extensions",
+            "acl": "{postgres=X*/supabase_admin}"
+          },
+          {
+            "role": "supabase_admin",
+            "schema": "graphql",
+            "acl": "{postgres=X/supabase_admin,anon=X/supabase_admin,authenticated=X/supabase_admin,service_role=X/supabase_admin}"
+          },
+          {
+            "role": "supabase_admin",
+            "schema": "supabase_functions",
+            "acl": "{postgres=X/supabase_admin,anon=X/supabase_admin,authenticated=X/supabase_admin,service_role=X/supabase_admin}"
+          },
+          {
+            "role": "postgres",
+            "schema": "public",
+            "acl": "{postgres=X/postgres,anon=X/postgres,authenticated=X/postgres,service_role=X/postgres}"
+          }
+        ]
+      }
+    },
+    {
+      "id": "OBS_postgrest_audience",
+      "pass": true,
+      "singleton_mcp_audience_accepted_by_postgrest": true,
+      "note": "local PostgREST container has no PGRST_JWT_AUD; hosted behaviour unmeasured"
+    }
+  ],
+  "failed": []
+}

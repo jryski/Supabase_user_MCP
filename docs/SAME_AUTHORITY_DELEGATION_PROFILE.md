@@ -1,7 +1,8 @@
 # Same-Authority Capability Delegation (SACD) profile
 
-- **Profile version:** 0.3 (draft). 0.1 was amended after an adversarial review (0.2), and 0.2
-  after the ATLAS architecture review (0.3). See §10.
+- **Profile version:** 0.4 (draft). 0.1 was amended after an adversarial review (0.2), 0.2 after
+  the ATLAS architecture review (0.3), and 0.3 after the ATLAS scoped re-review and the local
+  proof (0.4). See §10.
 - **Status:** Proposed. Not accepted, not deployed, and no data tools are enabled under it.
 - **Decision record:** [ADR-0006](decisions/0006-same-authority-capability-delegation.md)
 - **Relationship to MCP:** This profile is a **documented exception** to the literal text of
@@ -212,8 +213,21 @@ Each requirement has an identifier so that tests, reviews and exceptions can cit
   - **MUST NOT** be grantable to, or assumable by, any login, API or capability role.
 
   A `postgres`-owned or otherwise RLS-bypassing wrapper **MUST NOT** be used instead.
-- **SACD-9 RLS still decides rows.** Every private table a capability function reads **MUST** have
-  RLS enabled and forced. Policies that apply to the capability owner role:
+
+  **Liveness oracle exception.** The platform may prevent granting the capability owner role
+  read access to the session store. On Supabase this is the case: the migration role holds
+  `USAGE` on schema `auth` without grant option, so the grant silently does nothing. In that case
+  one narrow `SECURITY DEFINER` liveness oracle owned by the migration role **MAY** be used. It
+  **MUST**:
+  - run one fixed query with an empty `search_path`;
+  - take only the session, subject and client, and return only a status word;
+  - be executable by the capability owner role alone.
+
+  It **MUST NOT** read application data. It is a reviewed exception, it appears in the catalog
+  lint, and it is covered by the deployment fingerprint (SACD-22).
+- **SACD-9 RLS still decides rows.** Every deployment-controlled table that a capability function
+  reads **MUST** have RLS enabled and forced. Platform-managed tables such as `auth.sessions` **MUST
+  NOT** be modified. They are reached only through the liveness oracle (SACD-8). Policies that apply to the capability owner role:
   - **MUST** restrict rows to the validated principal from the guard's claims;
   - **MUST** be `RESTRICTIVE` where they narrow other policies.
 
@@ -246,18 +260,27 @@ Each requirement has an identifier so that tests, reviews and exceptions can cit
     project configures (time-box, inactivity, single-session).
 
   A deployment where any configured session mode cannot be evaluated from the database **MUST
-  NOT** use this profile.
+  NOT** use this profile. Time-box and inactivity limits are read from a deployment-controlled
+  policy table that **MUST** mirror the Auth configuration. The fingerprint (SACD-22) compares the
+  two.
 
   The guard is a new one-token function and needs its own review. The repository's `sql/05` is a
   two-grant probe: it expects a separate downstream token and denies the capability role. It is a
   pattern to learn from, not a component to reuse.
 - **SACD-11a Meaning of "immediate".** Revocation, sign-out or client removal **MUST** cause
-  rejection of every call whose guard check runs after that change commits. It does not:
+  rejection of every Data API statement whose database snapshot is acquired after that change
+  commits. A request that starts after the revoking request has returned acquires such a snapshot.
+  It does not:
   - recall data already returned;
-  - cancel a statement whose guard check already passed under an earlier snapshot.
+  - affect a statement whose snapshot predates the commit, even if its guard runs later in wall
+    time.
 
-  Behaviour during an in-flight call, during a concurrent refresh and revoke, and on reuse of a
-  pooled connection **MUST** be defined and tested (§6).
+  The guard **MUST** run in the same statement as the data read, so it cannot use an older
+  snapshot than the read. Authorization results **MUST NOT** be cached across requests or reused
+  across pooled connections. The following **MUST** be defined and tested (§6):
+  - behaviour during an in-flight call;
+  - a concurrent refresh and revoke;
+  - reuse of pooled connections.
 
 ### 4.4 MCP endpoint
 
@@ -294,6 +317,10 @@ Each requirement has an identifier so that tests, reviews and exceptions can cit
   - bound the body size (repository default: 65,536 bytes and 2,000 ms);
   - on deadline or client disconnect, cancel the body reader and abort handler and downstream
     work through a linked signal;
+  - keep the budget active until a streamed response body ends, so the deadline or a disconnect
+    terminates the stream and aborts the work behind it;
+  - refuse early (for example an oversized declared length) without waiting for the client's
+    stream to acknowledge cancellation;
   - prove that the aborted work settles.
 
   Time spent in the platform gateway before the function runs is outside the function's control
@@ -386,7 +413,8 @@ one row.
 | Enumerated capability functions | Allowed after the guard passes; return the user's own fixture rows | Nonempty positive control first (CT-9) |
 | The SACD guard and other internal helpers | Not directly callable | Direct call denied (CT-7) |
 | Private tables read by capability functions | Not reachable through any route | Direct denial (CT-6) |
-| Enumerated safe `PUBLIC` surfaces (ideally none) | As listed | Listed individually |
+| Enumerated safe `PUBLIC` surfaces (ideally none) | As listed, each independently reviewed | Listed individually |
+| Test-only capability functions (proof deployments only; absent in real deployments) | Allowed after the guard passes | Listed individually; their absence is fingerprint-checked in real deployments |
 | Enumerated own-account exceptions | As listed | Listed individually (CT-8) |
 | Everything else in every exposed schema, including extension functions | Denied | Exhaustive enumeration (CT-6, CT-7) |
 
@@ -401,22 +429,22 @@ one row.
 | CT-5 | At the MCP endpoint: forged key, wrong issuer, wrong or extra audience, expired token, wrong role, ID token, missing or malformed claims | Refused before tool dispatch |
 | CT-5D | **Direct** to each capability function: every CT-5 variant that the gateway accepts, plus a mismatched user, session or client, and a stale token after client removal | Refused by the SACD guard |
 | CT-6 | Direct: every table, view and private relation in every exposed schema | Denied |
-| CT-7 | Direct: every function in every exposed schema other than the capability functions, including the guard and extension functions | Denied |
+| CT-7 | Direct: every function in every exposed schema, including the guard and extension functions | Exactly as the access matrix (§6.1) states: capability functions allowed, reviewed safe `PUBLIC` exceptions as listed, everything else denied |
 | CT-8 | Realtime: Postgres Changes, public and private Broadcast, Presence, joins, and an already-connected socket after revocation. Also GraphQL and its introspection; each Storage operation and signed-URL creation; other Edge Functions; each Auth account operation | Each denied, or listed as a public surface or an own-account exception, with one receipt each |
 | CT-9 | Direct and through MCP: each capability function against nonempty own-user fixtures, with and without PostgREST query parameters | The same bounded result on both paths |
 | CT-10 | Direct and through MCP: requests aimed at another user's rows | Empty or denied on both paths |
 | CT-11 | Writes and other non-capability operations, through both paths | Denied |
-| CT-12 | Revoke the grant, then call with the already-issued token on both paths | Refused for every call whose guard check runs after the revocation commits |
-| CT-13 | Sign-out, and each configured session timeout mode | As CT-12 |
+| CT-12 | Revoke the grant, then call with the already-issued token on both paths | Refused for every request started after the revoking request returned |
+| CT-13 | Session `not_after`, and each configured session timeout mode (time-box, inactivity) | As CT-12; inactivity is measured from the last refresh |
 | CT-14 | Through both paths, after a configuration reload: oversized inputs, over-cap rows and bytes, slow queries, lock waits, aggregate and filter parameters, and concurrent per-principal calls | Refused, capped or timed out by the backend as specified |
 | CT-15 | Catalog lint: effective privileges of the capability role and the capability owner role; definer properties; forced RLS; default privileges for every creating role; exposed schemas | Exactly as declared |
 | CT-16 | Endpoint secret scan, static and at runtime | No privileged material read or used |
 | CT-17 | Two users and two approved clients, in combination | Each user sees only their own rows; client restrictions hold |
 | CT-18 | A real MCP client end to end (the Claude connector) | Matches CT-1 to CT-12 |
-| CT-19 | In-flight and concurrent cases: revoke during a running call; concurrent refresh and revoke; reuse of a pooled connection after revocation | Behaviour matches SACD-11a; no stale authorization on reuse |
+| CT-19 | In-flight and concurrent cases: revoke during a stream of calls; concurrent refresh and revoke; more calls than pooled connections, before and after revocation | Behaviour matches SACD-11a; no call started after the revoke returned is accepted; no stale authorization on reuse |
 | CT-20 | Remove a client from the registry while its session stays live | Refused on both paths at the next guard check |
 | CT-21 | Drift: in a disposable project, mutate each fingerprint element in turn (function body or owner, hook, registry, role attribute, default privilege, exposed schema, platform setting) | The CI or fingerprint check fails closed for each |
-| CT-22 | Endpoint ingress: slow and chunked bodies, client disconnect, and timed-out handler work | The deadline covers body ingestion; the reader and handler work are aborted and settle (SACD-16) |
+| CT-22 | Endpoint ingress and response lifetime, including with the real MCP SDK: slow and chunked bodies, declared oversize with stalled cancellation, a client disconnect, timed-out handler work, and a streamed (SSE) response with delayed tool work and a downstream fetch | The deadline covers body ingestion and the response body; reader, handler, tool and downstream work are aborted; early refusals return at once (SACD-16) |
 
 ## 7. What this profile does not claim
 
@@ -431,54 +459,101 @@ one row.
 
 ## 8. Minimal first proof
 
-The smallest useful local proof, before any hosted step, is:
+The smallest useful local proof, before any hosted step, covers:
 
 - one capability function returning nonempty own-user fixture data;
 - the hook, the capability role, the capability owner role and the SACD guard;
-- CT-2, CT-4, CT-5D, CT-6, CT-7, CT-9, CT-10, CT-12, CT-15 and CT-20 for that function;
+- CT-2, CT-4, CT-5D, CT-6, CT-7, CT-9, CT-10, CT-12, CT-13, CT-15, CT-19 and CT-20 for that
+  function, plus the function-relevant parts of CT-14;
 - Realtime denial (CT-8), proven separately, because the local stack used so far runs without
-  Realtime.
+  Realtime. This remains an activation prerequisite.
+
+Status: run locally (§9), except Realtime denial.
 
 ## 9. Evidence to date
 
-- **Local phase 1 pilot** (synthetic, with no forwarding). It passed 16/16 checks:
-  - AS metadata;
-  - an unauthenticated 401;
-  - protected-resource metadata;
-  - grants with and without `resource`;
-  - `whoami`;
-  - fail-closed data;
-  - an oversized body (413);
-  - refusal of a first-party session and of an unapproved client;
-  - refusal of an unknown key, the wrong issuer, the wrong audience and an expired token;
-  - a minted positive control;
-  - observation of revocation.
-- **Phase 1 observations:**
-  - Supabase Auth v2.197.0 ignored RFC 8707 `resource`, issuing `aud=authenticated` either way.
-  - After grant revocation, JWKS-only verification accepted the existing token until expiry,
-    while the AS userinfo endpoint returned 403. Userinfo is a protected profile endpoint, not
-    RFC 7662 introspection, so it is not used as the liveness mechanism here.
-- **Ingress defects found by the ATLAS review and fixed in the pilot:**
-  - The original wrapper started its deadline only after reading the body, did not cancel handler
-    work, and dropped an already-aborted client signal.
-  - The fix adds a linked abort signal. Six Deno tests cover it: four failed before the fix, and
-    each of three deliberate breakages of the fix was caught.
-  - The 16 checks still pass through the local edge runtime.
-  - The local gateway buffered a slowly sent request body before invoking the function, so the
-    function's deadline never observed it. Hosted gateway behaviour is unmeasured.
-- **Laboratory mechanisms this profile draws on.** These are patterns, not drop-in components:
-  - the custom access token hook (`sql/04`, `sql/07`);
-  - two-grant source-session liveness (`sql/05`);
-  - client-aware restrictive RLS (`sql/06`);
-  - the catalog lint and the security-definer gate.
-- **Not yet proven:**
-  - that the Data API accepts a singleton MCP-resource audience;
-  - that the authenticator can switch to the capability role;
-  - that the hook covers refresh;
-  - that session timeout modes can be evaluated in SQL;
-  - Realtime denial;
-  - the whole data-path suite;
-  - real-client behaviour.
+All of this is local and synthetic. The source, tests and receipts are in
+[`docs/evidence/edge-mcp-pilot/`](evidence/edge-mcp-pilot/README.md).
+
+**Phase 1 authentication pilot (no forwarding).** 16 of 16 checks pass against a complete
+expected-ID set:
+
+- AS metadata, an unauthenticated 401 and protected-resource metadata;
+- grants with and without `resource`;
+- `whoami`, fail-closed data and an oversized body (413);
+- refusal of a first-party session, an unapproved client, an unknown key, the wrong issuer, the
+  wrong audience and an expired token;
+- a minted positive control;
+- the expected Auth observations after revocation, with a positive control taken before the
+  revoke.
+
+The JWKS-only acceptance of an already-issued token after revocation is reported as a separate
+measurement. It is the known gap SACD-11 closes, and it is not counted as a pass. Supabase Auth
+v2.197.0 ignored RFC 8707 `resource`. Userinfo is a protected profile endpoint, not RFC 7662
+introspection, and is not used for liveness.
+
+**SACD minimal proof.** 44 of 44 checks pass against a complete expected-ID set:
+
+- the hook-issued claims on issuance and refresh;
+- positive nonempty own-user rows first, then caps that hold even when query parameters are
+  added;
+- per-user isolation;
+- the declared non-MCP, first-party, unknown-client and missing-client-refresh cases;
+- 12 guard-specific direct negatives, using tokens signed with the real key, plus 4 cases the
+  gateway refuses before the guard;
+- exhaustive denial of relations and functions against positive controls;
+- role timeouts applied through real requests, with statement and lock timeouts enforced;
+- `not_after`, time-box and inactivity;
+- registry removal, including refresh;
+- grant revocation;
+- 30 calls on a 10-connection pool before and after revocation;
+- 40 staggered calls with a concurrent revoke, where no call started after the revoke returned
+  was accepted;
+- a refresh-and-revoke race;
+- the catalog lint.
+
+Six deliberate breakages were each caught:
+
+- no guard call;
+- no session check;
+- no registry check;
+- a hook that maps any client;
+- an oracle that ignores the session policy;
+- no role timeouts.
+
+**Platform findings from the proof:**
+
+- The migration role cannot grant `auth` schema access, which led to the oracle exception in
+  SACD-8.
+- `graphql_public.graphql` keeps `PUBLIC EXECUTE`. It is owned by `supabase_admin`, and the
+  migration role's revoke is a silent no-op. It is unreachable because the capability role has
+  no `USAGE` on that schema.
+- PostgreSQL 17 gives the creating role `ADMIN` on the new roles, without `SET`.
+- The local PostgREST, which has no `PGRST_JWT_AUD` set, accepted the singleton MCP audience,
+  including the one-element-array form.
+- Revoking a grant deletes the session row.
+
+**Ingress and response lifetime (SACD-16):**
+
+- Ten wrapper tests cover body ingestion, the handler, response-body lifetime, early refusal and
+  disconnects. Seven failed before their fixes, and six deliberate breakages were each caught.
+- With the real MCP SDK (a delayed tool, an SSE response and a downstream fetch), the old wrapper
+  delivered the late result after 2 s and never aborted the downstream request. The fixed
+  wrapper ends the stream at the deadline and aborts the downstream request on both the deadline
+  and a disconnect.
+- A slowly sent request body was buffered somewhere before the function. The probe does not
+  isolate whether this happened in the gateway, the runtime or delivery. Hosted behaviour is
+  unmeasured.
+
+**Not yet proven:**
+
+- hosted audience acceptance;
+- hosted hook coverage;
+- Realtime denial;
+- Storage, other Edge Functions and Auth account operations (CT-8);
+- writes (CT-11);
+- the full MCP-endpoint path to the capability function;
+- real-client behaviour.
 
 ## 10. Review history
 
@@ -502,3 +577,12 @@ The smallest useful local proof, before any hosted step, is:
   - **Claims:** removed the claim that a second credential adds no boundary; reframed the profile
     as an exception requiring owner acceptance (SACD-0).
   - **Pilot ingress:** fixed the defects ATLAS reproduced (SACD-16, CT-22).
+- **0.3 to 0.4.** The ATLAS scoped re-review accepted the local research direction and the minimal
+  proof with conditions. Changes:
+  - CT-7 now follows the access matrix, and safe `PUBLIC` exceptions need independent review.
+  - Revocation is defined on database snapshots acquired after the commit, with a no-reuse rule
+    for authorization across requests and pooled connections.
+  - FORCE RLS is limited to deployment-controlled tables.
+  - The liveness oracle exception and the session-policy table are recorded.
+  - Response-lifetime and early-refusal requirements are added.
+  - The local proof and its results are added.

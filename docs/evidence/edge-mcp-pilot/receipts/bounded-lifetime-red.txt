@@ -1,0 +1,39 @@
+Check bounded_lifetime_test.ts
+running 4 tests from ./bounded_lifetime_test.ts
+declared oversize returns at once even if body cancellation never settles ... FAILED (318ms)
+deadline covers a streamed response body and aborts the work behind it ... FAILED (411ms)
+client cancelling a streamed response aborts the work behind it ... FAILED (2ms)
+a streamed response that completes in time is delivered whole ... ok (32ms)
+
+ ERRORS 
+
+declared oversize returns at once even if body cancellation never settles => ./bounded_lifetime_test.ts:10:6
+error: AssertionError: declared-oversize response did not settle
+    throw new AssertionError(msg);
+          ^
+    at assert (https://jsr.io/@std/assert/1.0.19/assert.ts:22:11)
+    at file://<pilot>/tests/bounded_lifetime_test.ts:37:3
+
+deadline covers a streamed response body and aborts the work behind it => ./bounded_lifetime_test.ts:43:6
+error: AssertionError: response body ran for 410 ms
+    throw new AssertionError(msg);
+          ^
+    at assert (https://jsr.io/@std/assert/1.0.19/assert.ts:22:11)
+    at file://<pilot>/tests/bounded_lifetime_test.ts:80:3
+
+client cancelling a streamed response aborts the work behind it => ./bounded_lifetime_test.ts:89:6
+error: AssertionError: work signal was not aborted on cancel
+    throw new AssertionError(msg);
+          ^
+    at assert (https://jsr.io/@std/assert/1.0.19/assert.ts:22:11)
+    at file://<pilot>/tests/bounded_lifetime_test.ts:110:3
+
+ FAILURES 
+
+declared oversize returns at once even if body cancellation never settles => ./bounded_lifetime_test.ts:10:6
+deadline covers a streamed response body and aborts the work behind it => ./bounded_lifetime_test.ts:43:6
+client cancelling a streamed response aborts the work behind it => ./bounded_lifetime_test.ts:89:6
+
+FAILED | 1 passed | 3 failed (772ms)
+
+error: Test failed

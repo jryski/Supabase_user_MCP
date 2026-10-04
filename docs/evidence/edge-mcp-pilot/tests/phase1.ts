@@ -12,6 +12,7 @@ const CLIENTS_FILE = Deno.env.get('PILOT_CLIENTS_FILE')!;
 const PHASE = Deno.env.get('PILOT_PHASE') ?? 'run';
 
 const results: Record<string, unknown>[] = [];
+const measurements: Record<string, unknown>[] = [];
 function record(id: string, pass: boolean, facts: Record<string, unknown> = {}) {
   results.push({ id, pass, ...facts });
 }
@@ -360,8 +361,10 @@ record('minted_positive_control', positiveControl.status === 200, {
   status: positiveControl.status,
 });
 
-// T11 revocation: revoke client A grant, then measure behaviour of the already-issued token
+// T11 revocation: positive control before revoke, expected Auth observations after revoke, and a
+// separate measurement of the JWKS-only acceptance window (the known gap, not a pass).
 if (grantA.ok) {
+  const before = await mcpCall(grantA.access!, 'tools/list', {});
   const revoke = await fetch(`${API}/auth/v1/user/oauth/grants?client_id=${clients.a}`, {
     method: 'DELETE',
     headers: { apikey: ANON, authorization: `Bearer ${alice}` },
@@ -386,16 +389,55 @@ if (grantA.ok) {
     headers: { apikey: ANON, authorization: `Bearer ${grantA.access}` },
   });
   await userEp.body?.cancel();
-  record('revocation_observed', true, {
-    revoke_status: revoke.status,
+  record(
+    'revocation_expected_observations',
+    before.status === 200 &&
+      revoke.status >= 200 &&
+      revoke.status < 300 &&
+      refresh.status >= 400 &&
+      userinfo.status >= 400 &&
+      userEp.status >= 400,
+    {
+      before_revoke_status: before.status,
+      revoke_status: revoke.status,
+      refresh_after_revoke_status: refresh.status,
+      refresh_error: refreshBody.error ?? refreshBody.error_code ?? null,
+      userinfo_after_revoke_status: userinfo.status,
+      auth_user_after_revoke_status: userEp.status,
+    },
+  );
+  measurements.push({
+    id: 'jwks_only_acceptance_after_revoke',
     access_token_still_accepted_after_revoke: after.status === 200,
-    refresh_after_revoke_status: refresh.status,
-    refresh_error: refreshBody.error ?? refreshBody.error_code ?? null,
-    userinfo_after_revoke_status: userinfo.status,
-    auth_user_after_revoke_status: userEp.status,
+    note: 'Known gap of JWKS-only verification; not live revocation and not counted as a pass.',
   });
 }
 
-const failed = results.filter((r) => r.pass !== true).map((r) => r.id);
-console.log(JSON.stringify({ phase: 'run', results, failed }, null, 1));
+const EXPECTED = [
+  'as_metadata',
+  'unauthenticated_401',
+  'protected_resource_metadata',
+  'oauth_grant_client_a',
+  'oauth_grant_without_resource',
+  'whoami_oauth_token',
+  'data_tool_fail_closed',
+  'oversized_body_413',
+  'first_party_session_refused',
+  'client_b_not_allowlisted_refused',
+  'unknown_key_refused',
+  'wrong_issuer_refused',
+  'wrong_audience_refused',
+  'expired_refused',
+  'minted_positive_control',
+  'revocation_expected_observations',
+];
+const seen = new Set(results.map((r) => r.id as string));
+const missing = EXPECTED.filter((id) => !seen.has(id));
+const unexpected = [...seen].filter((id) => !EXPECTED.includes(id));
+const failed = [
+  ...results.filter((r) => r.pass !== true).map((r) => r.id),
+  ...missing.map((id) => `missing:${id}`),
+  ...unexpected.map((id) => `unexpected:${id}`),
+];
+console.log(JSON.stringify({ phase: 'run', results, measurements, missing, failed }, null, 1));
 Deno.exit(failed.length === 0 ? 0 : 1);
