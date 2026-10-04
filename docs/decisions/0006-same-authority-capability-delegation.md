@@ -137,6 +137,7 @@ current client registry and the live session. The server validates inbound token
 them only to those functions. It holds no authority of its own.
 
 See the profile for:
+
 - the normative requirements (SACD-0 to SACD-22);
 - the access matrix and conformance suite (CT-1 to CT-22);
 - the minimal first proof (§8).
@@ -199,6 +200,7 @@ We make two separate claims and keep them separate.
 4. actions remain attributable.
 
 SACD is designed so that the authorization server and the database enforce all four, through:
+
 - the hook-set audience;
 - the execute-only capability role;
 - the restricted definer owner under forced RLS;
@@ -213,6 +215,7 @@ the endpoint and its backend as one composite resource is a proposed threat-mode
 interpretation. It is not a normative exemption. It does not meet the condition ATLAS set for
 reconsideration (MC1807), which was a design that removes the hop. We therefore record an
 **exception**:
+
 - no strict-conformance claim is made;
 - the exception is disclosed in documentation and protected-resource metadata (SACD-18);
 - the owner must accept it explicitly (SACD-0);

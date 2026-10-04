@@ -5,32 +5,32 @@
 // sent to PostgREST or any other upstream API, and no admin or service-role client is
 // constructed. Only the user-mode JWT gate (JWKS verification with pinned issuer and
 // audience) is used.
-import 'jsr:@supabase/functions-js@2/edge-runtime.d.ts'
-import { pipeline } from 'npm:@supabase/middleware@1.0.0'
-import { withOAuthProtectedResource } from 'npm:@supabase/server@1.9.0'
-import { withRequiredClaims } from 'npm:@supabase/server@1.9.0/middleware/required-claims'
-import { createMcpHandler, McpServer } from 'npm:@modelcontextprotocol/server@2.3.0'
-import { z } from 'npm:zod@4.6.5'
-import { createBounded, jsonError } from './bounded.ts'
+import 'jsr:@supabase/functions-js@2/edge-runtime.d.ts';
+import { createMcpHandler, McpServer } from 'npm:@modelcontextprotocol/server@2.3.0';
+import { pipeline } from 'npm:@supabase/middleware@1.0.0';
+import { withOAuthProtectedResource } from 'npm:@supabase/server@1.9.0';
+import { withRequiredClaims } from 'npm:@supabase/server@1.9.0/middleware/required-claims';
+import { z } from 'npm:zod@4.6.5';
+import { createBounded, jsonError } from './bounded.ts';
 
-const MAX_BODY_BYTES = 65_536
-const DEADLINE_MS = 2_000
+const MAX_BODY_BYTES = 65_536;
+const DEADLINE_MS = 2_000;
 
 function list(name: string): string[] {
   return (Deno.env.get(name) ?? '')
     .split(',')
     .map((value) => value.trim())
-    .filter((value) => value.length > 0)
+    .filter((value) => value.length > 0);
 }
 
 // Pinned explicitly; never derived from the request.
-const ISSUER = Deno.env.get('MCP_AUTH_ISSUER') ?? ''
-const AUDIENCE = list('MCP_AUDIENCE')
-const ALLOWED_CLIENTS = new Set(list('MCP_ALLOWED_CLIENT_IDS'))
+const ISSUER = Deno.env.get('MCP_AUTH_ISSUER') ?? '';
+const AUDIENCE = list('MCP_AUDIENCE');
+const ALLOWED_CLIENTS = new Set(list('MCP_ALLOWED_CLIENT_IDS'));
 
 function claimString(claims: Record<string, unknown>, key: string): string | null {
-  const value = claims[key]
-  return typeof value === 'string' && value.length > 0 ? value : null
+  const value = claims[key];
+  return typeof value === 'string' && value.length > 0 ? value : null;
 }
 
 const failClosed = {
@@ -44,7 +44,7 @@ const failClosed = {
       }),
     },
   ],
-}
+};
 
 const gated = pipeline(
   [
@@ -52,20 +52,23 @@ const gated = pipeline(
     withRequiredClaims({ issuer: ISSUER, audience: AUDIENCE, errors: { detailed: false } }),
   ],
   async (req, ctx) => {
-    const claims = ctx.jwtClaims as unknown as Record<string, unknown>
-    const clientId = claimString(claims, 'client_id')
+    const claims = ctx.jwtClaims as unknown as Record<string, unknown>;
+    const clientId = claimString(claims, 'client_id');
     // Ordinary first-party sessions carry no OAuth client_id; they are not MCP grants.
-    if (clientId === null) return jsonError(403, 'oauth_client_required')
+    if (clientId === null) return jsonError(403, 'oauth_client_required');
     if (ALLOWED_CLIENTS.size > 0 && !ALLOWED_CLIENTS.has(clientId)) {
-      return jsonError(403, 'client_not_allowed')
+      return jsonError(403, 'client_not_allowed');
     }
-    if (claimString(claims, 'role') !== 'authenticated') return jsonError(403, 'role_not_allowed')
+    if (claimString(claims, 'role') !== 'authenticated') return jsonError(403, 'role_not_allowed');
     const handler = createMcpHandler(
       () => {
-        const server = new McpServer({ name: 'supabase-user-mcp-pilot', version: '0.0.1' })
+        const server = new McpServer({ name: 'supabase-user-mcp-pilot', version: '0.0.1' });
         server.registerTool(
           'whoami',
-          { description: 'Return the verified caller identity (no data access).', inputSchema: z.object({}) },
+          {
+            description: 'Return the verified caller identity (no data access).',
+            inputSchema: z.object({}),
+          },
           () => ({
             content: [
               {
@@ -80,7 +83,7 @@ const gated = pipeline(
               },
             ],
           }),
-        )
+        );
         server.registerTool(
           'memory_search',
           {
@@ -88,22 +91,22 @@ const gated = pipeline(
             inputSchema: z.object({ query: z.string().max(256) }),
           },
           () => failClosed,
-        )
-        return server
+        );
+        return server;
       },
       { onerror: () => console.error('mcp_request_failed') },
-    )
-    return handler.fetch(req)
+    );
+    return handler.fetch(req);
   },
-)
+);
 
-const bounded = createBounded(gated, { maxBodyBytes: MAX_BODY_BYTES, deadlineMs: DEADLINE_MS })
+const bounded = createBounded(gated, { maxBodyBytes: MAX_BODY_BYTES, deadlineMs: DEADLINE_MS });
 
 function serve(req: Request): Promise<Response> {
   if (ISSUER.length === 0 || AUDIENCE.length === 0) {
-    return Promise.resolve(jsonError(500, 'pilot_not_configured'))
+    return Promise.resolve(jsonError(500, 'pilot_not_configured'));
   }
-  return bounded(req)
+  return bounded(req);
 }
 
-Deno.serve(serve)
+Deno.serve(serve);

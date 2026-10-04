@@ -38,11 +38,13 @@ Two authoritative sources currently disagree about how to build this on Supabase
 Neither source addresses the case where the MCP endpoint and its data belong to the **same
 authorization server, project and user**. Our earlier records required a second, separately
 consented credential. That is a sound, conservative answer, but it has real costs:
+
 - a second consent for every user;
 - a server-side store of every user's downstream credential;
 - divergence from the vendor's guidance.
 
 This profile defines a single-token alternative:
+
 - it states mechanically checkable conditions under which the harms the prohibition names do not
   arise;
 - it states plainly where it departs from the text;
@@ -54,6 +56,7 @@ This profile defines a single-token alternative:
 
 The [Token Passthrough](https://modelcontextprotocol.io/docs/2026-07-28/tutorials/security/security_best_practices#token-passthrough)
 risks are properties of a forwarded token's authority and handling:
+
 - the downstream accepts tokens not meant for this server;
 - the token carries more downstream authority than the server's purpose needs;
 - the downstream trusts the token for the wrong reasons;
@@ -63,11 +66,13 @@ risks are properties of a forwarded token's authority and handling:
 ### 2.2 How SACD addresses them
 
 For approved MCP clients only, the authorization server mints a token with:
+
 - an `aud` that is the MCP resource;
 - a `role` that is a capability role.
 
 The capability role can do exactly one thing at the database: call a fixed set of capability
 functions. Each function:
+
 - re-validates the token's claims and liveness itself before reading anything (SACD-11);
 - reads data through a restricted owner role that RLS still governs (SACD-8, SACD-9).
 
@@ -427,6 +432,7 @@ one row.
 ## 8. Minimal first proof
 
 The smallest useful local proof, before any hosted step, is:
+
 - one capability function returning nonempty own-user fixture data;
 - the hook, the capability role, the capability owner role and the SACD guard;
 - CT-2, CT-4, CT-5D, CT-6, CT-7, CT-9, CT-10, CT-12, CT-15 and CT-20 for that function;
