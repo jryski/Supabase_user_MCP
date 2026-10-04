@@ -98,7 +98,10 @@ refresh token encrypted and presents a fresh B access token to the Data API.
   - **B's own authority still has to be bounded at the database.** A plain B token has role
     `authenticated` and the general Data API audience, which is broader than the MCP tools. So
     the boundary that actually limits authority is the same database-side capability bound that
-    Option 3 makes explicit. The second token adds custody, not a boundary.
+    Option 3 makes explicit. That holds whichever token carries the capability-role restriction.
+    A correctly scoped two-token design is no stronger than SACD on authority, because both rely on
+    the same database grants, views and RLS. It is weaker on custody. The second token adds
+    custody, not a boundary.
 
 ### Option 2: The vendor pattern as published (forward the general user token)
 
@@ -125,8 +128,8 @@ The authorization server itself mints, for approved MCP clients only:
 
 The database also enforces session liveness, bounds and attribution. The server validates
 completely and then presents that token only to those capability functions. It holds no
-authority of its own. See the profile for the full normative requirements (SACD-1 to SACD-21) and
-the conformance suite (CT-1 to CT-18).
+authority of its own. See the profile for the full normative requirements (SACD-1 to SACD-22) and
+the conformance suite (CT-1 to CT-21).
 
 - **For:**
   - Every MCP-listed passthrough risk is neutralized by a database-enforced control, and none
@@ -172,29 +175,60 @@ project. It is specified normatively in
   any deployment that cannot satisfy SACD-2, SACD-7 or SACD-11.
 - Keep remote data tools **fail-closed** on any deployment until its conformance suite passes.
 
-### Interpretation we are asserting
+### Our position: purpose satisfied, text deviated from
 
-We read the MCP prohibition as protecting four properties:
+We make two separate claims and keep them separate.
+
+**Claim 1, about purpose.** We read the MCP prohibition as protecting four properties:
 
 1. the server only acts on tokens issued for it;
 2. no token carries more downstream authority than the server's purpose requires;
 3. downstream controls cannot be bypassed;
 4. actions remain attributable.
 
-It does not prohibit a resource from being implemented as an endpoint plus its own capability
-backend under one authority. Under SACD the backend is not a separately trusting upstream:
-- its only grant to the token is the capability role;
-- the capability role is defined by, and exactly matches, the MCP tool surface;
+Under SACD all four are enforced by the authorization server and the database, not by the MCP
+endpoint:
+- the token's audience is the MCP resource;
+- the backend's only grant to the token is the capability role, which exactly matches the MCP
+  tool surface;
 - the backend re-verifies everything itself.
 
-The token is therefore issued **for the composite protected resource**, and presenting it to that
-resource's own backend is use, not passthrough. Where the literal text ("a separate token, issued
-by the upstream authorization server") still does not fit, we record a **deviation**, not a
-reinterpretation. Then:
+Presenting the token to the resource's own backend therefore creates none of the harms the rule
+names. This claim stands or falls on the conformance suite, and on SACD-22 keeping it true after
+every migration.
 
+**Claim 2, about text.** The literal text still does not fit: it says the upstream token "is a
+separate token, issued by the upstream authorization server", and SACD uses one token. We do
+**not** claim that a correct reading of the text makes SACD conformant. We record a
+**deviation**:
 - strict-conformance claims are not made;
 - the deviation is disclosed in documentation and protected-resource metadata (SACD-18);
-- the question is submitted upstream (#3413).
+- the question is submitted upstream (#3413);
+- strict deployments use the separate-credential mode.
+
+### Strongest objection, and our response
+
+An independent adversarial review put the strict case this way, in substance. The rule is a
+bright line with no same-authority carve-out. SACD replaces it with an **equivalence claim** ("the
+backend allows exactly the tool surface, so there is nothing to bypass"). That claim must be
+re-proven against every future migration, function, view, extension and default grant. The
+review found two realistic ways the first draft's checks would have missed a breach (default
+`PUBLIC` function grants and view-owner RLS bypass). Needing 22 requirements and 21 tests is
+itself evidence for the simpler rule.
+
+We accept most of this:
+- SACD is only as strong as its continuous verification. That is why SACD-22 makes the
+  catalog lint and the exhaustive denial tests a CI gate on every relevant migration, not a
+  one-time check.
+- Both gaps the review found are now requirements and tests (profile §9).
+
+We do not accept that a second token removes the need for the same proof. A B token minted by
+the same Supabase Auth for the same user reaches the same database. Unless it is also
+restricted to a capability role, it carries the user's full Data API authority. If it is
+restricted, it depends on exactly the same grants, views and RLS, verified the same way. The
+strict design keeps every SACD obligation and adds credential custody. The bright line protects
+against passthrough to a **separately trusting** API. Here the "upstream" is the same
+authority's own database, so the line does not remove the database-side proof obligation.
 
 ## Consequences
 
@@ -214,7 +248,10 @@ reinterpretation. Then:
 - It requires per-deployment verification of platform behaviour (PostgREST audience handling,
   hook availability).
 - The capability schema becomes security-critical. Errors in grants or `SECURITY DEFINER` use
-  become privilege errors, so catalog lint (CT-15) is mandatory.
+  become privilege errors, so catalog lint (CT-15) is mandatory and runs in CI on every relevant
+  migration (SACD-22).
+- The equivalence claim must be re-proven continuously; a lapse in CI coverage is a security
+  defect, not a process slip.
 - Database-side rate limiting must be designed explicitly.
 
 ### Follow-up
@@ -222,8 +259,8 @@ reinterpretation. Then:
 1. ATLAS review of this ADR and the profile; Warden review of the conformance suite design.
 2. Owner decision (Jesse) to accept, amend or reject.
 3. Phase 2, local: implement the hook, capability role, capability schema and liveness for the
-   pilot. Run CT-1 to CT-17 locally, including the PostgREST audience question.
-4. Phase 3, Ari TEST (owner-gated): deploy, run CT-1 to CT-18 with a real Claude connector, then
+   pilot. Run CT-1 to CT-17 and CT-19 to CT-21 locally, including the PostgREST audience question.
+4. Phase 3, Ari TEST (owner-gated): deploy, run CT-1 to CT-21 with a real Claude connector, then
    enable read tools.
 5. Track #3413 and apply SACD-21 on any maintainer ruling.
 
@@ -234,7 +271,7 @@ Acceptance of this ADR requires:
 - an independent architecture review recorded on the coordination channel;
 - the owner's decision.
 
-Activation on any deployment requires conformance receipts CT-1 to CT-18 against that exact
+Activation on any deployment requires conformance receipts CT-1 to CT-21 against that exact
 deployment.
 
 ## Revisit when
@@ -257,3 +294,4 @@ deployment.
 - Repository: ADR-0002, ADR-0005; `docs/evidence/ari-test-probe/sql/04`–`07`;
   `docs/evidence/ISSUE_3_RLS_CATALOG_LINT.md`; `docs/evidence/ISSUE_4_SECURITY_DEFINER_GATE.md`.
 - Coordination: ATLAS review MC1807; phase 1 pilot report MC1808.
+- Adversarial review of profile 0.1 (SOUND_WITH_GAPS; findings closed in profile 0.2, §9).
