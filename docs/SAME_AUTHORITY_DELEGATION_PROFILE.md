@@ -1,8 +1,8 @@
 # Same-Authority Capability Delegation (SACD) profile
 
-- **Profile version:** 0.4 (draft). 0.1 was amended after an adversarial review (0.2), 0.2 after
-  the ATLAS architecture review (0.3), and 0.3 after the ATLAS scoped re-review and the local
-  proof (0.4). See §10.
+- **Profile version:** 0.5 (draft). 0.1 was amended after an adversarial review (0.2), 0.2 after
+  the ATLAS architecture review (0.3), 0.3 after the ATLAS scoped re-review and the local proof
+  (0.4), and 0.4 after the next ATLAS re-review (0.5). See §10.
 - **Status:** Proposed. Not accepted, not deployed, and no data tools are enabled under it.
 - **Decision record:** [ADR-0006](decisions/0006-same-authority-capability-delegation.md)
 - **Relationship to MCP:** This profile is a **documented exception** to the literal text of
@@ -190,12 +190,29 @@ Each requirement has an identifier so that tests, reviews and exceptions can cit
   It **MUST NOT** hold privileges on any table, view, sequence or other schema. In particular:
   - `EXECUTE` **MUST** be revoked from `PUBLIC` on every function in every Data-API-exposed
     schema, including extension functions, unless the access matrix lists the function;
-  - for **every role that creates objects** in exposed schemas, default privileges **MUST** be
-    altered so that new functions are not granted to `PUBLIC`;
+  - the **global** default privileges of **every role that creates functions** **MUST** be altered so
+    new functions are not granted to `PUBLIC` (`ALTER DEFAULT PRIVILEGES FOR ROLE <role> REVOKE
+    EXECUTE ON FUNCTIONS FROM PUBLIC`, without `IN SCHEMA`). Per-schema default privileges cannot
+    remove the global `PUBLIC EXECUTE` default. Ordinary application roles receive deliberate
+    grants instead. The proof showed this concretely: without the global revoke, a function
+    created later in an exposed schema was callable with a SACD token;
+  - functions created by platform-owned roles that the deployment cannot alter (on Supabase,
+    `supabase_admin`) are platform-managed and **MUST** be covered by the catalog lint and the
+    deployment fingerprint;
   - extension schemas **MUST NOT** be exposed, and their functions **MUST NOT** be executable by
     the capability role;
   - the capability role **MUST** have no memberships. The API's authenticator role is granted the
     capability role so that it can switch to it, and that is the only grant involving it.
+
+  Recorded exceptions:
+  - **Schema barrier.** A platform-owned function that keeps `PUBLIC EXECUTE` but lives in a schema
+    where the capability role has no `USAGE` (on Supabase, `graphql_public.graphql`) is
+    unreachable. It is recorded as a schema-barrier exception. That barrier is a fingerprint
+    dependency.
+  - **Migration-role ADMIN.** PostgreSQL 16 and later give the role that creates the two roles
+    (the migration role) `ADMIN` on them, without `SET`. This is a privileged migration boundary,
+    not an ingress path, and it is recorded as an exception to the membership and grantability
+    wording of SACD-7 and SACD-8.
 - **SACD-8 Definer functions under a restricted owner.** Invoker functions run with the caller's
   privileges, and the capability role has no table privileges. Capability functions therefore
   **MUST** be `SECURITY DEFINER` functions owned by the capability owner role. Each **MUST**:
@@ -223,8 +240,11 @@ Each requirement has an identifier so that tests, reviews and exceptions can cit
   - take only the session, subject and client, and return only a status word;
   - be executable by the capability owner role alone.
 
-  It **MUST NOT** read application data. It is a reviewed exception, it appears in the catalog
-  lint, and it is covered by the deployment fingerprint (SACD-22).
+  It **MUST NOT** read application data. It **MUST** refuse (return a non-live status) when the
+  session policy row is missing or invalid. A missing row must never mean "no limits". It appears
+  in the catalog lint, which checks its grantees across all roles, and it is covered by the
+  deployment fingerprint (SACD-22). ATLAS accepted this shape in principle as an architectural
+  exception (MC1814). Acceptance of the exact implementation is a separate review.
 - **SACD-9 RLS still decides rows.** Every deployment-controlled table that a capability function
   reads **MUST** have RLS enabled and forced. Platform-managed tables such as `auth.sessions` **MUST
   NOT** be modified. They are reached only through the liveness oracle (SACD-8). Policies that apply to the capability owner role:
@@ -246,7 +266,11 @@ Each requirement has an identifier so that tests, reviews and exceptions can cit
   - any per-principal quota the deployment claims.
 
   Timeouts **MUST** be verified through actual Data API requests after a configuration reload. A
-  role setting in the catalog is not an execution receipt.
+  role setting in the catalog is not an execution receipt. Locally, PostgREST applied the
+  capability role's timeouts only after a configuration reload; before that, requests ran with
+  the authenticator's 8 s limits. Every capability function **MUST** declare a serialized result
+  byte budget and refuse results over it. Truncating silently does not meet this requirement.
+  The budget is measured on the JSON of the returned rows, in the same snapshot as the rows.
 - **SACD-11 Backend guard.** On every capability call, the SACD guard **MUST** read the request
   claims and refuse unless all of the following hold:
   - `iss` is the exact pinned issuer;
@@ -262,7 +286,8 @@ Each requirement has an identifier so that tests, reviews and exceptions can cit
   A deployment where any configured session mode cannot be evaluated from the database **MUST
   NOT** use this profile. Time-box and inactivity limits are read from a deployment-controlled
   policy table that **MUST** mirror the Auth configuration. The fingerprint (SACD-22) compares the
-  two.
+  two. A missing or invalid policy row **MUST** cause refusal. An intentionally disabled mode is an
+  explicit null in a present row.
 
   The guard is a new one-token function and needs its own review. The repository's `sql/05` is a
   two-grant probe: it expects a separate downstream token and denies the capability role. It is a
@@ -429,19 +454,19 @@ one row.
 | CT-5 | At the MCP endpoint: forged key, wrong issuer, wrong or extra audience, expired token, wrong role, ID token, missing or malformed claims | Refused before tool dispatch |
 | CT-5D | **Direct** to each capability function: every CT-5 variant that the gateway accepts, plus a mismatched user, session or client, and a stale token after client removal | Refused by the SACD guard |
 | CT-6 | Direct: every table, view and private relation in every exposed schema | Denied |
-| CT-7 | Direct: every function in every exposed schema, including the guard and extension functions | Exactly as the access matrix (§6.1) states: capability functions allowed, reviewed safe `PUBLIC` exceptions as listed, everything else denied |
+| CT-7 | Direct: every function signature in every exposed schema, including the guard and extension functions, called with valid arguments | Exactly as the access matrix (§6.1) states: capability functions allowed, reviewed safe `PUBLIC` exceptions as listed, everything else refused with a specific authorization error. Unknown-route (`PGRST202`) and argument errors do not count as denials |
 | CT-8 | Realtime: Postgres Changes, public and private Broadcast, Presence, joins, and an already-connected socket after revocation. Also GraphQL and its introspection; each Storage operation and signed-URL creation; other Edge Functions; each Auth account operation | Each denied, or listed as a public surface or an own-account exception, with one receipt each |
 | CT-9 | Direct and through MCP: each capability function against nonempty own-user fixtures, with and without PostgREST query parameters | The same bounded result on both paths |
 | CT-10 | Direct and through MCP: requests aimed at another user's rows | Empty or denied on both paths |
 | CT-11 | Writes and other non-capability operations, through both paths | Denied |
 | CT-12 | Revoke the grant, then call with the already-issued token on both paths | Refused for every request started after the revoking request returned |
-| CT-13 | Session `not_after`, and each configured session timeout mode (time-box, inactivity) | As CT-12; inactivity is measured from the last refresh |
-| CT-14 | Through both paths, after a configuration reload: oversized inputs, over-cap rows and bytes, slow queries, lock waits, aggregate and filter parameters, and concurrent per-principal calls | Refused, capped or timed out by the backend as specified |
-| CT-15 | Catalog lint: effective privileges of the capability role and the capability owner role; definer properties; forced RLS; default privileges for every creating role; exposed schemas | Exactly as declared |
+| CT-13 | Session `not_after`, each configured session timeout mode (time-box, inactivity), and a missing policy row | As CT-12; inactivity is measured from the last refresh; a missing policy row refuses |
+| CT-14 | Through both paths, after a configuration reload: oversized inputs, over-cap rows, worst-case serialized bytes (escaped labels at the row cap), slow queries, lock waits, aggregate and filter parameters, and concurrent per-principal calls | Refused, capped or timed out by the backend as specified; allowed results stay within the byte budget on the wire |
+| CT-15 | Catalog lint: effective privileges of the capability role and the capability owner role; definer properties; forced RLS; global default function privileges for every creating role; oracle grantees across all roles; memberships; exposed schemas. Plus a probe that creates a new function in each exposed schema and calls it with a SACD token | Every property asserted, not just logged, and exactly as declared. New functions are refused |
 | CT-16 | Endpoint secret scan, static and at runtime | No privileged material read or used |
 | CT-17 | Two users and two approved clients, in combination | Each user sees only their own rows; client restrictions hold |
 | CT-18 | A real MCP client end to end (the Claude connector) | Matches CT-1 to CT-12 |
-| CT-19 | In-flight and concurrent cases: revoke during a stream of calls; concurrent refresh and revoke; more calls than pooled connections, before and after revocation | Behaviour matches SACD-11a; no call started after the revoke returned is accepted; no stale authorization on reuse |
+| CT-19 | In-flight and concurrent cases: revoke during a stream of calls; concurrent refresh and revoke; a refresh that completes before a revoke; more calls than pooled connections, before and after revocation | Behaviour matches SACD-11a; no call started after the revoke returned is accepted; a refreshed token is refused after the revoke; no stale authorization on reuse |
 | CT-20 | Remove a client from the registry while its session stays live | Refused on both paths at the next guard check |
 | CT-21 | Drift: in a disposable project, mutate each fingerprint element in turn (function body or owner, hook, registry, role attribute, default privilege, exposed schema, platform setting) | The CI or fingerprint check fails closed for each |
 | CT-22 | Endpoint ingress and response lifetime, including with the real MCP SDK: slow and chunked bodies, declared oversize with stalled cancellation, a client disconnect, timed-out handler work, and a streamed (SSE) response with delayed tool work and a downstream fetch | The deadline covers body ingestion and the response body; reader, handler, tool and downstream work are aborted; early refusals return at once (SACD-16) |
@@ -492,34 +517,49 @@ measurement. It is the known gap SACD-11 closes, and it is not counted as a pass
 v2.197.0 ignored RFC 8707 `resource`. Userinfo is a protected profile endpoint, not RFC 7662
 introspection, and is not used for liveness.
 
-**SACD minimal proof.** 44 of 44 checks pass against a complete expected-ID set:
+**SACD minimal proof.** 47 asserted checks pass against a complete expected-ID set, and one
+observation (PostgREST audience acceptance) is reported separately:
 
 - the hook-issued claims on issuance and refresh;
 - positive nonempty own-user rows first, then caps that hold even when query parameters are
   added;
+- a serialized byte budget of 32,768 bytes. A worst-case 100-row result (about 58 KB on the wire)
+  is refused; 40 worst-case rows (23,398 bytes) are allowed;
 - per-user isolation;
 - the declared non-MCP, first-party, unknown-client and missing-client-refresh cases;
 - 12 guard-specific direct negatives, using tokens signed with the real key, plus 4 cases the
   gateway refuses before the guard;
-- exhaustive denial of relations and functions against positive controls;
-- role timeouts applied through real requests, with statement and lock timeouts enforced;
-- `not_after`, time-box and inactivity;
+- exhaustive denial of relations and functions with specific authorization errors, against
+  positive controls;
+- new functions created in both exposed schemas are refused;
+- role timeouts applied through real requests after a configuration reload, with statement and
+  lock timeouts enforced;
+- `not_after`, time-box, inactivity and a missing policy row;
 - registry removal, including refresh;
 - grant revocation;
 - 30 calls on a 10-connection pool before and after revocation;
 - 40 staggered calls with a concurrent revoke, where no call started after the revoke returned
   was accepted;
-- a refresh-and-revoke race;
-- the catalog lint.
+- a refresh-and-revoke race, and a refresh that completed before a revoke;
+- a catalog lint that asserts every property it records.
 
-Six deliberate breakages were each caught:
+Nine deliberate breakages were each caught:
 
 - no guard call;
 - no session check;
 - no registry check;
 - a hook that maps any client;
 - an oracle that ignores the session policy;
-- no role timeouts.
+- no role timeouts;
+- no global function-default revoke (caught by both the new-function probe and the lint);
+- a missing policy row that falls through to live;
+- no byte budget.
+
+Before the fixes, the same suite showed three real defects:
+
+- a function created later was callable with a SACD token (status 200);
+- deleting the policy row disabled the session limits;
+- a 58 KB result was returned.
 
 **Platform findings from the proof:**
 
@@ -586,3 +626,13 @@ Six deliberate breakages were each caught:
   - The liveness oracle exception and the session-policy table are recorded.
   - Response-lifetime and early-refusal requirements are added.
   - The local proof and its results are added.
+- **0.4 to 0.5.** The next ATLAS re-review (MC1814) continued local research with conditions and
+  accepted the oracle shape in principle. Changes:
+  - The global function-default revoke is required for every creating role, and the
+    platform-managed and schema-barrier exceptions are recorded.
+  - A missing policy row now refuses.
+  - A serialized result byte budget is required.
+  - CT-7 requires specific authorization errors, and CT-15 asserts what it logs.
+  - Refresh-then-revoke is covered.
+  - The migration-role ADMIN exception is recorded.
+  - The proof is updated to 47 asserted checks and nine breakages.

@@ -311,3 +311,5 @@ conformance receipts CT-1 to CT-22 against that exact deployment.
   research direction with conditions; addressed in 0.3 (profile §10).
 - ATLAS scoped re-review of 0.3 (MC1812; PR #102 review 5408073603): local research direction and
   minimal proof accepted with conditions; addressed in 0.4 (profile §10).
+- ATLAS re-review of 0.4 (MC1814; PR #102 review 5408432650): continue local research with
+  conditions; oracle shape accepted in principle; addressed in 0.5 (profile §10).

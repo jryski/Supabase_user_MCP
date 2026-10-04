@@ -38,6 +38,7 @@ set search_path = ''
 as $$
   select case
     when s.id is null then 'not_live'
+    when p.singleton is null then 'policy_missing'
     when s.user_id is distinct from p_sub then 'user_mismatch'
     when s.oauth_client_id is null or s.oauth_client_id::text is distinct from p_client then 'client_mismatch'
     when s.not_after is not null and s.not_after <= pg_catalog.clock_timestamp() then 'expired'
@@ -147,11 +148,28 @@ declare
   v_sub uuid;
   v_rows integer := least(greatest(coalesce(max_rows, 1), 1), 100);
   v_prefix text := coalesce(label_prefix, '');
+  v_bytes bigint;
 begin
   if octet_length(v_prefix) > 64 then
     raise exception 'list_own_v1:input_too_large' using errcode = '22023';
   end if;
   v_sub := mcp_cap.sacd_guard();
+  -- Serialized result budget (SACD-10): JSON bytes of the rows plus array punctuation, measured
+  -- in the same snapshot as the returned rows. Over-budget results are refused, not truncated.
+  select coalesce(sum(pg_catalog.octet_length(pg_catalog.json_build_object(
+           'id', f.id, 'label', f.label, 'created_at', f.created_at)::text) + 1), 0) + 2
+    into v_bytes
+    from (
+      select f0.id, f0.label, f0.created_at
+      from mcp_cap.fixture f0
+      where f0.owner_sub = v_sub
+        and pg_catalog.left(f0.label, pg_catalog.length(v_prefix)) = v_prefix
+      order by f0.id
+      limit v_rows
+    ) f;
+  if v_bytes > 32768 then
+    raise exception 'list_own_v1:result_budget_exceeded' using errcode = '54000';
+  end if;
   return query
     select f.id, f.label, f.created_at
     from mcp_cap.fixture f
@@ -236,8 +254,10 @@ begin
   end loop;
 end;
 $revoke$;
-alter default privileges for role postgres in schema public, graphql_public, mcp_api
-  revoke execute on functions from public;
+-- Per-schema ALTER DEFAULT PRIVILEGES cannot remove the global PUBLIC EXECUTE default, so the
+-- global default for the migration role is changed. Functions created by supabase_admin are
+-- platform-managed; they are covered by the catalog lint and the deployment fingerprint.
+alter default privileges for role postgres revoke execute on functions from public;
 
 -- SACD-8 ownership: the definer functions belong to the restricted owner role. The migration
 -- role may set that role only for the duration of this transfer.

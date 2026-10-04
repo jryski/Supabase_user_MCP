@@ -11,6 +11,7 @@ const RUN = crypto.randomUUID().slice(0, 8);
 
 type Rec = Record<string, unknown>;
 const results: Rec[] = [];
+const measurements: Rec[] = [];
 function record(id: string, pass: boolean, facts: Rec = {}) {
   results.push({ id, pass, ...facts });
 }
@@ -234,6 +235,7 @@ const bobSub = decodeJwt(bob).sub as string;
 await sql(`insert into mcp_cap.fixture(owner_sub, label) select ${lit(aliceSub)}::uuid, 'alice-' || lpad(g::text, 3, '0') from generate_series(1, 120) g;
 insert into mcp_cap.fixture(owner_sub, label) values (${lit(bobSub)}::uuid, 'bob-001'), (${lit(bobSub)}::uuid, 'bob-002');
 insert into public.app_notes(owner_sub, body) values (${lit(aliceSub)}::uuid, 'alice note');
+notify pgrst, 'reload config';
 notify pgrst, 'reload schema';`);
 // Wait until the schema cache knows every capability route, so no denial can come from a stale cache.
 for (let i = 0; i < 40; i++) {
@@ -245,6 +247,8 @@ for (let i = 0; i < 40; i++) {
   if (probes.every((p) => p.payload?.code !== 'PGRST202')) break;
   await new Promise((res) => setTimeout(res, 250));
 }
+// Role settings (statement and lock timeouts) are loaded on PostgREST config reload.
+await sleepMs(1500);
 
 // ---------- CT-2: SACD token claims on issuance and refresh ----------
 const gA = await oauthGrant(alice, clientA, REDIRECT);
@@ -522,7 +526,7 @@ const gqlBody = await json(gql);
 record(
   'CT-7_functions_denied',
   fnResults.length > 0 &&
-    fnResults.every((r) => (r.sacd_status as number) >= 400) &&
+    fnResults.every((r) => r.sacd_code === '42501') &&
     fnResults.some((r) => r.first_party_status === 200) &&
     guardRoute.status >= 400 &&
     gql.status >= 400,
@@ -622,6 +626,129 @@ record(
     guard: guardReason(s3idle.payload),
     after_refresh: s3again?.status ?? null,
     note: 'refresh updates refreshed_at; Auth-side inactivity enforcement is not configured locally',
+  },
+);
+
+// ---------- CT-13: a missing session policy row must refuse, not disable limits ----------
+const s4 = await freshSacd(alice, clientA);
+const s4ok = await listOwn(s4.access, {});
+await sql(`delete from mcp_cap.session_policy`);
+const s4missing = await listOwn(s4.access, {});
+await sql(`insert into mcp_cap.session_policy (singleton) values (true)`);
+const s4restored = await listOwn(s4.access, {});
+record(
+  'CT-13_policy_row_missing',
+  s4ok.status === 200 &&
+    guardReason(s4missing.payload) === 'sacd_guard:session_policy_missing' &&
+    s4restored.status === 200,
+  {
+    before: s4ok.status,
+    missing: s4missing.status,
+    guard: guardReason(s4missing.payload),
+    restored: s4restored.status,
+  },
+);
+
+// ---------- CT-14: serialized result byte budget with worst-case labels ----------
+const BUDGET = 32768;
+const carol = await signup(`sacd-carol-${RUN}@example.test`, `carol-synthetic-${RUN}`);
+const carolSub = decodeJwt(carol).sub as string;
+// Each label is 256 raw bytes of '"' and '\', both of which JSON escapes to two bytes.
+await sql(
+  `insert into mcp_cap.fixture(owner_sub, label) select ${lit(carolSub)}::uuid, repeat(E'"\\\\', 128) from generate_series(1, 100)`,
+);
+const cTok = (await freshSacd(carol, clientA)).access;
+const wire = async (args: Rec, query = '') => {
+  const res = await fetch(`${API}/rest/v1/rpc/list_own_v1${query}`, {
+    method: 'POST',
+    headers: {
+      apikey: ANON,
+      authorization: `Bearer ${cTok}`,
+      'content-type': 'application/json',
+      'content-profile': 'mcp_api',
+    },
+    body: JSON.stringify(args),
+  });
+  const bytes = new Uint8Array(await res.arrayBuffer());
+  let payload: any = null;
+  try {
+    payload = JSON.parse(new TextDecoder().decode(bytes));
+  } catch {
+    payload = null;
+  }
+  return { status: res.status, bytes: bytes.byteLength, payload };
+};
+const worstAll = await wire({ max_rows: 100 });
+const worstSome = await wire({ max_rows: 40 });
+const worstSelect = await wire({ max_rows: 40 }, '?select=label');
+const labelBytes =
+  Array.isArray(worstSome.payload) && worstSome.payload.length > 0
+    ? new TextEncoder().encode(worstSome.payload[0].label).length
+    : null;
+record(
+  'CT-14_result_byte_budget',
+  labelBytes === 256 &&
+    worstAll.status >= 400 &&
+    String(worstAll.payload?.message ?? '') === 'list_own_v1:result_budget_exceeded' &&
+    worstSome.status === 200 &&
+    Array.isArray(worstSome.payload) &&
+    worstSome.payload.length === 40 &&
+    worstSome.bytes <= BUDGET &&
+    worstSelect.status === 200 &&
+    worstSelect.bytes <= BUDGET,
+  {
+    budget_bytes: BUDGET,
+    raw_label_bytes: labelBytes,
+    max_rows_100: {
+      status: worstAll.status,
+      message: worstAll.payload?.message ?? null,
+      wire_bytes: worstAll.bytes,
+    },
+    max_rows_40: {
+      status: worstSome.status,
+      rows: Array.isArray(worstSome.payload) ? worstSome.payload.length : null,
+      wire_bytes: worstSome.bytes,
+    },
+    select_label: { status: worstSelect.status, wire_bytes: worstSelect.bytes },
+  },
+);
+
+// ---------- CT-15: future functions in exposed schemas are not executable by the capability role ----------
+const futureTxn = (
+  await sql(`begin;
+create function public.sacd_probe_future() returns integer language sql as 'select 1';
+create function mcp_api.sacd_probe_future() returns integer language sql as 'select 1';
+select has_function_privilege('mcp_ingress', 'public.sacd_probe_future()', 'EXECUTE')::text || ',' || has_function_privilege('mcp_ingress', 'mcp_api.sacd_probe_future()', 'EXECUTE')::text;
+rollback;`)
+)
+  .split('\n')
+  .filter((l) => l.includes(','))
+  .pop();
+await sql(`create function public.sacd_probe_api() returns integer language sql as 'select 1';
+create function mcp_api.sacd_probe_api() returns integer language sql as 'select 1';
+notify pgrst, 'reload schema';`);
+for (let i = 0; i < 40; i++) {
+  const p = await Promise.all([
+    rest(null, 'POST', 'rpc/sacd_probe_api', 'public', {}),
+    rest(null, 'POST', 'rpc/sacd_probe_api', 'mcp_api', {}),
+  ]);
+  if (p.every((x) => x.payload?.code !== 'PGRST202')) break;
+  await sleepMs(250);
+}
+const futPublic = await rest(tA2, 'POST', 'rpc/sacd_probe_api', 'public', {});
+const futApi = await rest(tA2, 'POST', 'rpc/sacd_probe_api', 'mcp_api', {});
+await sql(
+  `drop function public.sacd_probe_api(); drop function mcp_api.sacd_probe_api(); notify pgrst, 'reload schema';`,
+);
+record(
+  'CT-15_future_function_defaults',
+  futureTxn === 'false,false' &&
+    futPublic.payload?.code === '42501' &&
+    futApi.payload?.code === '42501',
+  {
+    transactional_probe: futureTxn,
+    api_public: { status: futPublic.status, code: futPublic.payload?.code ?? null },
+    api_mcp_api: { status: futApi.status, code: futApi.payload?.code ?? null },
   },
 );
 
@@ -757,6 +884,29 @@ record(
   },
 );
 
+const p4 = await freshSacd(alice, clientA);
+const p4r = await refresh(clientA, p4.refresh);
+const p4new = p4r.access ? await listOwn(p4r.access, {}) : null;
+const revoke4 = await fetch(`${API}/auth/v1/user/oauth/grants?client_id=${clientA}`, {
+  method: 'DELETE',
+  headers: { apikey: ANON, authorization: `Bearer ${alice}` },
+});
+await revoke4.body?.cancel();
+const p4after = p4r.access ? await listOwn(p4r.access, {}) : null;
+record(
+  'CT-19_refresh_then_revoke',
+  p4r.status === 200 &&
+    p4new?.status === 200 &&
+    revoke4.status < 300 &&
+    guardReason(p4after?.payload) === 'sacd_guard:session_not_live',
+  {
+    refresh_status: p4r.status,
+    new_token_before_revoke: p4new?.status ?? null,
+    revoke_status: revoke4.status,
+    new_token_after_revoke_guard: guardReason(p4after?.payload),
+  },
+);
+
 // ---------- CT-15: catalog lint ----------
 const lint = JSON.parse(
   await sql(`select json_build_object(
@@ -772,7 +922,8 @@ const lint = JSON.parse(
  'owner_schema_usage', (select json_agg(nspname order by 1) from pg_namespace where nspname in ('public','graphql_public','mcp_api','mcp_cap','auth','extensions','storage','realtime') and has_schema_privilege('mcp_capability_owner', oid, 'USAGE')),
  'roles', (select json_agg(json_build_object('role', rolname, 'super', rolsuper, 'bypassrls', rolbypassrls, 'login', rolcanlogin, 'inherit', rolinherit, 'config', rolconfig) order by rolname) from pg_roles where rolname in ('mcp_ingress','mcp_capability_owner')),
  'definers', (select json_agg(json_build_object('fn', p.oid::regprocedure::text, 'owner', p.proowner::regrole::text, 'secdef', p.prosecdef, 'config', p.proconfig) order by 1) from pg_proc p join pg_namespace n on n.oid=p.pronamespace where n.nspname in ('mcp_cap','mcp_api')),
- 'oracle_executors', (select coalesce(json_agg(r.rolname order by 1), '[]') from pg_roles r where r.rolname in ('anon','authenticated','service_role','authenticator','mcp_ingress','mcp_capability_owner') and has_function_privilege(r.oid, 'mcp_cap.session_status(uuid,uuid,text)', 'EXECUTE')),
+ 'oracle_executors', (select coalesce(json_agg(r.rolname order by r.rolname), '[]') from pg_roles r where not r.rolsuper and r.rolname <> 'postgres' and has_function_privilege(r.oid, 'mcp_cap.session_status(uuid,uuid,text)', 'EXECUTE')),
+ 'global_function_default_revokes_public', (select exists (select 1 from pg_default_acl d where d.defaclrole = 'postgres'::regrole and d.defaclnamespace = 0 and d.defaclobjtype = 'f' and not exists (select 1 from aclexplode(d.defaclacl) a where a.grantee = 0))),
  'rls', (select json_agg(json_build_object('t', relname, 'enabled', relrowsecurity, 'forced', relforcerowsecurity) order by relname) from pg_class where relnamespace='mcp_cap'::regnamespace and relkind='r'),
  'public_exec_in_exposed', (select coalesce(json_agg(p.oid::regprocedure::text||' owner='||p.proowner::regrole::text), '[]') from pg_proc p join pg_namespace n on n.oid=p.pronamespace where n.nspname in ('public','graphql_public','mcp_api') and (p.proacl is null or exists (select 1 from aclexplode(p.proacl) a where a.grantee=0 and a.privilege_type='EXECUTE'))),
  'default_function_acl', (select coalesce(json_agg(json_build_object('role', defaclrole::regrole::text, 'schema', coalesce(defaclnamespace::regnamespace::text,'*'), 'acl', defaclacl::text)), '[]') from pg_default_acl where defaclobjtype='f')
@@ -787,6 +938,10 @@ const lintPass =
     ]) &&
   lint.ingress_relation_privs.length === 0 &&
   lint.ingress_memberships.length === 0 &&
+  JSON.stringify([...lint.ingress_members].sort()) ===
+    JSON.stringify(['authenticator:set=true:admin=false', 'postgres:set=false:admin=true']) &&
+  JSON.stringify(lint.owner_members) === JSON.stringify(['postgres:set=false:admin=true']) &&
+  lint.global_function_default_revokes_public === true &&
   lint.public_exec_in_exposed.every(
     (f: string) => f.startsWith('graphql_public.') && f.endsWith('owner=supabase_admin'),
   ) &&
@@ -809,7 +964,8 @@ const lintPass =
 record('CT-15_catalog_lint', lintPass, { lint });
 
 // ---------- observation: PostgREST audience handling ----------
-record('OBS_postgrest_audience', true, {
+measurements.push({
+  id: 'postgrest_audience',
   singleton_mcp_audience_accepted_by_postgrest: pos.status === 200,
   note: 'local PostgREST container has no PGRST_JWT_AUD; hosted behaviour unmeasured',
 });
@@ -847,7 +1003,10 @@ const EXPECTED = [
   'CT-19_concurrent_revoke',
   'CT-19_refresh_revoke_race',
   'CT-15_catalog_lint',
-  'OBS_postgrest_audience',
+  'CT-15_future_function_defaults',
+  'CT-13_policy_row_missing',
+  'CT-14_result_byte_budget',
+  'CT-19_refresh_then_revoke',
 ];
 const seenIds = new Set(results.map((x) => x.id as string));
 const failed = [
@@ -855,5 +1014,7 @@ const failed = [
   ...EXPECTED.filter((id) => !seenIds.has(id)).map((id) => `missing:${id}`),
   ...[...seenIds].filter((id) => !EXPECTED.includes(id)).map((id) => `unexpected:${id}`),
 ];
-console.log(JSON.stringify({ run: RUN, results, failed }, null, 1));
+console.log(
+  JSON.stringify({ run: RUN, asserted: results.length, results, measurements, failed }, null, 1),
+);
 Deno.exit(failed.length === 0 ? 0 : 1);

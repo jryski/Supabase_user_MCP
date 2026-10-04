@@ -1,5 +1,5 @@
 {
-  "run": "322018e9",
+  "run": "a5449f9a",
   "asserted": 47,
   "results": [
     {
@@ -9,7 +9,7 @@
         "aud": "http://127.0.0.1:64321/functions/v1/mcp",
         "role": "mcp_ingress",
         "iss": "http://127.0.0.1:64321/auth/v1",
-        "client_id": "93e28911-de35-4df5-8d6a-77ca73ffaa7d",
+        "client_id": "3d3b5112-a646-40fa-94f6-1471097e796b",
         "session_id_present": true,
         "keys": [
           "aal",
@@ -39,7 +39,7 @@
         "aud": "http://127.0.0.1:64321/functions/v1/mcp",
         "role": "mcp_ingress",
         "iss": "http://127.0.0.1:64321/auth/v1",
-        "client_id": "93e28911-de35-4df5-8d6a-77ca73ffaa7d",
+        "client_id": "3d3b5112-a646-40fa-94f6-1471097e796b",
         "session_id_present": true,
         "keys": [
           "aal",
@@ -97,7 +97,7 @@
         "aud": "authenticated",
         "role": "authenticated",
         "iss": "http://127.0.0.1:64321/auth/v1",
-        "client_id": "01fc4e6e-8ecb-4088-917d-e5e7b7eaf61c",
+        "client_id": "c61a4288-8100-41d7-be52-969c089fe333",
         "session_id_present": true,
         "keys": [
           "aal",
@@ -294,27 +294,27 @@
     },
     {
       "id": "CT-14_role_timeouts_applied",
-      "pass": true,
+      "pass": false,
       "status": 200,
       "settings": {
         "role": "mcp_ingress",
-        "lock_timeout": "1s",
-        "statement_timeout": "2s"
+        "lock_timeout": "8s",
+        "statement_timeout": "8s"
       }
     },
     {
       "id": "CT-14_statement_timeout",
-      "pass": true,
-      "status": 500,
-      "code": "57014",
-      "elapsed_ms": 2007
+      "pass": false,
+      "status": 200,
+      "code": null,
+      "elapsed_ms": 3014
     },
     {
       "id": "CT-14_lock_timeout",
       "pass": true,
       "status": 500,
       "code": "55P03",
-      "elapsed_ms": 1010
+      "elapsed_ms": 1021
     },
     {
       "id": "CT-13_not_after",
@@ -341,21 +341,21 @@
     },
     {
       "id": "CT-13_policy_row_missing",
-      "pass": true,
+      "pass": false,
       "before": 200,
-      "missing": 403,
-      "guard": "sacd_guard:session_policy_missing",
+      "missing": 200,
+      "guard": null,
       "restored": 200
     },
     {
       "id": "CT-14_result_byte_budget",
-      "pass": true,
+      "pass": false,
       "budget_bytes": 32768,
       "raw_label_bytes": 256,
       "max_rows_100": {
-        "status": 500,
-        "message": "list_own_v1:result_budget_exceeded",
-        "wire_bytes": 90
+        "status": 200,
+        "message": null,
+        "wire_bytes": 58498
       },
       "max_rows_40": {
         "status": 200,
@@ -369,15 +369,15 @@
     },
     {
       "id": "CT-15_future_function_defaults",
-      "pass": true,
-      "transactional_probe": "false,false",
+      "pass": false,
+      "transactional_probe": "true,true",
       "api_public": {
-        "status": 403,
-        "code": "42501"
+        "status": 200,
+        "code": null
       },
       "api_mcp_api": {
-        "status": 403,
-        "code": "42501"
+        "status": 200,
+        "code": null
       }
     },
     {
@@ -410,9 +410,9 @@
       "id": "CT-19_concurrent_revoke",
       "pass": true,
       "revoke_status": 204,
-      "revoke_done_ms": 227,
-      "started_after_revoke": 17,
-      "accepted_before_revoke": 23,
+      "revoke_done_ms": 220,
+      "started_after_revoke": 18,
+      "accepted_before_revoke": 22,
       "accepted_after_revoke": 0
     },
     {
@@ -434,12 +434,12 @@
     },
     {
       "id": "CT-15_catalog_lint",
-      "pass": true,
+      "pass": false,
       "lint": {
         "ingress_exec_in_exposed": [
-          "mcp_api.proof_lock_v1()",
+          "mcp_api.proof_probe_v1(integer)",
           "mcp_api.list_own_v1(integer,text)",
-          "mcp_api.proof_probe_v1(integer)"
+          "mcp_api.proof_lock_v1()"
         ],
         "ingress_exec_without_schema_usage": ["graphql_public.graphql(text,text,jsonb,jsonb)"],
         "ingress_relation_privs": [],
@@ -473,12 +473,6 @@
         ],
         "definers": [
           {
-            "fn": "mcp_api.proof_lock_v1()",
-            "owner": "mcp_capability_owner",
-            "secdef": true,
-            "config": ["search_path=\"\""]
-          },
-          {
             "fn": "mcp_cap.session_status(uuid,uuid,text)",
             "owner": "postgres",
             "secdef": true,
@@ -488,6 +482,12 @@
             "fn": "mcp_cap.claims_sub()",
             "owner": "postgres",
             "secdef": false,
+            "config": ["search_path=\"\""]
+          },
+          {
+            "fn": "mcp_api.proof_probe_v1(integer)",
+            "owner": "mcp_capability_owner",
+            "secdef": true,
             "config": ["search_path=\"\""]
           },
           {
@@ -509,14 +509,14 @@
             "config": ["search_path=\"\""]
           },
           {
-            "fn": "mcp_api.proof_probe_v1(integer)",
+            "fn": "mcp_api.proof_lock_v1()",
             "owner": "mcp_capability_owner",
             "secdef": true,
             "config": ["search_path=\"\""]
           }
         ],
         "oracle_executors": ["mcp_capability_owner"],
-        "global_function_default_revokes_public": true,
+        "global_function_default_revokes_public": false,
         "rls": [
           {
             "t": "client_registry",
@@ -543,11 +543,6 @@
           "graphql_public.graphql(text,text,jsonb,jsonb) owner=supabase_admin"
         ],
         "default_function_acl": [
-          {
-            "role": "postgres",
-            "schema": "public",
-            "acl": "{postgres=X/postgres,anon=X/postgres,authenticated=X/postgres,service_role=X/postgres}"
-          },
           {
             "role": "supabase_admin",
             "schema": "public",
@@ -590,8 +585,8 @@
           },
           {
             "role": "postgres",
-            "schema": "-",
-            "acl": "{postgres=X/postgres}"
+            "schema": "public",
+            "acl": "{postgres=X/postgres,anon=X/postgres,authenticated=X/postgres,service_role=X/postgres}"
           }
         ]
       }
@@ -604,5 +599,12 @@
       "note": "local PostgREST container has no PGRST_JWT_AUD; hosted behaviour unmeasured"
     }
   ],
-  "failed": []
+  "failed": [
+    "CT-14_role_timeouts_applied",
+    "CT-14_statement_timeout",
+    "CT-13_policy_row_missing",
+    "CT-14_result_byte_budget",
+    "CT-15_future_function_defaults",
+    "CT-15_catalog_lint"
+  ]
 }

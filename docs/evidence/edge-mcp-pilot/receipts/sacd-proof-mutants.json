@@ -18,11 +18,13 @@
       "CT-13_not_after",
       "CT-13_timebox",
       "CT-13_inactivity",
+      "CT-13_policy_row_missing",
       "CT-20_registry_removal",
       "CT-12_revocation",
       "CT-19_pooled_reuse_after_revoke",
       "CT-19_concurrent_revoke",
-      "CT-19_refresh_revoke_race"
+      "CT-19_refresh_revoke_race",
+      "CT-19_refresh_then_revoke"
     ]
   },
   "no_session_check": {
@@ -36,10 +38,12 @@
       "CT-13_not_after",
       "CT-13_timebox",
       "CT-13_inactivity",
+      "CT-13_policy_row_missing",
       "CT-12_revocation",
       "CT-19_pooled_reuse_after_revoke",
       "CT-19_concurrent_revoke",
-      "CT-19_refresh_revoke_race"
+      "CT-19_refresh_revoke_race",
+      "CT-19_refresh_then_revoke"
     ]
   },
   "no_registry_check": {
@@ -65,5 +69,20 @@
     "reset": "RESET=0",
     "exit": "EXIT=1",
     "failed": ["CT-14_role_timeouts_applied", "CT-14_statement_timeout", "CT-14_lock_timeout"]
+  },
+  "no_global_function_default_revoke": {
+    "reset": "RESET=0",
+    "exit": "EXIT=1",
+    "failed": ["CT-15_future_function_defaults", "CT-15_catalog_lint"]
+  },
+  "missing_policy_row_falls_through": {
+    "reset": "RESET=0",
+    "exit": "EXIT=1",
+    "failed": ["CT-13_policy_row_missing"]
+  },
+  "no_result_byte_budget": {
+    "reset": "RESET=0",
+    "exit": "EXIT=1",
+    "failed": ["CT-14_result_byte_budget"]
   }
 }

@@ -4,10 +4,11 @@ This directory holds the source, tests and receipts for the local pilot cited in
 [SAME_AUTHORITY_DELEGATION_PROFILE.md](../../SAME_AUTHORITY_DELEGATION_PROFILE.md) §9.
 
 - It is evidence, not product code, and it never contacted a hosted project.
-- It was copied from a private pilot repository at commit `5bc6870f37357c467c6621dcab55556008de70c1`.
+- It was copied from a private pilot repository at commit `f794207` (`5bc6870` for the MCP
+  function, wrapper and phase 1 files, which are unchanged since).
   That commit applies this repository's Biome formatting to `22b51d3`, with no behaviour change:
   `deno check`, the wrapper tests and the SDK tests were re-run on the formatted files.
-- Receipts were produced at `22b51d3`. Biome reformatted the receipt JSON, but its content is
+- The SACD proof receipts were produced at `f794207`. The other receipts were produced at `22b51d3`. Biome reformatted the receipt JSON, but its content is
   unchanged.
 - Signing keys, the functions `.env` and local stack credentials are excluded.
 - Local paths in receipts are replaced with placeholders.
@@ -55,15 +56,29 @@ runtime. Its phase 1 clients are declared non-MCP clients, so the hook leaves th
 unchanged. `measurements` records the JWKS-only acceptance after revocation. That is a known gap,
 and it is not counted as a pass.
 
-**`receipts/sacd-proof-green.json`.** 44 of 44 checks pass. `receipts/sacd-proof-mutants.json`
-records six deliberate breakages, each caught:
+**`receipts/sacd-proof-green.json`.** 47 asserted checks pass against a complete expected-ID set. A
+separate `measurements` entry records PostgREST audience acceptance.
+
+**`receipts/sacd-proof-pre-fix.json`.** The same suite run before the MC1814 fixes. It failed on
+three real defects:
+
+- a function created later was callable with a SACD token;
+- a missing policy row disabled the session limits;
+- a 58 KB result was returned.
+
+It also shows the role timeouts at 8 s before a PostgREST configuration reload.
+
+**`receipts/sacd-proof-mutants.json`.** Nine deliberate breakages, each caught:
 
 - no guard call;
 - no session check;
 - no registry check;
 - a hook that maps any client;
 - an oracle that ignores the session policy;
-- no role timeouts.
+- no role timeouts;
+- no global function-default revoke;
+- a missing policy row that falls through to live;
+- no byte budget.
 
 **Wrapper tests:**
 
@@ -107,8 +122,9 @@ delivery.
 - `receipts/bounded-red.txt` `8cac6e420ee88cbaa4449d3e3fcc0e1f5a3b9a01f0b1b83e02854376de9a53a0`
 - `receipts/gateway-slow-body-probe.json` `0e43b821194d6d40a6abafc504b3857189f4f68333b8d6585668713f3a22edef`
 - `receipts/phase1-run6.json` `442bb6534af51a3510af6cb2e718e3ff061fa95e478ea0b89a15a22282da359c`
-- `receipts/sacd-proof-green.json` `cef543069f31ff93a504b45a048b9ec138a10ccff247295a1d934c56d4edbca4`
-- `receipts/sacd-proof-mutants.json` `9fd37e33bdba7ef2679cd6be657b39b26a76db40969ab6c6d9d637056a3ad82f`
+- `receipts/sacd-proof-green.json` `32d92144334999dc0e7650cd0b9d785f8f6c008b4084ba9820572f40f94e7dc7`
+- `receipts/sacd-proof-mutants.json` `b19a1caea2c7ffcea977081e72b4affffba5c99ceeff3991997019ce4206908d`
+- `receipts/sacd-proof-pre-fix.json` `de7ac51c9e0cf4abd9030eabe6d6cbfcb4fe82f27b6cb6d4097309c28b1ab719`
 - `receipts/sdk-cancellation-green.txt` `6a2e4779c52b829a3e26d32dbabfe5e7145306ec9089d4f1cc42c72c9f801445`
 - `receipts/sdk-cancellation-prefix-red.txt` `3e31ebcb8038682c1580ed6e4f68762cd09258cd62aa16f29e28c0ed7c84bc12`
 - `supabase/config.toml` `e7ece50e77500678ac9e547054239c2ed412cf03a81ddb5749ebea3c03238a9b`
@@ -116,12 +132,12 @@ delivery.
 - `supabase/functions/mcp/deno.json` `d2ab39f65b3c872258a89d36e8982194646f630a485a80d4526974829864562c`
 - `supabase/functions/mcp/index.ts` `e09ff454c059405102f4fb85a459134ad2f9cc8c9609af203a86da11f4c378f0`
 - `supabase/migrations/20261004000001_sacd_roles_tables.sql` `8880c4bb96bc87ea651719e4860c30d1dff36714fac2fdd4cdedb2cb9389130c`
-- `supabase/migrations/20261004000002_sacd_functions.sql` `42e10746b296b86b24e79fb8c20b64f970a41556635e98884cec105045f1e588`
+- `supabase/migrations/20261004000002_sacd_functions.sql` `da015b7609bea7955c5797647f4b0c77d8e6d1663a9e2865fd92fccd93b739f6`
 - `supabase/migrations/20261004000003_positive_control_app.sql` `3a6cb59655b59db481e2918fd78698d33f79c38ef1c87172e2e7f7dbab3d967c`
 - `supabase/migrations/20261004000004_proof_only_bounds.sql` `08be98a132927dd08826e26fbe5217e460c2680bbffc5f080f43c8c7b0d6b782`
 - `tests/bounded_lifetime_test.ts` `e3b313d0347492bb9a877969c902b0068ae19da8d60685ec0f52d48fae53f66a`
 - `tests/bounded_test.ts` `4a9f8764f052475421273311eeb51ab3d049e1bbeb211175898d643fdd22046d`
 - `tests/deno.json` `d2ab39f65b3c872258a89d36e8982194646f630a485a80d4526974829864562c`
 - `tests/phase1.ts` `86a21002b7a507a6aa154ea17ebe55b39acd769df26bc1d821630cb624d326c3`
-- `tests/sacd-proof.ts` `a2bb26db1d9737075f447211d184d6cdb9b41eeb6a4f8793634f9d75e79d45a1`
+- `tests/sacd-proof.ts` `03bacad157c2eca255402d9e54ba0529f23ce1bd65bbd8c0b459c6bc7975ab09`
 - `tests/sdk_cancellation_test.ts` `05cb5f0c9e21de5503fc33b443faab4939685defb5c80e6e795a9a33b4efef56`
