@@ -1,0 +1,13 @@
+running 2 tests from ./sdk_cancellation_test.ts
+SDK: deadline aborts a delayed tool and its downstream fetch ...
+------- output -------
+{"case":"deadline","status":200,"content_type":"text/event-stream","total_ms":314,"stream_terminated":true,"delivered_late_text":false,"downstream_aborted":true}
+----- output end -----
+SDK: deadline aborts a delayed tool and its downstream fetch ... ok (336ms)
+SDK: client disconnect aborts a delayed tool and its downstream fetch ...
+------- output -------
+{"case":"disconnect","status":200,"downstream_aborted":true}
+----- output end -----
+SDK: client disconnect aborts a delayed tool and its downstream fetch ... ok (12ms)
+
+ok | 2 passed | 0 failed (360ms)

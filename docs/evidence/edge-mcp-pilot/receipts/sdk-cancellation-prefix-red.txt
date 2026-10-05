@@ -1,0 +1,45 @@
+Check sdk_cancellation_test.ts
+running 2 tests from ./sdk_cancellation_test.ts
+SDK: deadline aborts a delayed tool and its downstream fetch ...
+------- output -------
+{"case":"deadline","status":200,"content_type":"text/event-stream","total_ms":2031,"stream_terminated":false,"delivered_late_text":true,"downstream_aborted":false}
+----- output end -----
+SDK: deadline aborts a delayed tool and its downstream fetch ... FAILED (2s)
+SDK: client disconnect aborts a delayed tool and its downstream fetch ...
+------- output -------
+{"case":"disconnect","status":200,"downstream_aborted":false}
+----- output end -----
+SDK: client disconnect aborts a delayed tool and its downstream fetch ... FAILED (2s)
+
+ ERRORS 
+
+SDK: deadline aborts a delayed tool and its downstream fetch => ./sdk_cancellation_test.ts:96:6
+error: AssertionError: request ran 2031 ms
+    throw new AssertionError(msg);
+          ^
+    at assert (https://jsr.io/@std/assert/1.0.19/assert.ts:22:11)
+    at file://<pilot>/tests/sdk_cancellation_test.ts:119:5
+
+SDK: client disconnect aborts a delayed tool and its downstream fetch => ./sdk_cancellation_test.ts:127:6
+error: AssertionError: Values are not equal: downstream fetch was not aborted
+
+
+    [Diff] Actual / Expected
+
+
+-   false
++   true
+
+  throw new AssertionError(message);
+        ^
+    at assertEquals (https://jsr.io/@std/assert/1.0.19/equals.ts:67:9)
+    at file://<pilot>/tests/sdk_cancellation_test.ts:143:5
+
+ FAILURES 
+
+SDK: deadline aborts a delayed tool and its downstream fetch => ./sdk_cancellation_test.ts:96:6
+SDK: client disconnect aborts a delayed tool and its downstream fetch => ./sdk_cancellation_test.ts:127:6
+
+FAILED | 0 passed | 2 failed (4s)
+
+error: Test failed

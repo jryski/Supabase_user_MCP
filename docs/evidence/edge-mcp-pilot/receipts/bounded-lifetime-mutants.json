@@ -1,0 +1,7 @@
+{
+  "await_declared_cancel": [
+    "declared oversize returns at once even if body cancellation never settles"
+  ],
+  "release_on_return": ["deadline covers a streamed response body and aborts the work behind it"],
+  "cancel_without_abort": ["client cancelling a streamed response aborts the work behind it"]
+}

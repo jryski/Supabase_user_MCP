@@ -1,0 +1,11 @@
+{
+  "timer_after_body": ["deadline covers a slow request body and cancels the reader"],
+  "no_signal_to_handler": [
+    "deadline aborts a slow handler and the handler settles promptly",
+    "a client disconnect during handling aborts the handler"
+  ],
+  "no_client_relay": [
+    "an already-aborted client signal stops before the handler runs",
+    "a client disconnect during handling aborts the handler"
+  ]
+}

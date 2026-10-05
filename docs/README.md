@@ -19,6 +19,7 @@ must satisfy.
 | [Evidence index](evidence/README.md) | Which merged and draft artifacts support each claim? |
 | [M0 compatibility evidence](evidence/M0_COMPATIBILITY_SPIKE.md) | What does the executable protocol spike prove? |
 | [Architecture decisions](decisions/README.md) | Why were consequential choices made? |
+| [Same-authority delegation overview](SACD_OVERVIEW.md) (Proposed) | How could users connect an AI assistant with one token without widening its authority? |
 
 ## Document status labels
 

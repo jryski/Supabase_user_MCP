@@ -1,0 +1,137 @@
+{
+  "no_guard_call": {
+    "reset": "RESET=0",
+    "exit": "EXIT=1",
+    "failed": [
+      "CT-5D_wrong_issuer",
+      "CT-5D_extra_audience",
+      "CT-5D_general_audience",
+      "CT-5D_missing_client_id",
+      "CT-5D_client_not_in_registry",
+      "CT-5D_client_b_claim_on_session_a",
+      "CT-5D_session_of_other_user",
+      "CT-5D_first_party_session",
+      "CT-5D_unknown_session",
+      "CT-5D_missing_session",
+      "CT-5D_missing_exp",
+      "CT-5D_malformed_sub",
+      "CT-13_not_after",
+      "CT-13_timebox",
+      "CT-13_inactivity",
+      "CT-13_policy_row_missing",
+      "CT-20_registry_removal",
+      "CT-12_revocation",
+      "CT-19_pooled_reuse_after_revoke",
+      "CT-19_concurrent_revoke",
+      "CT-19_refresh_revoke_race",
+      "CT-19_refresh_then_revoke"
+    ]
+  },
+  "no_session_check": {
+    "reset": "RESET=0",
+    "exit": "EXIT=1",
+    "failed": [
+      "CT-5D_client_b_claim_on_session_a",
+      "CT-5D_session_of_other_user",
+      "CT-5D_first_party_session",
+      "CT-5D_unknown_session",
+      "CT-13_not_after",
+      "CT-13_timebox",
+      "CT-13_inactivity",
+      "CT-13_policy_row_missing",
+      "CT-12_revocation",
+      "CT-19_pooled_reuse_after_revoke",
+      "CT-19_concurrent_revoke",
+      "CT-19_refresh_revoke_race",
+      "CT-19_refresh_then_revoke"
+    ]
+  },
+  "no_registry_check": {
+    "reset": "RESET=0",
+    "exit": "EXIT=1",
+    "failed": ["CT-5D_client_not_in_registry", "CT-20_registry_removal"]
+  },
+  "hook_maps_any_client": {
+    "reset": "RESET=0",
+    "exit": "EXIT=1",
+    "failed": [
+      "CT-3_declared_non_mcp_unchanged_and_refused",
+      "CT-4_unknown_client_refused_by_hook",
+      "CT-20_registry_removal"
+    ]
+  },
+  "oracle_ignores_session_policy": {
+    "reset": "RESET=0",
+    "exit": "EXIT=1",
+    "failed": ["CT-13_timebox", "CT-13_inactivity"]
+  },
+  "no_role_timeouts": {
+    "reset": "RESET=0",
+    "exit": "EXIT=1",
+    "failed": [
+      "CT-14_role_timeouts_applied",
+      "CT-14_statement_timeout",
+      "CT-14_lock_timeout",
+      "CT-15_catalog_lint"
+    ]
+  },
+  "no_global_function_default_revoke": {
+    "reset": "RESET=0",
+    "exit": "EXIT=1",
+    "failed": ["CT-15_future_function_defaults", "CT-15_catalog_lint"]
+  },
+  "missing_policy_row_falls_through": {
+    "reset": "RESET=0",
+    "exit": "EXIT=1",
+    "failed": ["CT-13_policy_row_missing"]
+  },
+  "no_result_byte_budget": {
+    "reset": "RESET=0",
+    "exit": "EXIT=1",
+    "failed": ["CT-14_result_byte_budget"]
+  },
+  "budget_json_only": {
+    "reset": "RESET=0",
+    "exit": "EXIT=1",
+    "failed": ["CT-14_result_byte_budget"]
+  },
+  "ingress_inherit": {
+    "reset": "RESET=0",
+    "exit": "EXIT=1",
+    "failed": ["CT-15_catalog_lint"]
+  },
+  "owner_extra_schema_usage": {
+    "reset": "RESET=0",
+    "exit": "EXIT=1",
+    "failed": ["CT-15_catalog_lint"]
+  },
+  "oracle_not_definer": {
+    "reset": "RESET=0",
+    "exit": "EXIT=1",
+    "failed": [
+      "CT-9_positive_own_rows",
+      "CT-9_row_cap_100",
+      "CT-10_isolation",
+      "CT-5D_minted_positive_control",
+      "CT-5D_singleton_array_aud_accepted",
+      "CT-5D_client_b_claim_on_session_a",
+      "CT-5D_session_of_other_user",
+      "CT-5D_first_party_session",
+      "CT-5D_unknown_session",
+      "CT-14_role_timeouts_applied",
+      "CT-14_statement_timeout",
+      "CT-14_lock_timeout",
+      "CT-13_not_after",
+      "CT-13_timebox",
+      "CT-13_inactivity",
+      "CT-13_policy_row_missing",
+      "CT-14_result_byte_budget",
+      "CT-12_revocation",
+      "CT-19_pooled_reuse_after_revoke",
+      "CT-19_concurrent_revoke",
+      "CT-19_refresh_revoke_race",
+      "CT-19_refresh_then_revoke",
+      "CT-15_catalog_lint"
+    ]
+  }
+}

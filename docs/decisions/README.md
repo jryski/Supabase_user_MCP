@@ -12,6 +12,7 @@ be rediscovered or silently reversed.
 | [0003](0003-local-credential-and-protocol-policy.md) | Local credential and protocol policy | Accepted |
 | [0004](0004-narrow-upstream-mcp-reuse.md) | Narrow upstream Supabase MCP reuse | Accepted |
 | [0005](0005-dual-resource-data-api-binding.md) | Dual resource and Data API binding | Unresolved — Option A rejected; remote data dispatch fail-closed |
+| [0006](0006-same-authority-capability-delegation.md) | Same-authority capability delegation for remote data access ([profile](../SAME_AUTHORITY_DELEGATION_PROFILE.md)) | Proposed |
 
 ## Process
 

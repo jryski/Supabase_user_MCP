@@ -1,0 +1,16 @@
+Check bounded_test.ts
+Check bounded_lifetime_test.ts
+running 6 tests from ./bounded_test.ts
+positive control: a small request passes through with its body and method ... ok (16ms)
+deadline covers a slow request body and cancels the reader ... ok (207ms)
+deadline aborts a slow handler and the handler settles promptly ... ok (223ms)
+an already-aborted client signal stops before the handler runs ... ok (1ms)
+a client disconnect during handling aborts the handler ... ok (51ms)
+oversized bodies are refused, declared or streamed, and the stream is cancelled ... ok (925µs)
+running 4 tests from ./bounded_lifetime_test.ts
+declared oversize returns at once even if body cancellation never settles ... ok (15ms)
+deadline covers a streamed response body and aborts the work behind it ... ok (208ms)
+client cancelling a streamed response aborts the work behind it ... ok (3ms)
+a streamed response that completes in time is delivered whole ... ok (35ms)
+
+ok | 10 passed | 0 failed (853ms)

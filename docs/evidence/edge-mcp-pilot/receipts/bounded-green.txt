@@ -1,0 +1,10 @@
+Check bounded_test.ts
+running 6 tests from ./bounded_test.ts
+positive control: a small request passes through with its body and method ... ok (17ms)
+deadline covers a slow request body and cancels the reader ... ok (203ms)
+deadline aborts a slow handler and the handler settles promptly ... ok (221ms)
+an already-aborted client signal stops before the handler runs ... ok (907µs)
+a client disconnect during handling aborts the handler ... ok (51ms)
+oversized bodies are refused, declared or streamed, and the stream is cancelled ... ok (734µs)
+
+ok | 6 passed | 0 failed (503ms)

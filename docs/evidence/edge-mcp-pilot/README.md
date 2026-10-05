@@ -1,0 +1,220 @@
+# Edge MCP pilot evidence (synthetic, local only)
+
+For the big picture, read the [plain-language overview](../../SACD_OVERVIEW.md) first.
+
+This directory holds the source, tests and receipts for the local pilot cited in
+[SAME_AUTHORITY_DELEGATION_PROFILE.md](../../SAME_AUTHORITY_DELEGATION_PROFILE.md) §9.
+
+- It is evidence, not product code, and it never contacted a hosted project.
+- Provenance in the private pilot repository:
+  - `5bc6870`: the MCP function, wrapper and phase 1 files, unchanged since. It is a
+    formatting-only commit over `22b51d3`, and the wrapper and SDK tests were re-run on it.
+  - `f794207`: behaviour-changing SACD fixes for ATLAS MC1814.
+  - `ec8c236`: behaviour-changing SACD fixes for ATLAS MC1816 (scalar JSON result, CSV-aware byte
+    budget, representation grid, full-signature CT-7, explicit CT-15).
+  - `e139442`: formatting-only, matching the files here.
+- The current SACD proof receipts were produced at `ec8c236`. The phase 1, wrapper and SDK receipts
+  were produced at `22b51d3`. Biome reformatted the receipt JSON, but its content is unchanged.
+- Signing keys, the functions `.env` and local stack credentials are excluded.
+- Local paths in receipts are replaced with placeholders.
+
+## Environment
+
+- Supabase CLI 2.119.0, Auth v2.197.0, edge-runtime v1.77.1, PostgreSQL 17.11, Deno 2.9.7.
+- A local ES256 signing key, the OAuth 2.1 server with dynamic registration, and `jwt_expiry = 90`.
+- The `mcp_api` schema is exposed. The SACD Custom Access Token Hook is
+  `mcp_cap.custom_access_token_hook`.
+
+## Contents
+
+**Phase 1 authentication-only MCP function:**
+
+- `supabase/functions/mcp/index.ts`, which never forwards the inbound token and builds no admin
+  client;
+- `supabase/functions/mcp/bounded.ts`, the ingress and response-lifetime bounds.
+
+**SACD minimal proof:** `supabase/migrations/`.
+
+- `..._sacd_roles_tables.sql` and `..._sacd_functions.sql` create:
+  - the capability role and the capability owner role;
+  - the registry tables and the session policy table;
+  - the liveness oracle and the guard;
+  - the single capability function `mcp_api.list_own_v1`;
+  - the hook.
+- `..._positive_control_app.sql` adds an ordinary app table and function. They prove that the
+  denial routes are real.
+- `..._proof_only_bounds.sql` adds test-only capability functions for the timeout tests. They are
+  not part of any real deployment.
+
+**Tests:**
+
+- `tests/phase1.ts`: authentication-only acceptance, run against a complete expected-ID set.
+- `tests/sacd-proof.ts`: the SACD minimal proof, run against a complete expected-ID set.
+- `tests/bounded_test.ts` and `tests/bounded_lifetime_test.ts`: the wrapper unit tests.
+- `tests/sdk_cancellation_test.ts`: the real MCP SDK with a delayed tool, an SSE response and a
+  downstream fetch.
+
+## Receipts
+
+**`receipts/phase1-run6.json`.** 16 of 16 checks pass, run through the local gateway and edge
+runtime. Its phase 1 clients are declared non-MCP clients, so the hook leaves their tokens
+unchanged. `measurements` records the JWKS-only acceptance after revocation. That is a known gap,
+and it is not counted as a pass.
+
+**`receipts/sacd-proof-green.json`.** 47 asserted checks pass against a complete expected-ID set. A
+separate `measurements` entry records PostgREST audience acceptance. CT-14 is a 96-case grid:
+
+- escape and control-character content;
+- row counts of 5, 20, 40 and 100;
+- no projection, repeated aliases, long aliases and casts;
+- JSON, CSV and single-object media types.
+
+No allowed response exceeds 32,768 bytes; the largest is 22,275.
+
+**`receipts/sacd-proof-pre-fix.json`.** The suite before the MC1814 fixes. It failed on three
+defects:
+
+- a function created later was callable with a SACD token;
+- a missing policy row disabled the session limits;
+- a 58 KB result was returned.
+
+It also shows the role timeouts at 8 s before a PostgREST configuration reload.
+
+**`receipts/sacd-proof-pre-fix-projection.json`.** The suite before the MC1816 fix. Seven grid cases
+were allowed over budget, up to 96 KB, through repeated or long aliases and CSV.
+
+**`receipts/sacd-proof-mutants.json`.** Thirteen deliberate breakages, each caught:
+
+- no guard call;
+- no session check;
+- no registry check;
+- a hook that maps any client;
+- an oracle that ignores the session policy;
+- no role timeouts;
+- no global function-default revoke;
+- a missing policy row that falls through to live;
+- no byte budget;
+- a budget that counts only the JSON size;
+- a capability role with `INHERIT`;
+- extra schema usage for the owner role;
+- an oracle that is not `SECURITY DEFINER`.
+
+**Wrapper tests:**
+
+- `receipts/bounded-red.txt` and `receipts/bounded-green.txt`: the first six wrapper tests, before
+  and after the ingress fix.
+- `receipts/bounded-mutants.json`: three breakages of the ingress fix.
+- `receipts/bounded-lifetime-red.txt` and `receipts/bounded-lifetime-green.txt`: the
+  response-lifetime and early-refusal tests, 3 of 4 failing before the fix and 10 of 10 wrapper
+  tests passing after.
+- `receipts/bounded-lifetime-mutants.json`: three breakages of the lifetime fix.
+
+**Real MCP SDK:**
+
+- `receipts/sdk-cancellation-prefix-red.txt`: run against the wrapper before the lifetime fix. The
+  late result was delivered after about 2 s, and the downstream request was never aborted.
+- `receipts/sdk-cancellation-green.txt`: run against the fixed wrapper. The stream ended at the
+  deadline, and the downstream request was aborted on both the deadline and a disconnect. This
+  run used `--unstable-no-legacy-abort`, so a signal abort only means a dropped connection.
+
+**`receipts/gateway-slow-body-probe.json`.** The request body was buffered before it reached the
+function. The probe does not isolate whether that happened in the gateway, the runtime or
+delivery.
+
+## Limits
+
+- Everything ran on the local stack only, with synthetic users.
+- None of these are hosted or Ari TEST receipts.
+- CT-8 receipts (Realtime, Storage, other Edge Functions and Auth account endpoints) are not part of
+  this evidence set.
+- CT-11 (writes), CT-17 and CT-18 have not run.
+- The MCP function's tools are not yet wired to the capability function.
+- The liveness oracle is owned by the migration role. That ownership is a reviewed exception
+  (profile SACD-8).
+
+## Run it yourself
+
+**You need:**
+
+- Docker;
+- the Supabase CLI (2.119.0 was used);
+- Deno (2.9.7 was used).
+
+**Set up the stack.** Copy this directory into a scratch project. Then:
+
+1. Generate an ES256 signing key:
+
+   ```sh
+   echo '[]' > supabase/signing_keys.json
+   supabase gen signing-key --algorithm ES256 --append
+   ```
+
+2. Create `supabase/functions/.env` with:
+   - `MCP_AUTH_ISSUER` set to `http://127.0.0.1:<api-port>/auth/v1`;
+   - `MCP_AUDIENCE`;
+   - optionally, `MCP_ALLOWED_CLIENT_IDS`.
+
+3. Start the stack and apply the migrations:
+
+   ```sh
+   supabase start
+   supabase db reset
+   ```
+
+**Wrapper and SDK tests** (no stack needed). From `tests/`:
+
+```sh
+deno test bounded_test.ts bounded_lifetime_test.ts
+deno test --allow-net --unstable-no-legacy-abort sdk_cancellation_test.ts
+```
+
+**SACD database proof.** From `tests/`, with the stack running:
+
+```sh
+PILOT_API=http://127.0.0.1:<api-port> \
+PILOT_ANON_KEY=<publishable key from `supabase status`> \
+PILOT_SIGNING_KEYS=../supabase/signing_keys.json \
+deno run -A sacd-proof.ts
+```
+
+The runner registers its own synthetic clients and users, prints one JSON receipt, and exits
+non-zero if any expected check is missing or failing. It never prints tokens or keys.
+
+**Phase 1 sign-in suite.** First run it with `PILOT_PHASE=register` to create the two clients,
+which writes `PILOT_CLIENTS_FILE`. Then:
+
+1. add both client IDs to `mcp_cap.declared_non_mcp_client`;
+2. set `MCP_ALLOWED_CLIENT_IDS` to the first one;
+3. start `supabase functions serve mcp --env-file supabase/functions/.env`;
+4. run `deno run -A phase1.ts` with the same variables.
+
+## SHA-256
+
+- `receipts/bounded-green.txt` `bd91b06beb6d6c15b0b03ffb03ce43df778e81c51d8d80ad9efed12e16d59e5b`
+- `receipts/bounded-lifetime-green.txt` `84e92cf75517a22429df94e53baf2298236e448a5e43da7bc6879f910991c08e`
+- `receipts/bounded-lifetime-mutants.json` `d852286fce0400008ce7eca5bebc79b41718a94307085d47766b626e02113655`
+- `receipts/bounded-lifetime-red.txt` `5a436de67b3be1f34c7975f43f9a95d6c3f0dd31a2d78dc33f72d77f521e6583`
+- `receipts/bounded-mutants.json` `f7c70617463f4fb30b7fd12ad436dc2b44ce7aae14467871857fc4e57564b4c7`
+- `receipts/bounded-red.txt` `8cac6e420ee88cbaa4449d3e3fcc0e1f5a3b9a01f0b1b83e02854376de9a53a0`
+- `receipts/gateway-slow-body-probe.json` `0e43b821194d6d40a6abafc504b3857189f4f68333b8d6585668713f3a22edef`
+- `receipts/phase1-run6.json` `442bb6534af51a3510af6cb2e718e3ff061fa95e478ea0b89a15a22282da359c`
+- `receipts/sacd-proof-green.json` `a746ffcfdcc3d6171dfb59b334b94a8ebed302c371744ed9081932444f63eebe`
+- `receipts/sacd-proof-mutants.json` `f64a0a99ad61259bc7e405cf3a8184e694163a7f6184b803870d1c5ab8df3b4f`
+- `receipts/sacd-proof-pre-fix-projection.json` `5140ddd1000b130d2d52c4bdba67f4907900f693219d61a93f9b76ac85f71deb`
+- `receipts/sacd-proof-pre-fix.json` `de7ac51c9e0cf4abd9030eabe6d6cbfcb4fe82f27b6cb6d4097309c28b1ab719`
+- `receipts/sdk-cancellation-green.txt` `6a2e4779c52b829a3e26d32dbabfe5e7145306ec9089d4f1cc42c72c9f801445`
+- `receipts/sdk-cancellation-prefix-red.txt` `3e31ebcb8038682c1580ed6e4f68762cd09258cd62aa16f29e28c0ed7c84bc12`
+- `supabase/config.toml` `e7ece50e77500678ac9e547054239c2ed412cf03a81ddb5749ebea3c03238a9b`
+- `supabase/functions/mcp/bounded.ts` `9e49c0c85330975c98ee12a11c021b327f33d39d92096c31a0fdf98657f74acc`
+- `supabase/functions/mcp/deno.json` `d2ab39f65b3c872258a89d36e8982194646f630a485a80d4526974829864562c`
+- `supabase/functions/mcp/index.ts` `e09ff454c059405102f4fb85a459134ad2f9cc8c9609af203a86da11f4c378f0`
+- `supabase/migrations/20261004000001_sacd_roles_tables.sql` `8880c4bb96bc87ea651719e4860c30d1dff36714fac2fdd4cdedb2cb9389130c`
+- `supabase/migrations/20261004000002_sacd_functions.sql` `8fd25724ac41ebf0f28fe68102a3221c065bdea5b1a26a66cc7f5a1d9a48e6f2`
+- `supabase/migrations/20261004000003_positive_control_app.sql` `3a6cb59655b59db481e2918fd78698d33f79c38ef1c87172e2e7f7dbab3d967c`
+- `supabase/migrations/20261004000004_proof_only_bounds.sql` `08be98a132927dd08826e26fbe5217e460c2680bbffc5f080f43c8c7b0d6b782`
+- `tests/bounded_lifetime_test.ts` `e3b313d0347492bb9a877969c902b0068ae19da8d60685ec0f52d48fae53f66a`
+- `tests/bounded_test.ts` `4a9f8764f052475421273311eeb51ab3d049e1bbeb211175898d643fdd22046d`
+- `tests/deno.json` `d2ab39f65b3c872258a89d36e8982194646f630a485a80d4526974829864562c`
+- `tests/phase1.ts` `86a21002b7a507a6aa154ea17ebe55b39acd769df26bc1d821630cb624d326c3`
+- `tests/sacd-proof.ts` `c56ddd957b692f039f3d61feeb05fd49747dc55c1597e774de15e5ecd76a0ce3`
+- `tests/sdk_cancellation_test.ts` `05cb5f0c9e21de5503fc33b443faab4939685defb5c80e6e795a9a33b4efef56`
