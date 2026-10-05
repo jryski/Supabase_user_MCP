@@ -51,18 +51,6 @@ remain unverified for this candidate.
 See the [candidate testing guide](docs/status/2026-09-15-controlled-client-candidate.md)
 for supported behavior, reproducible checks and the remaining enablement gates.
 
-## October 2026: proposed same-authority delegation (draft)
-
-A draft proposal explores letting a user connect an AI assistant to a Supabase project with one
-URL and one consent, while RLS stays the authority and no privileged key is in the path. It
-departs from the literal MCP token-passthrough rule. It is documented as an explicit exception,
-not as conformance, and its local synthetic test evidence is included.
-
-Start with the [plain-language overview](docs/SACD_OVERVIEW.md). Then read the
-[normative profile](docs/SAME_AUTHORITY_DELEGATION_PROFILE.md) and
-[ADR-0006](docs/decisions/0006-same-authority-capability-delegation.md). The proposal is not
-accepted or deployed, and data tools stay disabled.
-
 ## Why this exists
 
 Supabase's hosted MCP server is a developer control-plane tool. Supabase User MCP explores the complementary **application data-plane** problem:
@@ -77,6 +65,18 @@ Supabase's hosted MCP server is a developer control-plane tool. Supabase User MC
 | Intended environment | Development and operations | Production only after identity/security gates pass |
 
 The goal is not to make prompt injection impossible. The goal is to make the blast radius of a compromised model no larger than the mechanically enforced authority of its verified principal/client capability.
+
+## October 2026: proposed same-authority delegation (draft)
+
+A draft proposal explores letting a user connect an AI assistant to a Supabase project with one
+URL and one consent, while RLS stays the authority and no privileged key is in the path. It
+departs from the literal MCP token-passthrough rule. It is documented as an explicit exception,
+not as conformance, and its local synthetic test evidence is included.
+
+Start with the [plain-language overview](docs/SACD_OVERVIEW.md). Then read the
+[normative profile](docs/SAME_AUTHORITY_DELEGATION_PROFILE.md) and
+[ADR-0006](docs/decisions/0006-same-authority-capability-delegation.md). The proposal is not
+accepted or deployed, and data tools stay disabled.
 
 ## Relationship to the Sovereign Memory program
 
