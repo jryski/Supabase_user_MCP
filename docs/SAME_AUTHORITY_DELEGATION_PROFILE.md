@@ -1,8 +1,7 @@
 # Same-Authority Capability Delegation (SACD) profile
 
-- **Profile version:** 0.5 (draft). 0.1 was amended after an adversarial review (0.2), 0.2 after
-  the ATLAS architecture review (0.3), 0.3 after the ATLAS scoped re-review and the local proof
-  (0.4), and 0.4 after the next ATLAS re-review (0.5). See §10.
+- **Profile version:** 0.6 (draft). Each version since 0.1 was amended after a review: an
+  adversarial review (0.2), then successive ATLAS reviews (0.3 to 0.6). See §10.
 - **Status:** Proposed. Not accepted, not deployed, and no data tools are enabled under it.
 - **Decision record:** [ADR-0006](decisions/0006-same-authority-capability-delegation.md)
 - **Relationship to MCP:** This profile is a **documented exception** to the literal text of
@@ -270,7 +269,19 @@ Each requirement has an identifier so that tests, reviews and exceptions can cit
   capability role's timeouts only after a configuration reload; before that, requests ran with
   the authenticator's 8 s limits. Every capability function **MUST** declare a serialized result
   byte budget and refuse results over it. Truncating silently does not meet this requirement.
-  The budget is measured on the JSON of the returned rows, in the same snapshot as the rows.
+  The budget **MUST** hold for the **final response**, whatever representation the caller
+  requests. To make that enforceable:
+  - capability functions **SHOULD** return one fixed JSON document (a scalar) rather than table
+    columns, so the Data API cannot re-project, alias or duplicate columns after the check. With
+    a scalar result, column projection is refused;
+  - the budget **MUST** be checked against the largest representation the Data API can produce for
+    that result. For a scalar JSON result on PostgREST, the observed representations are JSON and
+    CSV. CSV adds a header line, quotes the document, and doubles every quote and backslash;
+  - the proof **MUST** exercise worst-case content (escaped characters and control characters),
+    repeated and long aliases, casts, and every enabled media type.
+
+  Declaring a JSON-only media-type domain did not prevent CSV on the local PostgREST, so it is not
+  relied on.
 - **SACD-11 Backend guard.** On every capability call, the SACD guard **MUST** read the request
   claims and refuse unless all of the following hold:
   - `iss` is the exact pinned issuer;
@@ -461,7 +472,7 @@ one row.
 | CT-11 | Writes and other non-capability operations, through both paths | Denied |
 | CT-12 | Revoke the grant, then call with the already-issued token on both paths | Refused for every request started after the revoking request returned |
 | CT-13 | Session `not_after`, each configured session timeout mode (time-box, inactivity), and a missing policy row | As CT-12; inactivity is measured from the last refresh; a missing policy row refuses |
-| CT-14 | Through both paths, after a configuration reload: oversized inputs, over-cap rows, worst-case serialized bytes (escaped labels at the row cap), slow queries, lock waits, aggregate and filter parameters, and concurrent per-principal calls | Refused, capped or timed out by the backend as specified; allowed results stay within the byte budget on the wire |
+| CT-14 | Through both paths, after a configuration reload: oversized inputs and over-cap rows; a byte-budget grid (escape and control-character content, several row counts, repeated, long and cast aliases, every enabled media type); slow queries; lock waits; aggregate and filter parameters; concurrent per-principal calls | Refused, capped or timed out by the backend as specified; every allowed response is within the byte budget on the wire |
 | CT-15 | Catalog lint: effective privileges of the capability role and the capability owner role; definer properties; forced RLS; global default function privileges for every creating role; oracle grantees across all roles; memberships; exposed schemas. Plus a probe that creates a new function in each exposed schema and calls it with a SACD token | Every property asserted, not just logged, and exactly as declared. New functions are refused |
 | CT-16 | Endpoint secret scan, static and at runtime | No privileged material read or used |
 | CT-17 | Two users and two approved clients, in combination | Each user sees only their own rows; client restrictions hold |
@@ -523,14 +534,17 @@ observation (PostgREST audience acceptance) is reported separately:
 - the hook-issued claims on issuance and refresh;
 - positive nonempty own-user rows first, then caps that hold even when query parameters are
   added;
-- a serialized byte budget of 32,768 bytes. A worst-case 100-row result (about 58 KB on the wire)
-  is refused; 40 worst-case rows (23,398 bytes) are allowed;
+- a byte budget of 32,768 bytes on the final response. A 96-case grid crosses two content
+  types (escape-heavy and control-character labels), row counts of 5, 20, 40 and 100, four
+  projections (none, repeated aliases, long aliases, casts) and three media types (JSON, CSV,
+  single-object). No allowed response exceeded the budget; the largest was 22,275 bytes. Over-budget
+  requests were refused, and projections were refused with 400;
 - per-user isolation;
 - the declared non-MCP, first-party, unknown-client and missing-client-refresh cases;
 - 12 guard-specific direct negatives, using tokens signed with the real key, plus 4 cases the
   gateway refuses before the guard;
-- exhaustive denial of relations and functions with specific authorization errors, against
-  positive controls;
+- exhaustive denial of relations, and of every function signature called with valid typed
+  arguments, each with a specific authorization error, against positive controls;
 - new functions created in both exposed schemas are refused;
 - role timeouts applied through real requests after a configuration reload, with statement and
   lock timeouts enforced;
@@ -541,9 +555,16 @@ observation (PostgREST audience acceptance) is reported separately:
 - 40 staggered calls with a concurrent revoke, where no call started after the revoke returned
   was accepted;
 - a refresh-and-revoke race, and a refresh that completed before a revoke;
-- a catalog lint that asserts every property it records.
+- a catalog lint that asserts each required property explicitly:
+  - the role attributes;
+  - the schema-usage allowlists for both roles;
+  - the owner, `SECURITY DEFINER` flag and `search_path` of every function in the capability
+    schemas, including the oracle;
+  - the exact membership sets;
+  - the oracle grantees across all roles;
+  - the global default ACL.
 
-Nine deliberate breakages were each caught:
+Thirteen deliberate breakages were each caught:
 
 - no guard call;
 - no session check;
@@ -553,13 +574,19 @@ Nine deliberate breakages were each caught:
 - no role timeouts;
 - no global function-default revoke (caught by both the new-function probe and the lint);
 - a missing policy row that falls through to live;
-- no byte budget.
+- no byte budget;
+- a budget that counts only the JSON size;
+- a capability role with `INHERIT`;
+- extra schema usage for the owner role;
+- an oracle that is not `SECURITY DEFINER`.
 
-Before the fixes, the same suite showed three real defects:
+Before the MC1814 and MC1816 fixes, the same suite showed four real defects:
 
 - a function created later was callable with a SACD token (status 200);
 - deleting the policy row disabled the session limits;
-- a 58 KB result was returned.
+- a 58 KB result was returned;
+- after the first budget fix, caller-controlled projection still produced allowed responses of up
+  to 96 KB (7 of 96 grid cases), and CSV re-encoding produced up to 44 KB.
 
 **Platform findings from the proof:**
 
@@ -636,3 +663,11 @@ Before the fixes, the same suite showed three real defects:
   - Refresh-then-revoke is covered.
   - The migration-role ADMIN exception is recorded.
   - The proof is updated to 47 asserted checks and nine breakages.
+- **0.5 to 0.6.** ATLAS (MC1816) resolved the default-ACL and policy-row defects, accepted the local
+  oracle implementation, and found the byte budget still bypassable through projection. Changes:
+  - The capability now returns one fixed JSON document, measured against the CSV representation.
+  - The byte-budget requirement covers the final response.
+  - A 96-case representation grid is added.
+  - CT-7 calls every signature with valid typed arguments.
+  - CT-15 asserts role attributes, schema allowlists and every function's definer property.
+  - The proof is updated to 47 asserted checks and 13 breakages.

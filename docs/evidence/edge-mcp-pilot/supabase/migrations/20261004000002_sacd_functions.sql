@@ -137,8 +137,11 @@ end;
 $$;
 
 -- The one capability function. Definer owned by mcp_capability_owner; guard first; fixed query.
+-- Returns one fixed JSON document (an array of {id, label, created_at}) rather than table
+-- columns, so the Data API cannot re-project, alias or duplicate columns after the budget check.
+-- The budget is measured on the exact serialized document that is returned.
 create function mcp_api.list_own_v1(max_rows integer default 50, label_prefix text default '')
-returns table (id bigint, label text, created_at timestamptz)
+returns json
 language plpgsql
 stable
 security definer
@@ -148,17 +151,15 @@ declare
   v_sub uuid;
   v_rows integer := least(greatest(coalesce(max_rows, 1), 1), 100);
   v_prefix text := coalesce(label_prefix, '');
-  v_bytes bigint;
+  v_doc json;
 begin
   if octet_length(v_prefix) > 64 then
     raise exception 'list_own_v1:input_too_large' using errcode = '22023';
   end if;
   v_sub := mcp_cap.sacd_guard();
-  -- Serialized result budget (SACD-10): JSON bytes of the rows plus array punctuation, measured
-  -- in the same snapshot as the returned rows. Over-budget results are refused, not truncated.
-  select coalesce(sum(pg_catalog.octet_length(pg_catalog.json_build_object(
-           'id', f.id, 'label', f.label, 'created_at', f.created_at)::text) + 1), 0) + 2
-    into v_bytes
+  select coalesce(pg_catalog.json_agg(pg_catalog.json_build_object(
+           'id', f.id, 'label', f.label, 'created_at', f.created_at) order by f.id), '[]'::json)
+    into v_doc
     from (
       select f0.id, f0.label, f0.created_at
       from mcp_cap.fixture f0
@@ -167,16 +168,17 @@ begin
       order by f0.id
       limit v_rows
     ) f;
-  if v_bytes > 32768 then
+  -- Serialized result budget (SACD-10): refused, not truncated. The Data API can also serve this
+  -- scalar as CSV (observed: a 'pgrst_scalar' header line, the document quoted, every quote and
+  -- every backslash doubled). The CSV size is never smaller than the JSON size, so it is what is
+  -- checked, with 32 bytes reserved for the header and line endings.
+  if pg_catalog.octet_length(v_doc::text)
+     + (pg_catalog.length(v_doc::text) - pg_catalog.length(pg_catalog.replace(v_doc::text, '"', '')))
+     + (pg_catalog.length(v_doc::text) - pg_catalog.length(pg_catalog.replace(v_doc::text, E'\\', '')))
+     + 32 > 32768 then
     raise exception 'list_own_v1:result_budget_exceeded' using errcode = '54000';
   end if;
-  return query
-    select f.id, f.label, f.created_at
-    from mcp_cap.fixture f
-    where f.owner_sub = v_sub
-      and pg_catalog.left(f.label, pg_catalog.length(v_prefix)) = v_prefix
-    order by f.id
-    limit v_rows;
+  return v_doc;
 end;
 $$;
 

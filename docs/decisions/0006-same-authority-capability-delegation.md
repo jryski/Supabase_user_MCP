@@ -313,3 +313,5 @@ conformance receipts CT-1 to CT-22 against that exact deployment.
   minimal proof accepted with conditions; addressed in 0.4 (profile §10).
 - ATLAS re-review of 0.4 (MC1814; PR #102 review 5408432650): continue local research with
   conditions; oracle shape accepted in principle; addressed in 0.5 (profile §10).
+- ATLAS re-review of 0.5 (MC1816; PR #102 review 5409149340): ACL and policy-row defects resolved;
+  local oracle implementation accepted; byte projection partial; addressed in 0.6 (profile §10).

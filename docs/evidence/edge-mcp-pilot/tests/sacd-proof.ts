@@ -284,18 +284,19 @@ record(
   { status: capped.status, rows: Array.isArray(capped.payload) ? capped.payload.length : null },
 );
 const qp = await listOwn(tA2, { max_rows: 100000 }, '?select=id,label&limit=1000&order=id.desc');
+// The capability returns one JSON document, so column projection, ordering and limits are refused
+// by the Data API rather than applied; a successful response must still respect the row cap.
 record(
   'CT-9_query_params_cannot_exceed_cap',
-  qp.status === 200 &&
-    Array.isArray(qp.payload) &&
-    qp.payload.length > 0 &&
-    qp.payload.length <= 100,
+  (qp.status === 200 && Array.isArray(qp.payload) && qp.payload.length <= 100) ||
+    (qp.status === 400 && /does not exist/.test(String(qp.payload?.message ?? ''))),
   {
     status: qp.status,
     rows: Array.isArray(qp.payload) ? qp.payload.length : null,
     message: qp.status === 200 ? undefined : String(qp.payload?.message ?? '').slice(0, 160),
   },
 );
+
 const big = await listOwn(tA2, { label_prefix: 'x'.repeat(65) });
 record(
   'CT-9_input_cap',
@@ -495,25 +496,39 @@ record(
     privateRoute.status >= 400,
   { relations: relResults, private_schema_route_status: privateRoute.status },
 );
-const fns = (
+// Enumerate every function signature with its argument names and types, and call each with
+// valid typed arguments, so a denial cannot come from an unknown route or bad arguments.
+const fnRows = JSON.parse(
   await sql(
-    `select n.nspname || '|' || p.proname from pg_proc p join pg_namespace n on n.oid = p.pronamespace where n.nspname in ('public','graphql_public','mcp_api') order by 1`,
-  )
-)
-  .split('\n')
-  .filter(Boolean);
+    `select coalesce(json_agg(json_build_object('schema', n.nspname, 'name', p.proname, 'sig', p.oid::regprocedure::text, 'args', (select coalesce(json_agg(json_build_object('name', a.name, 'type', format_type(a.typ, null)) order by a.ord), '[]') from unnest(coalesce(p.proargnames, array[]::text[]), p.proargtypes::oid[]) with ordinality as a(name, typ, ord))) order by p.oid::regprocedure::text), '[]') from pg_proc p join pg_namespace n on n.oid = p.pronamespace where n.nspname in ('public','graphql_public','mcp_api')`,
+  ),
+) as { schema: string; name: string; sig: string; args: { name: string; type: string }[] }[];
+const sample = (type: string): unknown => {
+  if (/int|numeric|real|double/.test(type)) return 1;
+  if (type === 'boolean') return true;
+  if (type === 'uuid') return crypto.randomUUID();
+  if (/json/.test(type)) return {};
+  return 'x';
+};
 const fnResults: Rec[] = [];
-for (const fn of fns) {
-  const [schema, name] = fn.split('|');
-  if (schema === 'mcp_api' && ['list_own_v1', 'proof_probe_v1', 'proof_lock_v1'].includes(name))
+for (const fn of fnRows) {
+  if (
+    fn.schema === 'mcp_api' &&
+    ['list_own_v1', 'proof_probe_v1', 'proof_lock_v1'].includes(fn.name)
+  )
     continue;
-  const sacd = await rest(tA2, 'POST', `rpc/${name}`, schema, {});
-  const fp = await rest(alice, 'POST', `rpc/${name}`, schema, {});
+  const named = fn.args.every((a) => a.name && a.name.length > 0);
+  const args: Rec = {};
+  for (const a of fn.args) if (a.name) args[a.name] = sample(a.type);
+  const sacd = await rest(tA2, 'POST', `rpc/${fn.name}`, fn.schema, args);
+  const fp = await rest(alice, 'POST', `rpc/${fn.name}`, fn.schema, args);
   fnResults.push({
-    fn: `${schema}.${name}`,
+    fn: fn.sig,
+    named_args: named,
     sacd_status: sacd.status,
     sacd_code: sacd.payload?.code ?? null,
     first_party_status: fp.status,
+    first_party_code: fp.payload?.code ?? null,
   });
 }
 const guardRoute = await rest(tA2, 'POST', 'rpc/sacd_guard', 'mcp_cap', {});
@@ -526,7 +541,7 @@ const gqlBody = await json(gql);
 record(
   'CT-7_functions_denied',
   fnResults.length > 0 &&
-    fnResults.every((r) => r.sacd_code === '42501') &&
+    fnResults.every((r) => r.sacd_code === '42501' && r.named_args === true) &&
     fnResults.some((r) => r.first_party_status === 200) &&
     guardRoute.status >= 400 &&
     gql.status >= 400,
@@ -649,67 +664,99 @@ record(
   },
 );
 
-// ---------- CT-14: serialized result byte budget with worst-case labels ----------
+// ---------- CT-14: serialized result byte budget under caller-controlled representation ----------
 const BUDGET = 32768;
-const carol = await signup(`sacd-carol-${RUN}@example.test`, `carol-synthetic-${RUN}`);
-const carolSub = decodeJwt(carol).sub as string;
-// Each label is 256 raw bytes of '"' and '\', both of which JSON escapes to two bytes.
-await sql(
-  `insert into mcp_cap.fixture(owner_sub, label) select ${lit(carolSub)}::uuid, repeat(E'"\\\\', 128) from generate_series(1, 100)`,
-);
-const cTok = (await freshSacd(carol, clientA)).access;
-const wire = async (args: Rec, query = '') => {
+async function budgetUser(name: string, labelSql: string) {
+  const tok = await signup(`sacd-${name}-${RUN}@example.test`, `${name}-synthetic-${RUN}`);
+  const sub = decodeJwt(tok).sub as string;
+  await sql(
+    `insert into mcp_cap.fixture(owner_sub, label) select ${lit(sub)}::uuid, ${labelSql} from generate_series(1, 100)`,
+  );
+  return (await freshSacd(tok, clientA)).access;
+}
+// Escaping stress: 256 raw bytes of '"' and '\' (two JSON bytes each).
+const carolTok = await budgetUser('carol', `repeat(E'"\\\\', 128)`);
+// Maximum JSON expansion: 256 bytes of U+0001 (six JSON bytes each, \u0001).
+const daveTok = await budgetUser('dave', `repeat(chr(1), 256)`);
+const wireCall = async (tok: string, args: Rec, query: string, accept: string) => {
   const res = await fetch(`${API}/rest/v1/rpc/list_own_v1${query}`, {
     method: 'POST',
     headers: {
       apikey: ANON,
-      authorization: `Bearer ${cTok}`,
+      authorization: `Bearer ${tok}`,
       'content-type': 'application/json',
       'content-profile': 'mcp_api',
+      accept,
     },
     body: JSON.stringify(args),
   });
   const bytes = new Uint8Array(await res.arrayBuffer());
-  let payload: any = null;
-  try {
-    payload = JSON.parse(new TextDecoder().decode(bytes));
-  } catch {
-    payload = null;
+  let message: string | null = null;
+  if (res.status !== 200) {
+    try {
+      message = JSON.parse(new TextDecoder().decode(bytes)).message ?? null;
+    } catch {
+      message = null;
+    }
   }
-  return { status: res.status, bytes: bytes.byteLength, payload };
+  const head =
+    accept === 'text/csv' && res.status === 200
+      ? new TextDecoder().decode(bytes.slice(0, 400))
+      : undefined;
+  return { status: res.status, bytes: bytes.byteLength, message, head };
 };
-const worstAll = await wire({ max_rows: 100 });
-const worstSome = await wire({ max_rows: 40 });
-const worstSelect = await wire({ max_rows: 40 }, '?select=label');
-const labelBytes =
-  Array.isArray(worstSome.payload) && worstSome.payload.length > 0
-    ? new TextEncoder().encode(worstSome.payload[0].label).length
-    : null;
+const longAlias = 'x'.repeat(200);
+const projections = [
+  '',
+  '?select=a:label,b:label',
+  `?select=${longAlias}a:label,${longAlias}b:label,${longAlias}c:label`,
+  '?select=label::text,id::text',
+];
+const accepts = ['application/json', 'text/csv', 'application/vnd.pgrst.object+json'];
+const grid: Rec[] = [];
+for (const [fixture, tok] of [
+  ['escape', carolTok],
+  ['control', daveTok],
+] as [string, string][]) {
+  for (const maxRows of [5, 20, 40, 100]) {
+    for (const projection of projections) {
+      for (const accept of accepts) {
+        const r = await wireCall(tok, { max_rows: maxRows }, projection, accept);
+        grid.push({
+          fixture,
+          max_rows: maxRows,
+          projection: projection.slice(0, 40),
+          accept,
+          ...r,
+        });
+      }
+    }
+  }
+}
+const over = grid.filter((g) => g.status === 200 && (g.bytes as number) > BUDGET);
+const positives = ['escape', 'control'].map((f) =>
+  grid.some(
+    (g) =>
+      g.fixture === f && g.status === 200 && g.projection === '' && g.accept === 'application/json',
+  ),
+);
+const budgetRefusals = grid.filter(
+  (g) => g.message === 'list_own_v1:result_budget_exceeded',
+).length;
 record(
   'CT-14_result_byte_budget',
-  labelBytes === 256 &&
-    worstAll.status >= 400 &&
-    String(worstAll.payload?.message ?? '') === 'list_own_v1:result_budget_exceeded' &&
-    worstSome.status === 200 &&
-    Array.isArray(worstSome.payload) &&
-    worstSome.payload.length === 40 &&
-    worstSome.bytes <= BUDGET &&
-    worstSelect.status === 200 &&
-    worstSelect.bytes <= BUDGET,
+  over.length === 0 && positives.every(Boolean) && budgetRefusals > 0,
   {
     budget_bytes: BUDGET,
-    raw_label_bytes: labelBytes,
-    max_rows_100: {
-      status: worstAll.status,
-      message: worstAll.payload?.message ?? null,
-      wire_bytes: worstAll.bytes,
-    },
-    max_rows_40: {
-      status: worstSome.status,
-      rows: Array.isArray(worstSome.payload) ? worstSome.payload.length : null,
-      wire_bytes: worstSome.bytes,
-    },
-    select_label: { status: worstSelect.status, wire_bytes: worstSelect.bytes },
+    cases: grid.length,
+    accepted_over_budget: over,
+    max_accepted_bytes: Math.max(
+      0,
+      ...grid.filter((g) => g.status === 200).map((g) => g.bytes as number),
+    ),
+    budget_refusals: budgetRefusals,
+    positive_controls: positives,
+    grid,
   },
 );
 
@@ -929,39 +976,86 @@ const lint = JSON.parse(
  'default_function_acl', (select coalesce(json_agg(json_build_object('role', defaclrole::regrole::text, 'schema', coalesce(defaclnamespace::regnamespace::text,'*'), 'acl', defaclacl::text)), '[]') from pg_default_acl where defaclobjtype='f')
 )`),
 );
-const lintPass =
-  JSON.stringify([...lint.ingress_exec_in_exposed].sort()) ===
+const EXPECTED_DEFINERS: Record<string, [string, boolean]> = {
+  'mcp_cap.sacd_guard()': ['mcp_capability_owner', true],
+  'mcp_api.list_own_v1(integer,text)': ['mcp_capability_owner', true],
+  'mcp_api.proof_probe_v1(integer)': ['mcp_capability_owner', true],
+  'mcp_api.proof_lock_v1()': ['mcp_capability_owner', true],
+  'mcp_cap.session_status(uuid,uuid,text)': ['postgres', true],
+  'mcp_cap.claims_sub()': ['postgres', false],
+  'mcp_cap.custom_access_token_hook(jsonb)': ['postgres', false],
+};
+const definerChecks = Object.entries(EXPECTED_DEFINERS).map(([fn, [owner, secdef]]) => {
+  const d = lint.definers.find((x: any) => x.fn === fn);
+  return {
+    fn,
+    ok:
+      !!d &&
+      d.owner === owner &&
+      d.secdef === secdef &&
+      JSON.stringify(d.config) === JSON.stringify(['search_path=""']),
+  };
+});
+const roleOf = (name: string) => lint.roles.find((x: any) => x.role === name);
+const roleChecks = {
+  ingress:
+    JSON.stringify(roleOf('mcp_ingress')) ===
+    JSON.stringify({
+      role: 'mcp_ingress',
+      super: false,
+      bypassrls: false,
+      login: false,
+      inherit: false,
+      config: ['statement_timeout=2s', 'lock_timeout=1s'],
+    }),
+  owner:
+    JSON.stringify(roleOf('mcp_capability_owner')) ===
+    JSON.stringify({
+      role: 'mcp_capability_owner',
+      super: false,
+      bypassrls: false,
+      login: false,
+      inherit: false,
+      config: null,
+    }),
+};
+const lintChecks: Record<string, boolean> = {
+  ingress_exec_exact:
+    JSON.stringify([...lint.ingress_exec_in_exposed].sort()) ===
     JSON.stringify([
       'mcp_api.list_own_v1(integer,text)',
       'mcp_api.proof_lock_v1()',
       'mcp_api.proof_probe_v1(integer)',
-    ]) &&
-  lint.ingress_relation_privs.length === 0 &&
-  lint.ingress_memberships.length === 0 &&
-  JSON.stringify([...lint.ingress_members].sort()) ===
-    JSON.stringify(['authenticator:set=true:admin=false', 'postgres:set=false:admin=true']) &&
-  JSON.stringify(lint.owner_members) === JSON.stringify(['postgres:set=false:admin=true']) &&
-  lint.global_function_default_revokes_public === true &&
-  lint.public_exec_in_exposed.every(
+    ]),
+  ingress_no_relations: lint.ingress_relation_privs.length === 0,
+  ingress_no_memberships: lint.ingress_memberships.length === 0,
+  ingress_members_exact:
+    JSON.stringify([...lint.ingress_members].sort()) ===
+    JSON.stringify(['authenticator:set=true:admin=false', 'postgres:set=false:admin=true']),
+  owner_members_exact:
+    JSON.stringify(lint.owner_members) === JSON.stringify(['postgres:set=false:admin=true']),
+  global_default_revoke: lint.global_function_default_revokes_public === true,
+  public_exec_only_platform_graphql: lint.public_exec_in_exposed.every(
     (f: string) => f.startsWith('graphql_public.') && f.endsWith('owner=supabase_admin'),
-  ) &&
-  !lint.ingress_schema_usage.includes('graphql_public') &&
-  lint.roles.every((r: any) => !r.super && !r.bypassrls && !r.login) &&
-  lint.definers
-    .filter((d: any) => d.secdef)
-    .every(
-      (d: any) =>
-        (d.owner === 'mcp_capability_owner' || d.fn === 'mcp_cap.session_status(uuid,uuid,text)') &&
-        JSON.stringify(d.config) === JSON.stringify(['search_path=""']),
-    ) &&
-  lint.definers.find((d: any) => d.fn === 'mcp_cap.session_status(uuid,uuid,text)')?.owner ===
-    'postgres' &&
-  JSON.stringify(lint.oracle_executors) === JSON.stringify(['mcp_capability_owner']) &&
-  lint.rls.every((t: any) => t.enabled && t.forced) &&
-  JSON.stringify([...lint.owner_relation_privs].sort()) ===
-    JSON.stringify(['mcp_cap.client_registry', 'mcp_cap.fixture']) &&
-  !lint.owner_members.some((m: string) => m.includes(':set=true'));
-record('CT-15_catalog_lint', lintPass, { lint });
+  ),
+  ingress_schema_usage_exact:
+    JSON.stringify([...lint.ingress_schema_usage].sort()) === JSON.stringify(['mcp_api', 'public']),
+  owner_schema_usage_exact:
+    JSON.stringify([...lint.owner_schema_usage].sort()) === JSON.stringify(['mcp_cap', 'public']),
+  role_ingress: roleChecks.ingress,
+  role_owner: roleChecks.owner,
+  definers_exact:
+    definerChecks.every((c) => c.ok) &&
+    lint.definers.length === Object.keys(EXPECTED_DEFINERS).length,
+  oracle_executors_exact:
+    JSON.stringify(lint.oracle_executors) === JSON.stringify(['mcp_capability_owner']),
+  rls_enabled_forced: lint.rls.length > 0 && lint.rls.every((t: any) => t.enabled && t.forced),
+  owner_relations_exact:
+    JSON.stringify([...lint.owner_relation_privs].sort()) ===
+    JSON.stringify(['mcp_cap.client_registry', 'mcp_cap.fixture']),
+};
+const lintPass = Object.values(lintChecks).every(Boolean);
+record('CT-15_catalog_lint', lintPass, { checks: lintChecks, definer_checks: definerChecks, lint });
 
 // ---------- observation: PostgREST audience handling ----------
 measurements.push({

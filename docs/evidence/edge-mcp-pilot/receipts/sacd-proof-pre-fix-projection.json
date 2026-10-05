@@ -1,5 +1,5 @@
 {
-  "run": "1ed13d9d",
+  "run": "5c3b37ad",
   "asserted": 47,
   "results": [
     {
@@ -9,7 +9,7 @@
         "aud": "http://127.0.0.1:64321/functions/v1/mcp",
         "role": "mcp_ingress",
         "iss": "http://127.0.0.1:64321/auth/v1",
-        "client_id": "caa3bfdb-ef7e-44e4-a6be-9695cb3db3a9",
+        "client_id": "49205109-b495-42d0-80fd-9746aec6e934",
         "session_id_present": true,
         "keys": [
           "aal",
@@ -39,7 +39,7 @@
         "aud": "http://127.0.0.1:64321/functions/v1/mcp",
         "role": "mcp_ingress",
         "iss": "http://127.0.0.1:64321/auth/v1",
-        "client_id": "caa3bfdb-ef7e-44e4-a6be-9695cb3db3a9",
+        "client_id": "49205109-b495-42d0-80fd-9746aec6e934",
         "session_id_present": true,
         "keys": [
           "aal",
@@ -76,9 +76,8 @@
     {
       "id": "CT-9_query_params_cannot_exceed_cap",
       "pass": true,
-      "status": 400,
-      "rows": null,
-      "message": "column list_own_v1.id does not exist"
+      "status": 200,
+      "rows": 100
     },
     {
       "id": "CT-9_input_cap",
@@ -98,7 +97,7 @@
         "aud": "authenticated",
         "role": "authenticated",
         "iss": "http://127.0.0.1:64321/auth/v1",
-        "client_id": "907caca1-4bae-448b-85b0-dc665af1999b",
+        "client_id": "51e01fec-b2a6-4154-a8d3-a0b38428fd68",
         "session_id_present": true,
         "keys": [
           "aal",
@@ -312,14 +311,14 @@
       "pass": true,
       "status": 500,
       "code": "57014",
-      "elapsed_ms": 2006
+      "elapsed_ms": 2008
     },
     {
       "id": "CT-14_lock_timeout",
       "pass": true,
       "status": 500,
       "code": "55P03",
-      "elapsed_ms": 1027
+      "elapsed_ms": 1018
     },
     {
       "id": "CT-13_not_after",
@@ -354,12 +353,76 @@
     },
     {
       "id": "CT-14_result_byte_budget",
-      "pass": true,
+      "pass": false,
       "budget_bytes": 32768,
       "cases": 96,
-      "accepted_over_budget": [],
-      "max_accepted_bytes": 22255,
-      "budget_refusals": 15,
+      "accepted_over_budget": [
+        {
+          "fixture": "escape",
+          "max_rows": 20,
+          "projection": "?select=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+          "accept": "application/json",
+          "status": 200,
+          "bytes": 34958,
+          "message": null
+        },
+        {
+          "fixture": "escape",
+          "max_rows": 40,
+          "projection": "?select=a:label,b:label",
+          "accept": "application/json",
+          "status": 200,
+          "bytes": 41718,
+          "message": null
+        },
+        {
+          "fixture": "escape",
+          "max_rows": 40,
+          "projection": "?select=a:label,b:label",
+          "accept": "text/csv",
+          "status": 200,
+          "bytes": 41205,
+          "message": null
+        },
+        {
+          "fixture": "escape",
+          "max_rows": 40,
+          "projection": "?select=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+          "accept": "application/json",
+          "status": 200,
+          "bytes": 69918,
+          "message": null
+        },
+        {
+          "fixture": "escape",
+          "max_rows": 40,
+          "projection": "?select=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+          "accept": "text/csv",
+          "status": 200,
+          "bytes": 61805,
+          "message": null
+        },
+        {
+          "fixture": "control",
+          "max_rows": 20,
+          "projection": "?select=a:label,b:label",
+          "accept": "application/json",
+          "status": 200,
+          "bytes": 61818,
+          "message": null
+        },
+        {
+          "fixture": "control",
+          "max_rows": 20,
+          "projection": "?select=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+          "accept": "application/json",
+          "status": 200,
+          "bytes": 96398,
+          "message": null
+        }
+      ],
+      "max_accepted_bytes": 96398,
+      "budget_refusals": 36,
       "positive_controls": [true, true],
       "grid": [
         {
@@ -368,7 +431,7 @@
           "projection": "",
           "accept": "application/json",
           "status": 200,
-          "bytes": 2950,
+          "bytes": 2923,
           "message": null
         },
         {
@@ -377,99 +440,98 @@
           "projection": "",
           "accept": "text/csv",
           "status": 200,
-          "bytes": 5575,
-          "message": null,
-          "head": "pgrst_scalar\n\"[{\"\"id\"\" : 123, \"\"label\"\" : \"\"\\\\\"\"\\\\\\\\\\\\\"\"\\\\\\\\\\\\\"\"\\\\\\\\\\\\\"\"\\\\\\\\\\\\\"\"\\\\\\\\\\\\\"\"\\\\\\\\\\\\\"\"\\\\\\\\\\\\\"\"\\\\\\\\\\\\\"\"\\\\\\\\\\\\\"\"\\\\\\\\\\\\\"\"\\\\\\\\\\\\\"\"\\\\\\\\\\\\\"\"\\\\\\\\\\\\\"\"\\\\\\\\\\\\\"\"\\\\\\\\\\\\\"\"\\\\\\\\\\\\\"\"\\\\\\\\\\\\\"\"\\\\\\\\\\\\\"\"\\\\\\\\\\\\\"\"\\\\\\\\\\\\\"\"\\\\\\\\\\\\\"\"\\\\\\\\\\\\\"\"\\\\\\\\\\\\\"\"\\\\\\\\\\\\\"\"\\\\\\\\\\\\\"\"\\\\\\\\\\\\\"\"\\\\\\\\\\\\\"\"\\\\\\\\\\\\\"\"\\\\\\\\\\\\\"\"\\\\\\\\\\\\\"\"\\\\\\\\\\\\\"\"\\\\\\\\\\\\\"\"\\\\\\\\\\\\\"\"\\\\\\\\\\\\\"\"\\\\\\\\\\\\\"\"\\\\\\\\\\\\\"\"\\\\\\\\\\\\\"\"\\\\\\\\\\\\\"\"\\\\\\\\\\\\\"\"\\\\\\\\\\\\\"\"\\\\\\\\\\\\\"\"\\\\\\\\\\\\\"\"\\\\\\\\\\\\\"\"\\\\\\\\\\\\\"\""
+          "bytes": 2774,
+          "message": null
         },
         {
           "fixture": "escape",
           "max_rows": 5,
           "projection": "",
           "accept": "application/vnd.pgrst.object+json",
+          "status": 406,
+          "bytes": 131,
+          "message": "Cannot coerce the result to a single JSON object"
+        },
+        {
+          "fixture": "escape",
+          "max_rows": 5,
+          "projection": "?select=a:label,b:label",
+          "accept": "application/json",
           "status": 200,
-          "bytes": 2950,
+          "bytes": 5213,
           "message": null
         },
         {
           "fixture": "escape",
           "max_rows": 5,
           "projection": "?select=a:label,b:label",
-          "accept": "application/json",
-          "status": 400,
-          "bytes": 95,
-          "message": "column list_own_v1.label does not exist"
-        },
-        {
-          "fixture": "escape",
-          "max_rows": 5,
-          "projection": "?select=a:label,b:label",
           "accept": "text/csv",
-          "status": 400,
-          "bytes": 95,
-          "message": "column list_own_v1.label does not exist"
+          "status": 200,
+          "bytes": 5155,
+          "message": null
         },
         {
           "fixture": "escape",
           "max_rows": 5,
           "projection": "?select=a:label,b:label",
           "accept": "application/vnd.pgrst.object+json",
-          "status": 400,
-          "bytes": 95,
-          "message": "column list_own_v1.label does not exist"
+          "status": 406,
+          "bytes": 131,
+          "message": "Cannot coerce the result to a single JSON object"
         },
         {
           "fixture": "escape",
           "max_rows": 5,
           "projection": "?select=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
           "accept": "application/json",
-          "status": 400,
-          "bytes": 95,
-          "message": "column list_own_v1.label does not exist"
+          "status": 200,
+          "bytes": 8738,
+          "message": null
         },
         {
           "fixture": "escape",
           "max_rows": 5,
           "projection": "?select=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
           "accept": "text/csv",
-          "status": 400,
-          "bytes": 95,
-          "message": "column list_own_v1.label does not exist"
+          "status": 200,
+          "bytes": 7730,
+          "message": null
         },
         {
           "fixture": "escape",
           "max_rows": 5,
           "projection": "?select=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
           "accept": "application/vnd.pgrst.object+json",
-          "status": 400,
-          "bytes": 95,
-          "message": "column list_own_v1.label does not exist"
+          "status": 406,
+          "bytes": 131,
+          "message": "Cannot coerce the result to a single JSON object"
         },
         {
           "fixture": "escape",
           "max_rows": 5,
           "projection": "?select=label::text,id::text",
           "accept": "application/json",
-          "status": 400,
-          "bytes": 95,
-          "message": "column list_own_v1.label does not exist"
+          "status": 200,
+          "bytes": 2693,
+          "message": null
         },
         {
           "fixture": "escape",
           "max_rows": 5,
           "projection": "?select=label::text,id::text",
           "accept": "text/csv",
-          "status": 400,
-          "bytes": 95,
-          "message": "column list_own_v1.label does not exist"
+          "status": 200,
+          "bytes": 2603,
+          "message": null
         },
         {
           "fixture": "escape",
           "max_rows": 5,
           "projection": "?select=label::text,id::text",
           "accept": "application/vnd.pgrst.object+json",
-          "status": 400,
-          "bytes": 95,
-          "message": "column list_own_v1.label does not exist"
+          "status": 406,
+          "bytes": 131,
+          "message": "Cannot coerce the result to a single JSON object"
         },
         {
           "fixture": "escape",
@@ -477,7 +539,7 @@
           "projection": "",
           "accept": "application/json",
           "status": 200,
-          "bytes": 11800,
+          "bytes": 11698,
           "message": null
         },
         {
@@ -486,207 +548,206 @@
           "projection": "",
           "accept": "text/csv",
           "status": 200,
-          "bytes": 22255,
-          "message": null,
-          "head": "pgrst_scalar\n\"[{\"\"id\"\" : 123, \"\"label\"\" : \"\"\\\\\"\"\\\\\\\\\\\\\"\"\\\\\\\\\\\\\"\"\\\\\\\\\\\\\"\"\\\\\\\\\\\\\"\"\\\\\\\\\\\\\"\"\\\\\\\\\\\\\"\"\\\\\\\\\\\\\"\"\\\\\\\\\\\\\"\"\\\\\\\\\\\\\"\"\\\\\\\\\\\\\"\"\\\\\\\\\\\\\"\"\\\\\\\\\\\\\"\"\\\\\\\\\\\\\"\"\\\\\\\\\\\\\"\"\\\\\\\\\\\\\"\"\\\\\\\\\\\\\"\"\\\\\\\\\\\\\"\"\\\\\\\\\\\\\"\"\\\\\\\\\\\\\"\"\\\\\\\\\\\\\"\"\\\\\\\\\\\\\"\"\\\\\\\\\\\\\"\"\\\\\\\\\\\\\"\"\\\\\\\\\\\\\"\"\\\\\\\\\\\\\"\"\\\\\\\\\\\\\"\"\\\\\\\\\\\\\"\"\\\\\\\\\\\\\"\"\\\\\\\\\\\\\"\"\\\\\\\\\\\\\"\"\\\\\\\\\\\\\"\"\\\\\\\\\\\\\"\"\\\\\\\\\\\\\"\"\\\\\\\\\\\\\"\"\\\\\\\\\\\\\"\"\\\\\\\\\\\\\"\"\\\\\\\\\\\\\"\"\\\\\\\\\\\\\"\"\\\\\\\\\\\\\"\"\\\\\\\\\\\\\"\"\\\\\\\\\\\\\"\"\\\\\\\\\\\\\"\"\\\\\\\\\\\\\"\"\\\\\\\\\\\\\"\""
+          "bytes": 11039,
+          "message": null
         },
         {
           "fixture": "escape",
           "max_rows": 20,
           "projection": "",
           "accept": "application/vnd.pgrst.object+json",
+          "status": 406,
+          "bytes": 132,
+          "message": "Cannot coerce the result to a single JSON object"
+        },
+        {
+          "fixture": "escape",
+          "max_rows": 20,
+          "projection": "?select=a:label,b:label",
+          "accept": "application/json",
           "status": 200,
-          "bytes": 11800,
+          "bytes": 20858,
           "message": null
         },
         {
           "fixture": "escape",
           "max_rows": 20,
           "projection": "?select=a:label,b:label",
-          "accept": "application/json",
-          "status": 400,
-          "bytes": 95,
-          "message": "column list_own_v1.label does not exist"
-        },
-        {
-          "fixture": "escape",
-          "max_rows": 20,
-          "projection": "?select=a:label,b:label",
           "accept": "text/csv",
-          "status": 400,
-          "bytes": 95,
-          "message": "column list_own_v1.label does not exist"
+          "status": 200,
+          "bytes": 20605,
+          "message": null
         },
         {
           "fixture": "escape",
           "max_rows": 20,
           "projection": "?select=a:label,b:label",
           "accept": "application/vnd.pgrst.object+json",
-          "status": 400,
-          "bytes": 95,
-          "message": "column list_own_v1.label does not exist"
+          "status": 406,
+          "bytes": 132,
+          "message": "Cannot coerce the result to a single JSON object"
         },
         {
           "fixture": "escape",
           "max_rows": 20,
           "projection": "?select=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
           "accept": "application/json",
-          "status": 400,
-          "bytes": 95,
-          "message": "column list_own_v1.label does not exist"
+          "status": 200,
+          "bytes": 34958,
+          "message": null
         },
         {
           "fixture": "escape",
           "max_rows": 20,
           "projection": "?select=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
           "accept": "text/csv",
-          "status": 400,
-          "bytes": 95,
-          "message": "column list_own_v1.label does not exist"
+          "status": 200,
+          "bytes": 30905,
+          "message": null
         },
         {
           "fixture": "escape",
           "max_rows": 20,
           "projection": "?select=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
           "accept": "application/vnd.pgrst.object+json",
-          "status": 400,
-          "bytes": 95,
-          "message": "column list_own_v1.label does not exist"
+          "status": 406,
+          "bytes": 132,
+          "message": "Cannot coerce the result to a single JSON object"
         },
         {
           "fixture": "escape",
           "max_rows": 20,
           "projection": "?select=label::text,id::text",
           "accept": "application/json",
-          "status": 400,
-          "bytes": 95,
-          "message": "column list_own_v1.label does not exist"
+          "status": 200,
+          "bytes": 10778,
+          "message": null
         },
         {
           "fixture": "escape",
           "max_rows": 20,
           "projection": "?select=label::text,id::text",
           "accept": "text/csv",
-          "status": 400,
-          "bytes": 95,
-          "message": "column list_own_v1.label does not exist"
+          "status": 200,
+          "bytes": 10388,
+          "message": null
         },
         {
           "fixture": "escape",
           "max_rows": 20,
           "projection": "?select=label::text,id::text",
           "accept": "application/vnd.pgrst.object+json",
-          "status": 400,
-          "bytes": 95,
-          "message": "column list_own_v1.label does not exist"
+          "status": 406,
+          "bytes": 132,
+          "message": "Cannot coerce the result to a single JSON object"
         },
         {
           "fixture": "escape",
           "max_rows": 40,
           "projection": "",
           "accept": "application/json",
-          "status": 500,
-          "bytes": 90,
-          "message": "list_own_v1:result_budget_exceeded"
+          "status": 200,
+          "bytes": 23398,
+          "message": null
         },
         {
           "fixture": "escape",
           "max_rows": 40,
           "projection": "",
           "accept": "text/csv",
-          "status": 500,
-          "bytes": 90,
-          "message": "list_own_v1:result_budget_exceeded"
+          "status": 200,
+          "bytes": 22059,
+          "message": null
         },
         {
           "fixture": "escape",
           "max_rows": 40,
           "projection": "",
           "accept": "application/vnd.pgrst.object+json",
-          "status": 500,
-          "bytes": 90,
-          "message": "list_own_v1:result_budget_exceeded"
+          "status": 406,
+          "bytes": 132,
+          "message": "Cannot coerce the result to a single JSON object"
         },
         {
           "fixture": "escape",
           "max_rows": 40,
           "projection": "?select=a:label,b:label",
           "accept": "application/json",
-          "status": 400,
-          "bytes": 95,
-          "message": "column list_own_v1.label does not exist"
+          "status": 200,
+          "bytes": 41718,
+          "message": null
         },
         {
           "fixture": "escape",
           "max_rows": 40,
           "projection": "?select=a:label,b:label",
           "accept": "text/csv",
-          "status": 400,
-          "bytes": 95,
-          "message": "column list_own_v1.label does not exist"
+          "status": 200,
+          "bytes": 41205,
+          "message": null
         },
         {
           "fixture": "escape",
           "max_rows": 40,
           "projection": "?select=a:label,b:label",
           "accept": "application/vnd.pgrst.object+json",
-          "status": 400,
-          "bytes": 95,
-          "message": "column list_own_v1.label does not exist"
+          "status": 406,
+          "bytes": 132,
+          "message": "Cannot coerce the result to a single JSON object"
         },
         {
           "fixture": "escape",
           "max_rows": 40,
           "projection": "?select=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
           "accept": "application/json",
-          "status": 400,
-          "bytes": 95,
-          "message": "column list_own_v1.label does not exist"
+          "status": 200,
+          "bytes": 69918,
+          "message": null
         },
         {
           "fixture": "escape",
           "max_rows": 40,
           "projection": "?select=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
           "accept": "text/csv",
-          "status": 400,
-          "bytes": 95,
-          "message": "column list_own_v1.label does not exist"
+          "status": 200,
+          "bytes": 61805,
+          "message": null
         },
         {
           "fixture": "escape",
           "max_rows": 40,
           "projection": "?select=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
           "accept": "application/vnd.pgrst.object+json",
-          "status": 400,
-          "bytes": 95,
-          "message": "column list_own_v1.label does not exist"
+          "status": 406,
+          "bytes": 132,
+          "message": "Cannot coerce the result to a single JSON object"
         },
         {
           "fixture": "escape",
           "max_rows": 40,
           "projection": "?select=label::text,id::text",
           "accept": "application/json",
-          "status": 400,
-          "bytes": 95,
-          "message": "column list_own_v1.label does not exist"
+          "status": 200,
+          "bytes": 21558,
+          "message": null
         },
         {
           "fixture": "escape",
           "max_rows": 40,
           "projection": "?select=label::text,id::text",
           "accept": "text/csv",
-          "status": 400,
-          "bytes": 95,
-          "message": "column list_own_v1.label does not exist"
+          "status": 200,
+          "bytes": 20768,
+          "message": null
         },
         {
           "fixture": "escape",
           "max_rows": 40,
           "projection": "?select=label::text,id::text",
           "accept": "application/vnd.pgrst.object+json",
-          "status": 400,
-          "bytes": 95,
-          "message": "column list_own_v1.label does not exist"
+          "status": 406,
+          "bytes": 132,
+          "message": "Cannot coerce the result to a single JSON object"
         },
         {
           "fixture": "escape",
@@ -720,81 +781,81 @@
           "max_rows": 100,
           "projection": "?select=a:label,b:label",
           "accept": "application/json",
-          "status": 400,
-          "bytes": 95,
-          "message": "column list_own_v1.label does not exist"
+          "status": 500,
+          "bytes": 90,
+          "message": "list_own_v1:result_budget_exceeded"
         },
         {
           "fixture": "escape",
           "max_rows": 100,
           "projection": "?select=a:label,b:label",
           "accept": "text/csv",
-          "status": 400,
-          "bytes": 95,
-          "message": "column list_own_v1.label does not exist"
+          "status": 500,
+          "bytes": 90,
+          "message": "list_own_v1:result_budget_exceeded"
         },
         {
           "fixture": "escape",
           "max_rows": 100,
           "projection": "?select=a:label,b:label",
           "accept": "application/vnd.pgrst.object+json",
-          "status": 400,
-          "bytes": 95,
-          "message": "column list_own_v1.label does not exist"
+          "status": 500,
+          "bytes": 90,
+          "message": "list_own_v1:result_budget_exceeded"
         },
         {
           "fixture": "escape",
           "max_rows": 100,
           "projection": "?select=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
           "accept": "application/json",
-          "status": 400,
-          "bytes": 95,
-          "message": "column list_own_v1.label does not exist"
+          "status": 500,
+          "bytes": 90,
+          "message": "list_own_v1:result_budget_exceeded"
         },
         {
           "fixture": "escape",
           "max_rows": 100,
           "projection": "?select=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
           "accept": "text/csv",
-          "status": 400,
-          "bytes": 95,
-          "message": "column list_own_v1.label does not exist"
+          "status": 500,
+          "bytes": 90,
+          "message": "list_own_v1:result_budget_exceeded"
         },
         {
           "fixture": "escape",
           "max_rows": 100,
           "projection": "?select=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
           "accept": "application/vnd.pgrst.object+json",
-          "status": 400,
-          "bytes": 95,
-          "message": "column list_own_v1.label does not exist"
+          "status": 500,
+          "bytes": 90,
+          "message": "list_own_v1:result_budget_exceeded"
         },
         {
           "fixture": "escape",
           "max_rows": 100,
           "projection": "?select=label::text,id::text",
           "accept": "application/json",
-          "status": 400,
-          "bytes": 95,
-          "message": "column list_own_v1.label does not exist"
+          "status": 500,
+          "bytes": 90,
+          "message": "list_own_v1:result_budget_exceeded"
         },
         {
           "fixture": "escape",
           "max_rows": 100,
           "projection": "?select=label::text,id::text",
           "accept": "text/csv",
-          "status": 400,
-          "bytes": 95,
-          "message": "column list_own_v1.label does not exist"
+          "status": 500,
+          "bytes": 90,
+          "message": "list_own_v1:result_budget_exceeded"
         },
         {
           "fixture": "escape",
           "max_rows": 100,
           "projection": "?select=label::text,id::text",
           "accept": "application/vnd.pgrst.object+json",
-          "status": 400,
-          "bytes": 95,
-          "message": "column list_own_v1.label does not exist"
+          "status": 500,
+          "bytes": 90,
+          "message": "list_own_v1:result_budget_exceeded"
         },
         {
           "fixture": "control",
@@ -802,7 +863,7 @@
           "projection": "",
           "accept": "application/json",
           "status": 200,
-          "bytes": 8075,
+          "bytes": 8043,
           "message": null
         },
         {
@@ -811,103 +872,210 @@
           "projection": "",
           "accept": "text/csv",
           "status": 200,
-          "bytes": 9420,
-          "message": null,
-          "head": "pgrst_scalar\n\"[{\"\"id\"\" : 223, \"\"label\"\" : \"\"\\\\u0001\\\\u0001\\\\u0001\\\\u0001\\\\u0001\\\\u0001\\\\u0001\\\\u0001\\\\u0001\\\\u0001\\\\u0001\\\\u0001\\\\u0001\\\\u0001\\\\u0001\\\\u0001\\\\u0001\\\\u0001\\\\u0001\\\\u0001\\\\u0001\\\\u0001\\\\u0001\\\\u0001\\\\u0001\\\\u0001\\\\u0001\\\\u0001\\\\u0001\\\\u0001\\\\u0001\\\\u0001\\\\u0001\\\\u0001\\\\u0001\\\\u0001\\\\u0001\\\\u0001\\\\u0001\\\\u0001\\\\u0001\\\\u0001\\\\u0001\\\\u0001\\\\u0001\\\\u0001\\\\u0001\\\\u0001\\\\u0001\\\\u0001\\\\u000"
+          "bytes": 1484,
+          "message": null
         },
         {
           "fixture": "control",
           "max_rows": 5,
           "projection": "",
           "accept": "application/vnd.pgrst.object+json",
+          "status": 406,
+          "bytes": 131,
+          "message": "Cannot coerce the result to a single JSON object"
+        },
+        {
+          "fixture": "control",
+          "max_rows": 5,
+          "projection": "?select=a:label,b:label",
+          "accept": "application/json",
           "status": 200,
-          "bytes": 8075,
+          "bytes": 15453,
           "message": null
         },
         {
           "fixture": "control",
           "max_rows": 5,
           "projection": "?select=a:label,b:label",
-          "accept": "application/json",
-          "status": 400,
-          "bytes": 95,
-          "message": "column list_own_v1.label does not exist"
-        },
-        {
-          "fixture": "control",
-          "max_rows": 5,
-          "projection": "?select=a:label,b:label",
           "accept": "text/csv",
-          "status": 400,
-          "bytes": 95,
-          "message": "column list_own_v1.label does not exist"
+          "status": 200,
+          "bytes": 2575,
+          "message": null
         },
         {
           "fixture": "control",
           "max_rows": 5,
           "projection": "?select=a:label,b:label",
           "accept": "application/vnd.pgrst.object+json",
-          "status": 400,
-          "bytes": 95,
-          "message": "column list_own_v1.label does not exist"
+          "status": 406,
+          "bytes": 131,
+          "message": "Cannot coerce the result to a single JSON object"
         },
         {
           "fixture": "control",
           "max_rows": 5,
           "projection": "?select=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
           "accept": "application/json",
-          "status": 400,
-          "bytes": 95,
-          "message": "column list_own_v1.label does not exist"
+          "status": 200,
+          "bytes": 24098,
+          "message": null
         },
         {
           "fixture": "control",
           "max_rows": 5,
           "projection": "?select=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
           "accept": "text/csv",
-          "status": 400,
-          "bytes": 95,
-          "message": "column list_own_v1.label does not exist"
+          "status": 200,
+          "bytes": 3860,
+          "message": null
         },
         {
           "fixture": "control",
           "max_rows": 5,
           "projection": "?select=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
           "accept": "application/vnd.pgrst.object+json",
-          "status": 400,
-          "bytes": 95,
-          "message": "column list_own_v1.label does not exist"
+          "status": 406,
+          "bytes": 131,
+          "message": "Cannot coerce the result to a single JSON object"
         },
         {
           "fixture": "control",
           "max_rows": 5,
           "projection": "?select=label::text,id::text",
           "accept": "application/json",
-          "status": 400,
-          "bytes": 95,
-          "message": "column list_own_v1.label does not exist"
+          "status": 200,
+          "bytes": 7813,
+          "message": null
         },
         {
           "fixture": "control",
           "max_rows": 5,
           "projection": "?select=label::text,id::text",
           "accept": "text/csv",
-          "status": 400,
-          "bytes": 95,
-          "message": "column list_own_v1.label does not exist"
+          "status": 200,
+          "bytes": 1313,
+          "message": null
         },
         {
           "fixture": "control",
           "max_rows": 5,
           "projection": "?select=label::text,id::text",
           "accept": "application/vnd.pgrst.object+json",
-          "status": 400,
-          "bytes": 95,
-          "message": "column list_own_v1.label does not exist"
+          "status": 406,
+          "bytes": 131,
+          "message": "Cannot coerce the result to a single JSON object"
         },
         {
           "fixture": "control",
           "max_rows": 20,
+          "projection": "",
+          "accept": "application/json",
+          "status": 200,
+          "bytes": 32178,
+          "message": null
+        },
+        {
+          "fixture": "control",
+          "max_rows": 20,
+          "projection": "",
+          "accept": "text/csv",
+          "status": 200,
+          "bytes": 5879,
+          "message": null
+        },
+        {
+          "fixture": "control",
+          "max_rows": 20,
+          "projection": "",
+          "accept": "application/vnd.pgrst.object+json",
+          "status": 406,
+          "bytes": 132,
+          "message": "Cannot coerce the result to a single JSON object"
+        },
+        {
+          "fixture": "control",
+          "max_rows": 20,
+          "projection": "?select=a:label,b:label",
+          "accept": "application/json",
+          "status": 200,
+          "bytes": 61818,
+          "message": null
+        },
+        {
+          "fixture": "control",
+          "max_rows": 20,
+          "projection": "?select=a:label,b:label",
+          "accept": "text/csv",
+          "status": 200,
+          "bytes": 10285,
+          "message": null
+        },
+        {
+          "fixture": "control",
+          "max_rows": 20,
+          "projection": "?select=a:label,b:label",
+          "accept": "application/vnd.pgrst.object+json",
+          "status": 406,
+          "bytes": 132,
+          "message": "Cannot coerce the result to a single JSON object"
+        },
+        {
+          "fixture": "control",
+          "max_rows": 20,
+          "projection": "?select=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+          "accept": "application/json",
+          "status": 200,
+          "bytes": 96398,
+          "message": null
+        },
+        {
+          "fixture": "control",
+          "max_rows": 20,
+          "projection": "?select=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+          "accept": "text/csv",
+          "status": 200,
+          "bytes": 15425,
+          "message": null
+        },
+        {
+          "fixture": "control",
+          "max_rows": 20,
+          "projection": "?select=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+          "accept": "application/vnd.pgrst.object+json",
+          "status": 406,
+          "bytes": 132,
+          "message": "Cannot coerce the result to a single JSON object"
+        },
+        {
+          "fixture": "control",
+          "max_rows": 20,
+          "projection": "?select=label::text,id::text",
+          "accept": "application/json",
+          "status": 200,
+          "bytes": 31258,
+          "message": null
+        },
+        {
+          "fixture": "control",
+          "max_rows": 20,
+          "projection": "?select=label::text,id::text",
+          "accept": "text/csv",
+          "status": 200,
+          "bytes": 5228,
+          "message": null
+        },
+        {
+          "fixture": "control",
+          "max_rows": 20,
+          "projection": "?select=label::text,id::text",
+          "accept": "application/vnd.pgrst.object+json",
+          "status": 406,
+          "bytes": 132,
+          "message": "Cannot coerce the result to a single JSON object"
+        },
+        {
+          "fixture": "control",
+          "max_rows": 40,
           "projection": "",
           "accept": "application/json",
           "status": 500,
@@ -916,114 +1084,6 @@
         },
         {
           "fixture": "control",
-          "max_rows": 20,
-          "projection": "",
-          "accept": "text/csv",
-          "status": 500,
-          "bytes": 90,
-          "message": "list_own_v1:result_budget_exceeded"
-        },
-        {
-          "fixture": "control",
-          "max_rows": 20,
-          "projection": "",
-          "accept": "application/vnd.pgrst.object+json",
-          "status": 500,
-          "bytes": 90,
-          "message": "list_own_v1:result_budget_exceeded"
-        },
-        {
-          "fixture": "control",
-          "max_rows": 20,
-          "projection": "?select=a:label,b:label",
-          "accept": "application/json",
-          "status": 400,
-          "bytes": 95,
-          "message": "column list_own_v1.label does not exist"
-        },
-        {
-          "fixture": "control",
-          "max_rows": 20,
-          "projection": "?select=a:label,b:label",
-          "accept": "text/csv",
-          "status": 400,
-          "bytes": 95,
-          "message": "column list_own_v1.label does not exist"
-        },
-        {
-          "fixture": "control",
-          "max_rows": 20,
-          "projection": "?select=a:label,b:label",
-          "accept": "application/vnd.pgrst.object+json",
-          "status": 400,
-          "bytes": 95,
-          "message": "column list_own_v1.label does not exist"
-        },
-        {
-          "fixture": "control",
-          "max_rows": 20,
-          "projection": "?select=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
-          "accept": "application/json",
-          "status": 400,
-          "bytes": 95,
-          "message": "column list_own_v1.label does not exist"
-        },
-        {
-          "fixture": "control",
-          "max_rows": 20,
-          "projection": "?select=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
-          "accept": "text/csv",
-          "status": 400,
-          "bytes": 95,
-          "message": "column list_own_v1.label does not exist"
-        },
-        {
-          "fixture": "control",
-          "max_rows": 20,
-          "projection": "?select=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
-          "accept": "application/vnd.pgrst.object+json",
-          "status": 400,
-          "bytes": 95,
-          "message": "column list_own_v1.label does not exist"
-        },
-        {
-          "fixture": "control",
-          "max_rows": 20,
-          "projection": "?select=label::text,id::text",
-          "accept": "application/json",
-          "status": 400,
-          "bytes": 95,
-          "message": "column list_own_v1.label does not exist"
-        },
-        {
-          "fixture": "control",
-          "max_rows": 20,
-          "projection": "?select=label::text,id::text",
-          "accept": "text/csv",
-          "status": 400,
-          "bytes": 95,
-          "message": "column list_own_v1.label does not exist"
-        },
-        {
-          "fixture": "control",
-          "max_rows": 20,
-          "projection": "?select=label::text,id::text",
-          "accept": "application/vnd.pgrst.object+json",
-          "status": 400,
-          "bytes": 95,
-          "message": "column list_own_v1.label does not exist"
-        },
-        {
-          "fixture": "control",
-          "max_rows": 40,
-          "projection": "",
-          "accept": "application/json",
-          "status": 500,
-          "bytes": 90,
-          "message": "list_own_v1:result_budget_exceeded"
-        },
-        {
-          "fixture": "control",
           "max_rows": 40,
           "projection": "",
           "accept": "text/csv",
@@ -1045,81 +1105,81 @@
           "max_rows": 40,
           "projection": "?select=a:label,b:label",
           "accept": "application/json",
-          "status": 400,
-          "bytes": 95,
-          "message": "column list_own_v1.label does not exist"
+          "status": 500,
+          "bytes": 90,
+          "message": "list_own_v1:result_budget_exceeded"
         },
         {
           "fixture": "control",
           "max_rows": 40,
           "projection": "?select=a:label,b:label",
           "accept": "text/csv",
-          "status": 400,
-          "bytes": 95,
-          "message": "column list_own_v1.label does not exist"
+          "status": 500,
+          "bytes": 90,
+          "message": "list_own_v1:result_budget_exceeded"
         },
         {
           "fixture": "control",
           "max_rows": 40,
           "projection": "?select=a:label,b:label",
           "accept": "application/vnd.pgrst.object+json",
-          "status": 400,
-          "bytes": 95,
-          "message": "column list_own_v1.label does not exist"
+          "status": 500,
+          "bytes": 90,
+          "message": "list_own_v1:result_budget_exceeded"
         },
         {
           "fixture": "control",
           "max_rows": 40,
           "projection": "?select=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
           "accept": "application/json",
-          "status": 400,
-          "bytes": 95,
-          "message": "column list_own_v1.label does not exist"
+          "status": 500,
+          "bytes": 90,
+          "message": "list_own_v1:result_budget_exceeded"
         },
         {
           "fixture": "control",
           "max_rows": 40,
           "projection": "?select=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
           "accept": "text/csv",
-          "status": 400,
-          "bytes": 95,
-          "message": "column list_own_v1.label does not exist"
+          "status": 500,
+          "bytes": 90,
+          "message": "list_own_v1:result_budget_exceeded"
         },
         {
           "fixture": "control",
           "max_rows": 40,
           "projection": "?select=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
           "accept": "application/vnd.pgrst.object+json",
-          "status": 400,
-          "bytes": 95,
-          "message": "column list_own_v1.label does not exist"
+          "status": 500,
+          "bytes": 90,
+          "message": "list_own_v1:result_budget_exceeded"
         },
         {
           "fixture": "control",
           "max_rows": 40,
           "projection": "?select=label::text,id::text",
           "accept": "application/json",
-          "status": 400,
-          "bytes": 95,
-          "message": "column list_own_v1.label does not exist"
+          "status": 500,
+          "bytes": 90,
+          "message": "list_own_v1:result_budget_exceeded"
         },
         {
           "fixture": "control",
           "max_rows": 40,
           "projection": "?select=label::text,id::text",
           "accept": "text/csv",
-          "status": 400,
-          "bytes": 95,
-          "message": "column list_own_v1.label does not exist"
+          "status": 500,
+          "bytes": 90,
+          "message": "list_own_v1:result_budget_exceeded"
         },
         {
           "fixture": "control",
           "max_rows": 40,
           "projection": "?select=label::text,id::text",
           "accept": "application/vnd.pgrst.object+json",
-          "status": 400,
-          "bytes": 95,
-          "message": "column list_own_v1.label does not exist"
+          "status": 500,
+          "bytes": 90,
+          "message": "list_own_v1:result_budget_exceeded"
         },
         {
           "fixture": "control",
@@ -1153,81 +1213,81 @@
           "max_rows": 100,
           "projection": "?select=a:label,b:label",
           "accept": "application/json",
-          "status": 400,
-          "bytes": 95,
-          "message": "column list_own_v1.label does not exist"
+          "status": 500,
+          "bytes": 90,
+          "message": "list_own_v1:result_budget_exceeded"
         },
         {
           "fixture": "control",
           "max_rows": 100,
           "projection": "?select=a:label,b:label",
           "accept": "text/csv",
-          "status": 400,
-          "bytes": 95,
-          "message": "column list_own_v1.label does not exist"
+          "status": 500,
+          "bytes": 90,
+          "message": "list_own_v1:result_budget_exceeded"
         },
         {
           "fixture": "control",
           "max_rows": 100,
           "projection": "?select=a:label,b:label",
           "accept": "application/vnd.pgrst.object+json",
-          "status": 400,
-          "bytes": 95,
-          "message": "column list_own_v1.label does not exist"
+          "status": 500,
+          "bytes": 90,
+          "message": "list_own_v1:result_budget_exceeded"
         },
         {
           "fixture": "control",
           "max_rows": 100,
           "projection": "?select=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
           "accept": "application/json",
-          "status": 400,
-          "bytes": 95,
-          "message": "column list_own_v1.label does not exist"
+          "status": 500,
+          "bytes": 90,
+          "message": "list_own_v1:result_budget_exceeded"
         },
         {
           "fixture": "control",
           "max_rows": 100,
           "projection": "?select=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
           "accept": "text/csv",
-          "status": 400,
-          "bytes": 95,
-          "message": "column list_own_v1.label does not exist"
+          "status": 500,
+          "bytes": 90,
+          "message": "list_own_v1:result_budget_exceeded"
         },
         {
           "fixture": "control",
           "max_rows": 100,
           "projection": "?select=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
           "accept": "application/vnd.pgrst.object+json",
-          "status": 400,
-          "bytes": 95,
-          "message": "column list_own_v1.label does not exist"
+          "status": 500,
+          "bytes": 90,
+          "message": "list_own_v1:result_budget_exceeded"
         },
         {
           "fixture": "control",
           "max_rows": 100,
           "projection": "?select=label::text,id::text",
           "accept": "application/json",
-          "status": 400,
-          "bytes": 95,
-          "message": "column list_own_v1.label does not exist"
+          "status": 500,
+          "bytes": 90,
+          "message": "list_own_v1:result_budget_exceeded"
         },
         {
           "fixture": "control",
           "max_rows": 100,
           "projection": "?select=label::text,id::text",
           "accept": "text/csv",
-          "status": 400,
-          "bytes": 95,
-          "message": "column list_own_v1.label does not exist"
+          "status": 500,
+          "bytes": 90,
+          "message": "list_own_v1:result_budget_exceeded"
         },
         {
           "fixture": "control",
           "max_rows": 100,
           "projection": "?select=label::text,id::text",
           "accept": "application/vnd.pgrst.object+json",
-          "status": 400,
-          "bytes": 95,
-          "message": "column list_own_v1.label does not exist"
+          "status": 500,
+          "bytes": 90,
+          "message": "list_own_v1:result_budget_exceeded"
         }
       ]
     },
@@ -1274,9 +1334,9 @@
       "id": "CT-19_concurrent_revoke",
       "pass": true,
       "revoke_status": 204,
-      "revoke_done_ms": 220,
+      "revoke_done_ms": 212,
       "started_after_revoke": 18,
-      "accepted_before_revoke": 22,
+      "accepted_before_revoke": 21,
       "accepted_after_revoke": 0
     },
     {
@@ -1348,9 +1408,9 @@
       ],
       "lint": {
         "ingress_exec_in_exposed": [
+          "mcp_api.proof_lock_v1()",
           "mcp_api.list_own_v1(integer,text)",
-          "mcp_api.proof_probe_v1(integer)",
-          "mcp_api.proof_lock_v1()"
+          "mcp_api.proof_probe_v1(integer)"
         ],
         "ingress_exec_without_schema_usage": ["graphql_public.graphql(text,text,jsonb,jsonb)"],
         "ingress_relation_privs": [],
@@ -1384,6 +1444,12 @@
         ],
         "definers": [
           {
+            "fn": "mcp_api.proof_lock_v1()",
+            "owner": "mcp_capability_owner",
+            "secdef": true,
+            "config": ["search_path=\"\""]
+          },
+          {
             "fn": "mcp_cap.session_status(uuid,uuid,text)",
             "owner": "postgres",
             "secdef": true,
@@ -1415,12 +1481,6 @@
           },
           {
             "fn": "mcp_api.proof_probe_v1(integer)",
-            "owner": "mcp_capability_owner",
-            "secdef": true,
-            "config": ["search_path=\"\""]
-          },
-          {
-            "fn": "mcp_api.proof_lock_v1()",
             "owner": "mcp_capability_owner",
             "secdef": true,
             "config": ["search_path=\"\""]
@@ -1515,5 +1575,5 @@
       "note": "local PostgREST container has no PGRST_JWT_AUD; hosted behaviour unmeasured"
     }
   ],
-  "failed": []
+  "failed": ["CT-14_result_byte_budget"]
 }
