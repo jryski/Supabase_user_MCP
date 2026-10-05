@@ -1,5 +1,7 @@
 # Edge MCP pilot evidence (synthetic, local only)
 
+For the big picture, read the [plain-language overview](../../SACD_OVERVIEW.md) first.
+
 This directory holds the source, tests and receipts for the local pilot cited in
 [SAME_AUTHORITY_DELEGATION_PROFILE.md](../../SAME_AUTHORITY_DELEGATION_PROFILE.md) §9.
 
@@ -121,13 +123,70 @@ delivery.
 
 ## Limits
 
-- Everything ran on the local stack only, with synthetic users. Realtime and Storage containers
-  were not running.
+- Everything ran on the local stack only, with synthetic users.
 - None of these are hosted or Ari TEST receipts.
-- CT-8 (Realtime and the other platform surfaces), CT-11 (writes), CT-17 and CT-18 have not run.
-  The MCP function's tools are not yet wired to the capability function.
+- CT-8 receipts (Realtime, Storage, other Edge Functions and Auth account endpoints) are not part of
+  this evidence set.
+- CT-11 (writes), CT-17 and CT-18 have not run.
+- The MCP function's tools are not yet wired to the capability function.
 - The liveness oracle is owned by the migration role. That ownership is a reviewed exception
   (profile SACD-8).
+
+## Run it yourself
+
+**You need:**
+
+- Docker;
+- the Supabase CLI (2.119.0 was used);
+- Deno (2.9.7 was used).
+
+**Set up the stack.** Copy this directory into a scratch project. Then:
+
+1. Generate an ES256 signing key:
+
+   ```sh
+   echo '[]' > supabase/signing_keys.json
+   supabase gen signing-key --algorithm ES256 --append
+   ```
+
+2. Create `supabase/functions/.env` with:
+   - `MCP_AUTH_ISSUER` set to `http://127.0.0.1:<api-port>/auth/v1`;
+   - `MCP_AUDIENCE`;
+   - optionally, `MCP_ALLOWED_CLIENT_IDS`.
+
+3. Start the stack and apply the migrations:
+
+   ```sh
+   supabase start
+   supabase db reset
+   ```
+
+**Wrapper and SDK tests** (no stack needed). From `tests/`:
+
+```sh
+deno test bounded_test.ts bounded_lifetime_test.ts
+deno test --allow-net --unstable-no-legacy-abort sdk_cancellation_test.ts
+```
+
+**SACD database proof.** From `tests/`, with the stack running:
+
+```sh
+PILOT_API=http://127.0.0.1:<api-port> \
+PILOT_ANON_KEY=<publishable key from `supabase status`> \
+PILOT_SIGNING_KEYS=../supabase/signing_keys.json \
+deno run -A sacd-proof.ts
+```
+
+The runner registers its own synthetic clients and users, prints one JSON receipt, and exits
+non-zero if any expected check is missing or failing. It never prints tokens or keys.
+
+**Phase 1 sign-in suite.** First run it with `PILOT_PHASE=register` to create the two clients,
+which writes `PILOT_CLIENTS_FILE`. Then:
+
+1. add both client IDs to `mcp_cap.declared_non_mcp_client`;
+2. set `MCP_ALLOWED_CLIENT_IDS` to the first one;
+3. start `supabase functions serve mcp --env-file supabase/functions/.env`;
+4. run `deno run -A phase1.ts` with the same variables.
 
 ## SHA-256
 

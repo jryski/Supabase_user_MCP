@@ -16,6 +16,8 @@
   - Deployments that must claim strict MCP conformance use the separate-credential mode in
     [ADR-0005](decisions/0005-dual-resource-data-api-binding.md).
 
+New to this proposal? Read the [plain-language overview](SACD_OVERVIEW.md) first.
+
 The key words **MUST**, **MUST NOT**, **SHOULD**, **SHOULD NOT** and **MAY** are to be
 interpreted as described in RFC 2119 and RFC 8174 when, and only when, they appear in bold.
 
