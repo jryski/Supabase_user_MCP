@@ -120,7 +120,7 @@ The receipt deliberately excludes JWTs, publishable keys, credential-file paths,
 
 ## Producer provenance
 
-The original PR #40 commits are authored under Jesse's GitHub identity, but the implementation agent/model attribution was not durably captured before Ariadne took over SAOS-0013; that prior producer model remains unknown. Ariadne's expectation/evidence repair was coordinated with GPT-5.6 Sol. A bounded Locutus Qwen3.8 read-only diagnosis completed at the runtime level but returned no final analysis and contributed no accepted code or conclusion.
+The original PR #40 commits are authored under the maintainer GitHub account, but the implementation agent/model attribution was not durably captured before Ariadne took over SAOS-0013; that prior producer model remains unknown. Ariadne's expectation/evidence repair was coordinated with GPT-5.6 Sol. A bounded Locutus Qwen3.8 read-only diagnosis completed at the runtime level but returned no final analysis and contributed no accepted code or conclusion.
 
 ## Claim limits
 

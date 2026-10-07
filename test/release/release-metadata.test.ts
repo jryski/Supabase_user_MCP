@@ -60,6 +60,6 @@ describe('v0.1.0-alpha.1 release metadata contract', () => {
     expect(notes).toContain('This alpha is not production-ready');
     expect(notes).toContain('no remote HTTP or OAuth profile');
     expect(notes).toContain('No tag, GitHub release, npm publication, or deployment');
-    expect(notes).toContain('Jesse retains the publication decision');
+    expect(notes).toContain('The project lead retains the publication decision');
   });
 });
