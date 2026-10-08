@@ -16,6 +16,8 @@ must satisfy.
 | [Roadmap](ROADMAP.md) | In what order will the project prove its claims? |
 | [Development guide](DEVELOPMENT.md) | How will the repository be built and verified? |
 | [Program context](PROGRAM_CONTEXT.md) | Which program plane owns which contracts and claims? |
+| [Minimum control-plane API](CONTROL_PLANE_API.md) | Which cross-agent coordination capabilities should become stable? |
+| [Control-plane progression](progression/agent-control-plane.md) | What dogfood failures and decisions changed the architecture? |
 | [Evidence index](evidence/README.md) | Which merged and draft artifacts support each claim? |
 | [M0 compatibility evidence](evidence/M0_COMPATIBILITY_SPIKE.md) | What does the executable protocol spike prove? |
 | [Architecture decisions](decisions/README.md) | Why were consequential choices made? |
