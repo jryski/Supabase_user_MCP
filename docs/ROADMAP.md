@@ -32,6 +32,28 @@ matrix, then shared/personal store permissions. Policies must cover views, RPCs,
 Storage and alternate API paths as well as tables. Administration remains
 separate from everyday agent access. No production policy rollout is claimed.
 
+## Open lab dual-grant draft
+
+Updated September 28, 2026.
+
+[Draft pull request #79](https://github.com/jryski/Supabase_user_MCP/pull/79)
+is the live state of a lab-only, default-off dual-grant broker. It is stacked
+on [pull request #75](https://github.com/jryski/Supabase_user_MCP/pull/75)
+(base `ariadne/remote-oauth-rebased-20260919`), not on `main`. This roadmap
+does not pin a `main` commit or the draft tip. The head may move.
+
+The ordinary remote path stays fail-closed. Lab opt-in only. The draft does
+not complete M4 or
+[issue #62](https://github.com/jryski/Supabase_user_MCP/issues/62).
+No live M4 expansion is claimed here without the maintainer. T3, T4, T5, T10,
+T17, and the adoption and hosted gates remain open as broader gates.
+
+Dated heads stay in the
+[September 23 status note](status/2026-09-23-lab-dual-grant-draft.md).
+That note keeps the September 24 residual-F3 head and the September 28
+loopback M4 receipt at `527839070b034b4bb7c60ac8f89628ef8e5d9e30`. Those
+coordinates are history, not the live tip.
+
 ## How milestones work
 
 Milestones are evidence gates, not dates. Work may be prototyped ahead, but a milestone
