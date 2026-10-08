@@ -355,6 +355,29 @@ describe('createReadToolExecutor', () => {
     ]);
   });
 
+  it('preserves process-global principal budgets when a new executor is constructed', async () => {
+    const principalId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1';
+    const executeA = createReadToolExecutor(
+      MEMORY_SEARCH_TOOL,
+      () => Promise.resolve({ ok: true as const, items: [] }),
+      { maxRequestsPerWindow: 1 },
+    );
+    const executeB = createReadToolExecutor(
+      MEMORY_SEARCH_TOOL,
+      () => Promise.resolve({ ok: true as const, items: [] }),
+      { maxRequestsPerWindow: 1 },
+    );
+
+    await expect(executeA(validQuery, { principalId })).resolves.toEqual({
+      ok: true,
+      items: [],
+    });
+    await expect(executeB(validQuery, { principalId })).resolves.toMatchObject({
+      ok: false,
+      error: { code: MEMORY_SEARCH_TOOL.errorMapping.unavailable },
+    });
+  });
+
   it('does not let a hostile scope collision consume another principal budget', async () => {
     const execute = createReadToolExecutor(
       MEMORY_SEARCH_TOOL,

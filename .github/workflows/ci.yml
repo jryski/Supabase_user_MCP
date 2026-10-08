@@ -69,3 +69,31 @@ jobs:
 
       - name: Run synthetic M2 acceptance
         run: npm run test:m2
+
+  m4-remote-oauth-lab:
+    name: M4 local remote OAuth 2.1 acceptance
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Check out exact source head
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
+
+      - name: Set up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: .node-version
+          cache: npm
+
+      - name: Install declared npm
+        run: |
+          npm install --global npm@11.19.0
+          test "$(npm --version)" = "11.19.0"
+
+      - name: Install pinned dependencies
+        run: npm ci
+
+      - name: Run synthetic M4 remote OAuth acceptance
+        run: npm run test:remote-oauth
