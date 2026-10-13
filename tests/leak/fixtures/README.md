@@ -1,3 +1,5 @@
+# Synthetic fixtures
+
 The gate tests generate synthetic Git repositories and credential-shaped tokens
 at runtime. No recognized credential fixture is committed. All private-pattern
 tests use a synthetic sentinel and replace the caller's pattern environment.
