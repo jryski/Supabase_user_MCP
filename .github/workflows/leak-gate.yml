@@ -317,13 +317,16 @@ jobs:
       statuses: write
     steps:
       - name: Publish exact-head clear or failed result
+        # Status functions are illegal in step env. Canceled runs skip this
+        # step and keep the blocking pending status.
+        if: ${{ !cancelled() }}
         shell: bash
         env:
           STATUS_TOKEN: ${{ github.token }}
           STATUS_REPOSITORY: ${{ needs.prepare.outputs.repository }}
           STATUS_HEAD: ${{ needs.prepare.outputs.head_sha }}
           STATUS_PHASE: final
-          RUN_CANCELLED: ${{ cancelled() }}
+          RUN_CANCELLED: "false"
           SCAN_RESULT: ${{ needs.leak-gate.result }}
           SCAN_OUTCOME: ${{ needs.leak-gate.outputs.scan_outcome }}
         run: |
