@@ -1,0 +1,382 @@
+# SPDX-License-Identifier: Apache-2.0
+name: LEAK-01
+
+on:
+  pull_request_target:
+    branches: [main]
+    types: [opened, synchronize, reopened, ready_for_review]
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# pull_request_target has privileged defaults. Override them for every event.
+permissions:
+  contents: read
+
+concurrency:
+  group: leak-01-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  prepare:
+    name: Mark target head pending
+    runs-on: ubuntu-24.04
+    timeout-minutes: 3
+    permissions:
+      statuses: write
+    outputs:
+      repository: ${{ steps.revisions.outputs.repository }}
+      trusted_sha: ${{ steps.revisions.outputs.trusted_sha }}
+      head_sha: ${{ steps.revisions.outputs.head_sha }}
+      base_sha: ${{ steps.revisions.outputs.base_sha }}
+      mode: ${{ steps.revisions.outputs.mode }}
+      pr_number: ${{ steps.revisions.outputs.pr_number }}
+      private_repo: ${{ steps.revisions.outputs.private_repo }}
+    steps:
+      - name: Select immutable trusted policy and data revisions
+        id: revisions
+        # No PR strings are interpolated into executable shell or Python.
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          CURRENT_SHA: ${{ github.sha }}
+          CURRENT_REF: ${{ github.ref }}
+          SERVER_URL: ${{ github.server_url }}
+        run: |
+          python3 - <<'PY'
+          import json, os, re, sys
+          def unable():
+              print("LEAK-01 unable: invalid or unsupported event revisions", file=sys.stderr)
+              raise SystemExit(2)
+          try:
+              with open(os.environ["GITHUB_EVENT_PATH"], encoding="utf-8") as f:
+                  event = json.load(f)
+              repository = event["repository"]["full_name"]
+              default = event["repository"]["default_branch"]
+              private = event["repository"]["private"]
+              if (os.environ["SERVER_URL"] != "https://github.com" or default != "main"
+                      or not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repository)
+                      or repository != os.environ["GITHUB_REPOSITORY"] or type(private) is not bool):
+                  unable()
+              mode, base, number = "diff", "", ""
+              name = os.environ["EVENT_NAME"]
+              if name == "pull_request_target":
+                  pr = event["pull_request"]
+                  if pr["base"]["ref"] != default or pr["base"]["repo"]["full_name"] != repository:
+                      unable()
+                  base, head = pr["base"]["sha"], pr["head"]["sha"]
+                  number = str(event["number"])
+                  if not re.fullmatch(r"[1-9][0-9]{0,9}", number):
+                      unable()
+                  trusted = base
+              elif name == "push":
+                  if event["ref"] != "refs/heads/" + default or event.get("deleted"):
+                      unable()
+                  base, head = event["before"], event["after"]
+                  if head != os.environ["CURRENT_SHA"]:
+                      unable()
+                  trusted = base
+              elif name == "workflow_dispatch":
+                  if os.environ["CURRENT_REF"] != "refs/heads/" + default:
+                      unable()
+                  mode, head = "history", os.environ["CURRENT_SHA"]
+                  trusted = head
+              else:
+                  unable()
+              shas = [trusted, head] + ([base] if mode == "diff" else [])
+              if any(not isinstance(sha, str) or not re.fullmatch(r"[0-9a-f]{40}", sha)
+                     or sha == "0" * 40 for sha in shas):
+                  unable()
+              values = {"repository": repository, "trusted_sha": trusted,
+                        "head_sha": head, "base_sha": base, "mode": mode,
+                        "pr_number": number, "private_repo": str(private).lower()}
+              with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as f:
+                  for key, value in values.items():
+                      f.write(key + "=" + value + "\n")
+          except (OSError, ValueError, KeyError, TypeError):
+              unable()
+          PY
+
+      - name: Mark exact head pending before scanning
+        shell: bash
+        env:
+          STATUS_TOKEN: ${{ github.token }}
+          STATUS_REPOSITORY: ${{ steps.revisions.outputs.repository }}
+          STATUS_HEAD: ${{ steps.revisions.outputs.head_sha }}
+          STATUS_PHASE: pending
+        run: |
+          python3 - <<'PY'
+          import json, os, re, sys, urllib.error, urllib.request
+          # LEAK-01_STATUS_PUBLISHER: no checkout, scanner, PR scripts or pattern secrets.
+          def unable():
+              print("LEAK-01 unable: exact-head status publication failed", file=sys.stderr)
+              raise SystemExit(2)
+          try:
+              repository, head = os.environ["STATUS_REPOSITORY"], os.environ["STATUS_HEAD"]
+              run_id = os.environ["GITHUB_RUN_ID"]
+              phase = os.environ["STATUS_PHASE"]
+              if (not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repository)
+                      or not re.fullmatch(r"[0-9a-f]{40}", head) or head == "0" * 40
+                      or not re.fullmatch(r"[1-9][0-9]*", run_id) or phase not in {"pending", "final"}):
+                  unable()
+              state = "pending"
+              if phase == "final":
+                  state = "success" if (os.environ.get("SCAN_RESULT") == "success"
+                                        and os.environ.get("SCAN_OUTCOME") == "success"
+                                        and os.environ.get("RUN_CANCELLED") == "false") else "failure"
+              descriptions = {"pending": "Leak scan pending", "success": "Leak scan clear",
+                              "failure": "Leak scan failed or unable"}
+              target = "https://github.com/" + repository + "/actions/runs/" + run_id
+              payload = {"state": state, "context": "LEAK-01", "description": descriptions[state],
+                         "target_url": target}
+              request = urllib.request.Request("https://api.github.com/repos/" + repository + "/statuses/" + head,
+                                               data=json.dumps(payload).encode("utf-8"), method="POST", headers={
+                  "Accept": "application/vnd.github+json", "Content-Type": "application/json",
+                  "Authorization": "Bearer " + os.environ["STATUS_TOKEN"],
+                  "X-GitHub-Api-Version": "2026-03-10"})
+              class NoRedirect(urllib.request.HTTPRedirectHandler):
+                  def redirect_request(self, req, fp, code, msg, headers, newurl):
+                      return None
+              opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), NoRedirect())
+              with opener.open(request, timeout=30) as response:
+                  if response.status != 201:
+                      unable()
+                  body = response.read(32769)
+                  if len(body) > 32768:
+                      unable()
+                  receipt = json.loads(body)
+                  if (receipt.get("state") != state or receipt.get("context") != "LEAK-01"
+                          or receipt.get("target_url") != target):
+                      unable()
+          except (OSError, ValueError, TypeError, KeyError, urllib.error.URLError):
+              unable()
+          print("LEAK-01 exact-head status posted: " + state)
+          PY
+
+  leak-gate:
+    name: Trusted leak scan
+    needs: prepare
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    outputs:
+      scan_outcome: ${{ steps.scan.outcome }}
+    env:
+      GIT_TERMINAL_PROMPT: "0"
+      GIT_CONFIG_NOSYSTEM: "1"
+      GIT_CONFIG_GLOBAL: /dev/null
+      GIT_LFS_SKIP_SMUDGE: "1"
+      PYTHONDONTWRITEBYTECODE: "1"
+    steps:
+      - name: Checkout trusted policy only
+        # Verified official actions/checkout v7.0.1. PR HEAD is never checked out.
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          repository: ${{ needs.prepare.outputs.repository }}
+          ref: ${{ needs.prepare.outputs.trusted_sha }}
+          path: trusted-policy
+          fetch-depth: 1
+          persist-credentials: false
+          submodules: false
+          lfs: false
+          allow-unsafe-pr-checkout: false
+          show-progress: false
+          sparse-checkout-cone-mode: false
+          sparse-checkout: |
+            /scripts/leak/
+            /.gitleaks.toml
+            /.leak-policy.json
+            /.leak-allowlist
+
+      - name: Check policy completeness and repository classification
+        shell: bash
+        env:
+          EXPECTED_PRIVATE: ${{ needs.prepare.outputs.private_repo }}
+        run: |
+          python3 - <<'PY'
+          import json, os, pathlib, stat, sys
+          root = pathlib.Path(os.environ["GITHUB_WORKSPACE"]) / "trusted-policy"
+          required = ["scripts/leak/install_gitleaks.py", "scripts/leak/scanner-pin.json",
+                      "scripts/leak/gate.py", "scripts/leak/classify_literals.py",
+                      ".gitleaks.toml", ".leak-policy.json", ".leak-allowlist"]
+          try:
+              for name in required:
+                  path = root / name
+                  if not stat.S_ISREG(path.lstat().st_mode) or not path.resolve().is_relative_to(root.resolve()):
+                      raise ValueError()
+              policy = json.loads((root / ".leak-policy.json").read_text(encoding="utf-8"))
+              if type(policy["private_repo"]) is not bool or str(policy["private_repo"]).lower() != os.environ["EXPECTED_PRIVATE"]:
+                  raise ValueError()
+          except (OSError, ValueError, TypeError, KeyError):
+              print("LEAK-01 unable: trusted base policy absent, unsafe, or mismatched", file=sys.stderr)
+              raise SystemExit(2)
+          PY
+
+      - name: Install checksum-verified scanner from trusted pin
+        shell: bash
+        run: |
+          python3 "$GITHUB_WORKSPACE/trusted-policy/scripts/leak/install_gitleaks.py" \
+            --pin "$GITHUB_WORKSPACE/trusted-policy/scripts/leak/scanner-pin.json" \
+            --output "$RUNNER_TEMP/leak-tools/gitleaks"
+
+      - name: Fetch target Git objects without a worktree
+        id: data
+        shell: bash
+        env:
+          READ_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ needs.prepare.outputs.repository }}
+          BASE_SHA: ${{ needs.prepare.outputs.base_sha }}
+          HEAD_SHA: ${{ needs.prepare.outputs.head_sha }}
+          SCAN_MODE: ${{ needs.prepare.outputs.mode }}
+          PR_NUMBER: ${{ needs.prepare.outputs.pr_number }}
+        run: |
+          python3 - <<'PY'
+          import base64, os, pathlib, subprocess, sys, tempfile
+          root = pathlib.Path(tempfile.mkdtemp(prefix="leak-data-", dir=os.environ["RUNNER_TEMP"]))
+          template = root / "empty-template"
+          hooks = root / "empty-hooks"
+          template.mkdir(mode=0o700)
+          hooks.mkdir(mode=0o700)
+          target = root / "target.git"
+          clean = {"PATH": "/usr/bin:/bin", "LC_ALL": "C", "GIT_TERMINAL_PROMPT": "0",
+                   "GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": "/dev/null",
+                   "GIT_LFS_SKIP_SMUDGE": "1"}
+          def git(args, auth=False):
+              env = dict(clean)
+              if auth:
+                  encoded = base64.b64encode(("x-access-token:" + os.environ["READ_TOKEN"]).encode()).decode()
+                  env.update(GIT_CONFIG_COUNT="1", GIT_CONFIG_KEY_0="http.https://github.com/.extraheader",
+                             GIT_CONFIG_VALUE_0="AUTHORIZATION: basic " + encoded)
+              result = subprocess.run(["/usr/bin/git", "-c", "core.hooksPath=" + str(hooks),
+                                       "-c", "gc.auto=0", "-c", "maintenance.auto=false", *args],
+                                      env=env, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                                      stderr=subprocess.PIPE, timeout=300, check=False)
+              if result.returncode:
+                  raise ValueError()
+              return result.stdout
+          try:
+              git(["init", "--bare", "--template=" + str(template), str(target)])
+              git(["--git-dir=" + str(target), "remote", "add", "origin",
+                   "https://github.com/" + os.environ["REPOSITORY"] + ".git"])
+              refs = ["+" + os.environ["HEAD_SHA"] + ":refs/leak/head"]
+              if os.environ["SCAN_MODE"] == "diff":
+                  refs.append("+" + os.environ["BASE_SHA"] + ":refs/leak/base")
+              else:
+                  refs.extend(["+refs/heads/*:refs/heads/*", "+refs/tags/*:refs/tags/*"])
+              # Fetch from the base repository, including GitHub's PR ref when available.
+              # Exact event HEAD remains mandatory; if it is no longer fetchable,
+              # fail closed instead of silently scanning a newer PR head.
+              if os.environ["PR_NUMBER"]:
+                  refs.append("+refs/pull/" + os.environ["PR_NUMBER"] + "/head:refs/leak/pr-current")
+              git(["--git-dir=" + str(target), "fetch", "--quiet", "--force", "--no-tags",
+                   "--no-write-fetch-head", "--no-recurse-submodules", "origin", *refs], auth=True)
+              for label, sha in [("head", os.environ["HEAD_SHA"])] + (
+                      [("base", os.environ["BASE_SHA"])] if os.environ["SCAN_MODE"] == "diff" else []):
+                  actual = git(["--git-dir=" + str(target), "rev-parse", "--verify",
+                                "refs/leak/" + label + "^{commit}"]).decode("ascii").strip()
+                  if actual != sha:
+                      raise ValueError()
+              with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as f:
+                  f.write("repo=" + str(target) + "\n")
+          except (OSError, ValueError, UnicodeError, subprocess.SubprocessError):
+              print("LEAK-01 unable: target Git object fetch or revision proof failed", file=sys.stderr)
+              raise SystemExit(2)
+          PY
+
+      - name: Scan with trusted policy and private patterns
+        id: scan
+        # This is the sole step receiving household patterns. All executable code,
+        # configuration and exceptions come from trusted BASE, outside target.git.
+        # No dependency installation, PR scripts, hooks, submodules or target checkout.
+        shell: bash
+        env:
+          LEAK_PRIVATE_PATTERNS: ${{ secrets.LEAK_PRIVATE_PATTERNS }}
+          TARGET_REPO: ${{ steps.data.outputs.repo }}
+          BASE_SHA: ${{ needs.prepare.outputs.base_sha }}
+          HEAD_SHA: ${{ needs.prepare.outputs.head_sha }}
+          SCAN_MODE: ${{ needs.prepare.outputs.mode }}
+        run: |
+          args=(--repo "$TARGET_REPO" --mode "$SCAN_MODE" --head "$HEAD_SHA"
+                --gitleaks "$RUNNER_TEMP/leak-tools/gitleaks"
+                --config "$GITHUB_WORKSPACE/trusted-policy/.gitleaks.toml"
+                --policy "$GITHUB_WORKSPACE/trusted-policy/.leak-policy.json"
+                --allowlist "$GITHUB_WORKSPACE/trusted-policy/.leak-allowlist")
+          if [ "$SCAN_MODE" = diff ]; then args+=(--base "$BASE_SHA"); fi
+          python3 "$GITHUB_WORKSPACE/trusted-policy/scripts/leak/gate.py" "${args[@]}"
+
+  publish-result:
+    name: Publish target head result
+    needs: [prepare, leak-gate]
+    # If canceled after the pending write, pending remains blocking even when
+    # GitHub cannot schedule this final job. Never infer success from a skip.
+    if: ${{ always() && needs.prepare.outputs.head_sha != '' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 3
+    permissions:
+      statuses: write
+    steps:
+      - name: Publish exact-head clear or failed result
+        shell: bash
+        env:
+          STATUS_TOKEN: ${{ github.token }}
+          STATUS_REPOSITORY: ${{ needs.prepare.outputs.repository }}
+          STATUS_HEAD: ${{ needs.prepare.outputs.head_sha }}
+          STATUS_PHASE: final
+          RUN_CANCELLED: ${{ cancelled() }}
+          SCAN_RESULT: ${{ needs.leak-gate.result }}
+          SCAN_OUTCOME: ${{ needs.leak-gate.outputs.scan_outcome }}
+        run: |
+          python3 - <<'PY'
+          import json, os, re, sys, urllib.error, urllib.request
+          # LEAK-01_STATUS_PUBLISHER: no checkout, scanner, PR scripts or pattern secrets.
+          def unable():
+              print("LEAK-01 unable: exact-head status publication failed", file=sys.stderr)
+              raise SystemExit(2)
+          try:
+              repository, head = os.environ["STATUS_REPOSITORY"], os.environ["STATUS_HEAD"]
+              run_id = os.environ["GITHUB_RUN_ID"]
+              phase = os.environ["STATUS_PHASE"]
+              if (not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repository)
+                      or not re.fullmatch(r"[0-9a-f]{40}", head) or head == "0" * 40
+                      or not re.fullmatch(r"[1-9][0-9]*", run_id) or phase not in {"pending", "final"}):
+                  unable()
+              state = "pending"
+              if phase == "final":
+                  state = "success" if (os.environ.get("SCAN_RESULT") == "success"
+                                        and os.environ.get("SCAN_OUTCOME") == "success"
+                                        and os.environ.get("RUN_CANCELLED") == "false") else "failure"
+              descriptions = {"pending": "Leak scan pending", "success": "Leak scan clear",
+                              "failure": "Leak scan failed or unable"}
+              target = "https://github.com/" + repository + "/actions/runs/" + run_id
+              payload = {"state": state, "context": "LEAK-01", "description": descriptions[state],
+                         "target_url": target}
+              request = urllib.request.Request("https://api.github.com/repos/" + repository + "/statuses/" + head,
+                                               data=json.dumps(payload).encode("utf-8"), method="POST", headers={
+                  "Accept": "application/vnd.github+json", "Content-Type": "application/json",
+                  "Authorization": "Bearer " + os.environ["STATUS_TOKEN"],
+                  "X-GitHub-Api-Version": "2026-03-10"})
+              class NoRedirect(urllib.request.HTTPRedirectHandler):
+                  def redirect_request(self, req, fp, code, msg, headers, newurl):
+                      return None
+              opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), NoRedirect())
+              with opener.open(request, timeout=30) as response:
+                  if response.status != 201:
+                      unable()
+                  body = response.read(32769)
+                  if len(body) > 32768:
+                      unable()
+                  receipt = json.loads(body)
+                  if (receipt.get("state") != state or receipt.get("context") != "LEAK-01"
+                          or receipt.get("target_url") != target):
+                      unable()
+          except (OSError, ValueError, TypeError, KeyError, urllib.error.URLError):
+              unable()
+          print("LEAK-01 exact-head status posted: " + state)
+          PY
+
+# No raw scanner reports or repository blobs are uploaded, and no PR comment is
+# written. The only write permission is commit statuses in isolated publisher
+# jobs. Require status context LEAK-01 on the PR's exact HEAD after retaining a
+# real GitHub proof run. Secret provisioning and branch rules are human activation
+# steps. The first push has no prior policy and deliberately fails closed.

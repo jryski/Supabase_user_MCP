@@ -1,0 +1,7 @@
+# SPDX-License-Identifier: Apache-2.0
+title = "LEAK-01: trusted Gitleaks defaults, no blanket exclusions"
+
+# This file is loaded from the protected base policy tree, never the PR tree.
+# Exact, independently approved exceptions belong in .leak-allowlist.
+[extend]
+useDefault = true
