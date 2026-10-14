@@ -1,0 +1,54 @@
+# SPDX-License-Identifier: Apache-2.0
+# LEAK-01 regression CI: unprivileged, no secrets. Validates workflow semantics
+# with checksum-verified actionlint and runs the complete synthetic leak suite
+# with checksum-verified Gitleaks. It does not scan repository content, read
+# LEAK_PRIVATE_PATTERNS, or publish the LEAK-01 status.
+name: LEAK-01 regression
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - ".github/workflows/leak-gate.yml"
+      - ".github/workflows/leak-ci.yml"
+      - ".gitleaks.toml"
+      - ".leak-policy.json"
+      - ".leak-allowlist"
+      - "scripts/leak/**"
+      - "tests/leak/**"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: leak-ci-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  leak-regression:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - name: Check out pull request head
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+
+      - name: Install checksum-verified tools
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/leak-tools"
+          python3 scripts/leak/install_gitleaks.py \
+            --pin scripts/leak/scanner-pin.json \
+            --output "$RUNNER_TEMP/leak-tools/gitleaks"
+          python3 scripts/leak/install_actionlint.py \
+            --pin scripts/leak/actionlint-pin.json \
+            --output "$RUNNER_TEMP/leak-tools/actionlint"
+
+      - name: Semantic validation and full synthetic suite
+        env:
+          LEAK_TEST_GITLEAKS: ${{ runner.temp }}/leak-tools/gitleaks
+          LEAK_ACTIONLINT: ${{ runner.temp }}/leak-tools/actionlint
+        run: bash tests/leak/test_gate.sh
