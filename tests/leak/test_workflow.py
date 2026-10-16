@@ -213,7 +213,9 @@ class WorkflowStructureTests(unittest.TestCase):
         self.assertEqual(WORKFLOW.count("LEAK_PRIVATE_PATTERNS: ${{ secrets.LEAK_PRIVATE_PATTERNS }}"), 1)
         self.assertIn("if: ${{ always() && needs.prepare.outputs.head_sha != '' }}", final)
         self.assertIn("SCAN_OUTCOME: ${{ needs.leak-gate.outputs.scan_outcome }}", final)
-        self.assertIn("RUN_CANCELLED: ${{ cancelled() }}", final)
+        self.assertIn('RUN_CANCELLED: "false"', final)
+        self.assertIn("if: ${{ !cancelled() }}", final)
+        self.assertNotIn("${{ cancelled() }}", WORKFLOW)
 
     def test_trusted_only_checkout_pin_paths_and_cli(self):
         self.assertEqual(len(re.findall(r"^\s+uses:", WORKFLOW, flags=re.M)), 1)
