@@ -39,6 +39,18 @@ class LeakCiWorkflowTest(unittest.TestCase):
         self.assertIn("install_actionlint.py", CI)
         self.assertIn("bash tests/leak/test_gate.sh", CI)
 
+    def test_exact_head_checkout_and_controls(self):
+        self.assertIn("ref: ${{ github.event.pull_request.head.sha }}", CI)
+        self.assertIn("fetch-depth: 0", CI)
+        self.assertIn("python3 tests/leak/exact_head_controls.py", CI)
+        self.assertIn('--head "$PR_HEAD_SHA"', CI)
+        controls = (ROOT / "tests/leak/exact_head_controls.py").read_text()
+        self.assertIn("secrets.token_hex", controls)
+        self.assertNotIn('os.environ["LEAK_PRIVATE_PATTERNS"]', controls)
+        self.assertNotIn('os.environ.get("LEAK_PRIVATE_PATTERNS"', controls)
+        self.assertNotIn("print(report", controls)
+        self.assertNotIn("print(output", controls)
+
     def test_wrapper_runs_full_discovery_and_rejects_skips(self):
         self.assertIn('pattern="test_*.py"', WRAPPER)
         self.assertNotIn("-p 'test_gate.py'", WRAPPER)

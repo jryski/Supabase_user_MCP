@@ -28,6 +28,41 @@ def actionlint_binary(directory):
     return install_actionlint.install(PIN, Path(directory) / "actionlint")
 
 
+STATUS_FUNCTION = re.compile(r"\b(cancelled|success|failure|always)\s*\(", re.I)
+
+
+def status_functions_in_env(text):
+    """Return (line, text) for every status-function call inside any env mapping.
+
+    Covers workflow-, job- and step-level block mappings, multi-line scalar
+    values and flow mappings, with any spacing inside ${{ }}.
+    """
+    hits = []
+    lines = text.splitlines()
+    index = 0
+    while index < len(lines):
+        line = lines[index]
+        match = re.match(r"^(\s*)(?:-\s+)?env:\s*(.*)$", line)
+        if not match:
+            index += 1
+            continue
+        indent = len(match.group(1))
+        if match.group(2).strip():
+            if STATUS_FUNCTION.search(match.group(2)):
+                hits.append((index + 1, line.strip()))
+            index += 1
+            continue
+        index += 1
+        while index < len(lines):
+            body = lines[index]
+            if body.strip() and (len(body) - len(body.lstrip())) <= indent:
+                break
+            if not body.lstrip().startswith("#") and STATUS_FUNCTION.search(body):
+                hits.append((index + 1, body.strip()))
+            index += 1
+    return hits
+
+
 class ActionsSemanticsTest(unittest.TestCase):
     def test_actionlint_reports_no_errors(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -38,9 +73,39 @@ class ActionsSemanticsTest(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
     def test_no_status_function_in_env_values(self):
-        for line in WORKFLOW.splitlines():
-            if re.match(r"^\s+[A-Z_][A-Z0-9_]*: \$\{\{", line):
-                self.assertIsNone(re.search(r"\b(cancelled|success|failure|always)\(\)", line), line)
+        self.assertEqual(status_functions_in_env(WORKFLOW), [])
+        ci = (ROOT / ".github/workflows/leak-ci.yml").read_text()
+        self.assertEqual(status_functions_in_env(ci), [])
+
+    def test_env_checker_detects_spacing_case_and_scope_variants(self):
+        # Negative controls: each variant must be reported, so a pass above is meaningful.
+        variants = [
+            "    env:\n      RUN_CANCELLED: ${{ cancelled() }}\n",
+            "    env:\n      RUN_CANCELLED: ${{cancelled()}}\n",
+            "    env:\n      run_cancelled: ${{ always( ) }}\n",
+            "    env:\n      X: ${{ failure() || 'x' }}\n",
+            "    env:\n      X: >-\n        ${{ success() }}\n",
+            "    env: { X: \"${{ cancelled() }}\" }\n",
+            "env:\n  TOP: ${{ always() }}\n",
+        ]
+        for variant in variants:
+            with self.subTest(variant=variant):
+                self.assertTrue(status_functions_in_env(variant), variant)
+        allowed = "    if: ${{ !cancelled() }}\n    env:\n      RUN_CANCELLED: \"false\"\n"
+        self.assertEqual(status_functions_in_env(allowed), [])
+
+    def test_actionlint_rejects_the_original_illegal_form(self):
+        # Negative control for the validator itself: reintroducing the defect must fail.
+        broken = WORKFLOW.replace('RUN_CANCELLED: "false"', "RUN_CANCELLED: ${{ cancelled() }}")
+        self.assertNotEqual(broken, WORKFLOW)
+        with tempfile.TemporaryDirectory() as directory:
+            binary = actionlint_binary(directory)
+            path = Path(directory) / "leak-gate.yml"
+            path.write_text(broken)
+            result = subprocess.run([str(binary), "-no-color", "-shellcheck=", "-pyflakes=", str(path)],
+                                    capture_output=True, text=True, timeout=120, check=False)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("cancelled", result.stdout + result.stderr)
 
     def test_pin_rejects_tampered_digest(self):
         pin = install_actionlint.load_pin(PIN)

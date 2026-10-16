@@ -1,8 +1,10 @@
 # SPDX-License-Identifier: Apache-2.0
 # LEAK-01 regression CI: unprivileged, no secrets. Validates workflow semantics
 # with checksum-verified actionlint and runs the complete synthetic leak suite
-# with checksum-verified Gitleaks. It does not scan repository content, read
-# LEAK_PRIVATE_PATTERNS, or publish the LEAK-01 status.
+# with checksum-verified Gitleaks, then runs exact-head controls: a clean
+# synthetic fixture must pass, a deliberate synthetic sentinel must fail, and
+# the exact PR head must be clear under default rules. It never reads
+# LEAK_PRIVATE_PATTERNS or publishes the LEAK-01 status.
 name: LEAK-01 regression
 
 on:
@@ -31,9 +33,13 @@ jobs:
     permissions:
       contents: read
     steps:
-      - name: Check out pull request head
+      - name: Check out exact pull request head
+        # The exact PR head commit, not GitHub's synthetic merge commit. Full
+        # history so the exact-head control can diff against the PR base.
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
           persist-credentials: false
 
       - name: Install checksum-verified tools
@@ -52,3 +58,14 @@ jobs:
           LEAK_TEST_GITLEAKS: ${{ runner.temp }}/leak-tools/gitleaks
           LEAK_ACTIONLINT: ${{ runner.temp }}/leak-tools/actionlint
         run: bash tests/leak/test_gate.sh
+
+      - name: Exact-head clean, sentinel and head controls
+        # Synthetic run-time pattern only; prints fixed summary lines, never a
+        # gate report, finding hash, file name or pattern value.
+        env:
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          python3 tests/leak/exact_head_controls.py \
+            --gitleaks "$RUNNER_TEMP/leak-tools/gitleaks" \
+            --base "$PR_BASE_SHA" --head "$PR_HEAD_SHA"
