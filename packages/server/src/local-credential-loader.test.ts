@@ -58,7 +58,11 @@ describe('loadLocalCredentials', () => {
     ['malformed', '{'],
     [
       'expired',
-      JSON.stringify({ projectPublishableKey: 'key', userAccessToken: 'e30.eyJleHAiOjF9.sig' }),
+      // Synthetic expired token, assembled so secret scanners do not see a literal.
+      JSON.stringify({
+        projectPublishableKey: 'key',
+        userAccessToken: ['e30', 'eyJleHAiOjF9', 'sig'].join('.'),
+      }),
     ],
   ])('rejects %s input without disclosure', async (_name, body) => {
     await expect(
