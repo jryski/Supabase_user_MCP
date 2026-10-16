@@ -35,29 +35,18 @@ cd "$PROJECT_ROOT"
 export SUPABASE_DISABLE_TELEMETRY=1
 
 TESTS_PASSED=0
-TMP_DIR="$(mktemp -d /tmp/supabase-s1-lab.XXXXXX)"
+LC_TAG="s1-lab"
 NETWORK_NAME="${S1_DOCKER_NETWORK:-supabase-s1-loopback}"
-NETWORK_BINDING_OPTION="com.docker.network.bridge.host_binding_ipv4"
+# shellcheck source=lib/lifecycle.sh
+source "$PROJECT_ROOT/supabase/tests/lib/lifecycle.sh"
+lc_require_tools docker supabase curl node
+lc_read_project_id
 
-cleanup() {
-  supabase stop --workdir "$PROJECT_ROOT" --no-backup >/dev/null 2>&1 || true
-  rm -R "$TMP_DIR"
-}
-trap cleanup EXIT
+TMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/supabase-s1-lab.XXXXXX")"
+trap lc_cleanup EXIT
 
-if docker network inspect "$NETWORK_NAME" >/dev/null 2>&1; then
-  NETWORK_BINDING="$(docker network inspect --format "{{ index .Options \"${NETWORK_BINDING_OPTION}\" }}" "$NETWORK_NAME")"
-  [[ "$NETWORK_BINDING" == "127.0.0.1" ]] \
-    || fail "Docker network ${NETWORK_NAME} is not loopback-only"
-else
-  log "Creating loopback-only Docker network ${NETWORK_NAME}."
-  docker network create \
-    --driver bridge \
-    --opt "${NETWORK_BINDING_OPTION}=127.0.0.1" \
-    "$NETWORK_NAME" >/dev/null
-fi
-
-supabase stop --workdir "$PROJECT_ROOT" --no-backup >/dev/null 2>&1 || true
+lc_guard_project_collision
+lc_prepare_network
 
 log "Starting the minimal local Supabase stack."
 supabase start \
@@ -320,4 +309,4 @@ else
   fail "Supabase security advisor reports no warnings or errors"
 fi
 
-log "S1 lab complete: ${TESTS_PASSED} named assertions passed; local stack will now stop."
+log "S1 lab complete: ${TESTS_PASSED} named assertions passed; local stack will now stop and cleanup will be verified."
