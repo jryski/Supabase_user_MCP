@@ -165,9 +165,10 @@ jobs:
     env:
       GIT_TERMINAL_PROMPT: "0"
       GIT_CONFIG_NOSYSTEM: "1"
-      GIT_CONFIG_GLOBAL: /dev/null
       GIT_LFS_SKIP_SMUDGE: "1"
       PYTHONDONTWRITEBYTECODE: "1"
+    # GIT_CONFIG_GLOBAL=/dev/null is set per step after checkout: checkout
+    # writes a temporary global safe.directory and /dev/null cannot be locked.
     steps:
       - name: Checkout trusted policy only
         # Verified official actions/checkout v7.0.1. PR HEAD is never checked out.
@@ -193,6 +194,7 @@ jobs:
         shell: bash
         env:
           EXPECTED_PRIVATE: ${{ needs.prepare.outputs.private_repo }}
+          GIT_CONFIG_GLOBAL: /dev/null
         run: |
           python3 - <<'PY'
           import json, os, pathlib, stat, sys
@@ -215,6 +217,8 @@ jobs:
 
       - name: Install checksum-verified scanner from trusted pin
         shell: bash
+        env:
+          GIT_CONFIG_GLOBAL: /dev/null
         run: |
           python3 "$GITHUB_WORKSPACE/trusted-policy/scripts/leak/install_gitleaks.py" \
             --pin "$GITHUB_WORKSPACE/trusted-policy/scripts/leak/scanner-pin.json" \
@@ -224,6 +228,7 @@ jobs:
         id: data
         shell: bash
         env:
+          GIT_CONFIG_GLOBAL: /dev/null
           READ_TOKEN: ${{ github.token }}
           REPOSITORY: ${{ needs.prepare.outputs.repository }}
           BASE_SHA: ${{ needs.prepare.outputs.base_sha }}
@@ -291,6 +296,7 @@ jobs:
         # No dependency installation, PR scripts, hooks, submodules or target checkout.
         shell: bash
         env:
+          GIT_CONFIG_GLOBAL: /dev/null
           LEAK_PRIVATE_PATTERNS: ${{ secrets.LEAK_PRIVATE_PATTERNS }}
           TARGET_REPO: ${{ steps.data.outputs.repo }}
           BASE_SHA: ${{ needs.prepare.outputs.base_sha }}
