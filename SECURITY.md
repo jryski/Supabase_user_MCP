@@ -19,8 +19,7 @@ prototyping; all code and documentation should be treated as pre-release.
 Do not open a public issue containing exploit details.
 
 Use [GitHub Private Vulnerability Reporting](https://github.com/jryski/Supabase_user_MCP/security/advisories/new).
-If private reporting is unavailable, contact the maintainer through the
-[GitHub profile](https://github.com/jryski) without posting sensitive details publicly.
+If private reporting is unavailable, email **jryski@gmail.com** without posting sensitive details publicly.
 
 Include, where possible:
 
