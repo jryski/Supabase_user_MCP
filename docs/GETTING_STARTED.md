@@ -17,9 +17,15 @@ npm install command. A directory listing does not provision a database or user a
 
 ## 1. Run the reproducible demo
 
-You need Git, Docker with Linux containers, Bash, Node.js **22.20.0**, and npm
-**11.19.0**. Use a dedicated clean checkout. The database harness resets its local
-project and stops that project's containers on exit; do not reuse a working database.
+You need Git, Docker with Linux containers, Bash, curl, Node.js **22.20.0**, and npm
+**11.19.0**. The harness checks for each command before it starts anything. Use a
+dedicated clean checkout and do not reuse a working database: the harness resets
+its local project.
+
+The local project id is fixed (`supabase-user-mcp-s1` in `supabase/config.toml`).
+If another checkout or tool is already running a local stack with that id, the
+harness fails before starting and leaves that stack alone. Stop it from its own
+checkout, then rerun. A leftover stack from this same checkout is stopped first.
 
 ```shell
 git clone https://github.com/jryski/Supabase_user_MCP.git
@@ -39,7 +45,18 @@ the fixtures, and exercises real MCP calls through Auth, PostgREST, and RLS.
 Success means the command exits zero and emits its acceptance receipt. It checks
 allowed reads and denied cross-user reads; a successful connection alone is not
 the acceptance criterion. The stack is stopped when the command finishes, so this
-demo is not a persistent Claude installation. See the [development guide](DEVELOPMENT.md)
+demo is not a persistent Claude installation.
+
+Cleanup is verified, not assumed. On exit the harness stops the stack and checks
+three things: no containers or volumes labelled with the project id remain, the
+temporary directory is gone, and the loopback-only Docker network
+(`supabase-user-mcp-m2-loopback` unless `M2_DOCKER_NETWORK` is set) is removed if
+this run created it. A network that already existed is reported as
+`network=retained-preexisting`; remove it with `docker network rm <name>` when no
+other stack uses it. The last line must read `Cleanup verified: ...`. If stop or
+removal fails, the command exits non-zero with `cleanup not verified`, even after
+an acceptance receipt was printed. Treat that run as failed and inspect it with
+`docker ps -a --filter label=com.supabase.cli.project=supabase-user-mcp-s1`. See the [development guide](DEVELOPMENT.md)
 for the pinned environment and individual checks.
 
 ## 2. Connect a local client
@@ -92,6 +109,9 @@ least expensive suitable model; the automated demo needs no paid model calls.
 | Startup failed | Check the two environment variables, HTTPS origin, owner-only credential file, and token expiry without printing secrets |
 | Connected but reads denied | Check user membership, fixed RPCs, RLS and grant expiry; do not substitute an admin credential |
 | Demo rejects the checkout | Use a clean dedicated checkout; do not delete unrelated work to satisfy the check |
+| `missing prerequisite command(s)` | Install the named tools (for example curl) and rerun |
+| `already in use by another checkout or tool` | Stop the other local stack from its own checkout; the harness will not stop it for you |
+| `cleanup not verified` | Inspect the containers, volumes and network named in the message; the run counts as failed |
 | Directory says install, but there is no release | Follow this source-based preview guide; catalog presence is not a hosted release |
 
 To remove the integration, stop the server, revoke the user's session using the
