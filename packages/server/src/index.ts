@@ -93,6 +93,11 @@ export {
   type ReadToolInvocationContext,
   type ReadToolOperationalEvent,
 } from './read-tool-governor.js';
+export { createAuthorizationServerMetadata } from './authorization-server-metadata.js';
+export {
+  createGoTrueSessionRevocationAuthority,
+  type GoTrueSessionRevocationAuthorityConfig,
+} from './gotrue-revocation-authority.js';
 export {
   createReadOnlyServer,
   type ReadOnlyServer,
@@ -101,3 +106,29 @@ export {
   SERVER_VERSION,
   TARGET_PROTOCOL_VERSION,
 } from './server.js';
+export {
+  containsSecretMaterial,
+  createRemoteHttpProfile,
+  type RemoteHttpHandler,
+  type RemoteHttpProfileConfig,
+} from './remote-http-profile.js';
+export {
+  createRemoteHttpHandlerFromEnvironment,
+  handleRemoteHttpConnection,
+  listenRemoteHttpHandler,
+  readBoundedIncomingMessage,
+  toWebRequest,
+  OAUTH_CLIENT_ID_ENV,
+  REMOTE_HTTP_INGRESS_DEADLINE_MS,
+  REMOTE_HTTP_INGRESS_MAX_BYTES,
+  RemoteHttpIngressError,
+  RemoteHttpStartupError,
+  REMOTE_HTTP_STARTUP_ERROR,
+} from './remote-http-startup.js';
+export {
+  createRemoteAccessTokenVerifier,
+  fingerprintAccessToken,
+  RemoteAccessTokenVerificationError,
+  type AccessTokenRevocationAuthority,
+  type RemoteTokenSigningKey,
+} from './remote-token-verifier.js';
