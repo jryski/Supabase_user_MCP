@@ -2,7 +2,7 @@
 
 - **Status:** Proposed (design and contract only; not implemented or wired)
 - **Date:** 2026-10-21 (revision 3 after independent re-check)
-- **Owners:** Maintainers; author grok-mcp, independent review grok-verifier, architecture review ATLAS
+- **Owners:** Primary Users (decision); maintainers (implementation/review)
 - **Milestone:** Post-M2 extension, gated on acceptance of this ADR
 - **Issue:** #122 (reviewed main `bd8e9a3c67a2f2533a7a8340eb10a84e2a7421eb`)
 

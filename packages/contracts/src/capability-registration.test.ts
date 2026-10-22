@@ -402,8 +402,12 @@ describe('M4 and minors: descriptor bounds', () => {
     } finally {
       spy.mockRestore();
     }
+    // Total characters seen by every regex test across both rejections. A guard-free scan,
+    // whole-string or per-character, sees at least 110,000 characters; the guarded path sees
+    // only the short fixture fields.
     expect(scanned.length).toBeGreaterThan(0);
-    expect(Math.max(...scanned)).toBeLessThanOrEqual(1_024);
+    const total = scanned.reduce((sum, length) => sum + length, 0);
+    expect(total).toBeLessThan(5_000);
   });
 
   it('m8: reads untrusted input once and refuses non-cloneable values', () => {
