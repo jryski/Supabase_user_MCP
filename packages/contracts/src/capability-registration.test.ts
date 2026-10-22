@@ -3,18 +3,25 @@ import { join, resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 import {
+  CAPABILITY_APPROVAL_ALLOWLIST_VERSION,
   CAPABILITY_DESCRIPTOR_VERSION,
   CAPABILITY_REGISTRY_VERSION,
+  type CapabilityComposition,
   type CapabilityDescriptorBody,
+  type CapabilityServerPolicy,
   capabilityBodySha256,
-  FORBIDDEN_ARGUMENT_NAMES,
+  FORBIDDEN_ARGUMENT_TOKENS,
+  isForbiddenArgumentName,
   MAX_REGISTERED_CAPABILITIES,
+  parseCapabilityApprovalAllowlist,
   RESERVED_TOOL_NAMES,
   validateCapabilityArguments,
   validateCapabilityRegistry,
 } from './capability-registration.js';
 
 // Synthetic descriptors only: no real project, schema or function names.
+const SCHEMA = 'app_synthetic';
+
 function body(overrides: Partial<CapabilityDescriptorBody> = {}): CapabilityDescriptorBody {
   return {
     descriptorVersion: CAPABILITY_DESCRIPTOR_VERSION,
@@ -22,7 +29,7 @@ function body(overrides: Partial<CapabilityDescriptorBody> = {}): CapabilityDesc
     title: 'Example lookup',
     description: 'Synthetic read capability for contract tests.',
     kind: 'read',
-    rpc: { schema: 'app_synthetic', function: 'example_lookup' },
+    rpc: { schema: SCHEMA, function: 'example_lookup' },
     inputSchema: {
       type: 'object',
       additionalProperties: false,
@@ -37,39 +44,61 @@ function body(overrides: Partial<CapabilityDescriptorBody> = {}): CapabilityDesc
   };
 }
 
-function reviewed(b: CapabilityDescriptorBody) {
-  return { body: b, review: { adr: 'ADR-0005', approvedBodySha256: capabilityBodySha256(b) } };
+function linked(b: CapabilityDescriptorBody, adr = 'ADR-0005') {
+  return { body: b, approval: { adr, bodySha256: capabilityBodySha256(b) } };
 }
 
-function registry(composition: 'read-only' | 'application', descriptors: unknown[]) {
-  return validateCapabilityRegistry({
-    registryVersion: CAPABILITY_REGISTRY_VERSION,
+/** Server-owned policy whose release allowlist approves exactly the given bodies. */
+function policy(
+  composition: CapabilityComposition,
+  approvedBodies: CapabilityDescriptorBody[],
+  adopterSchemas: string[] = [SCHEMA],
+): CapabilityServerPolicy {
+  return {
     composition,
-    descriptors,
-  });
+    adopterSchemas,
+    approvals: {
+      allowlistVersion: CAPABILITY_APPROVAL_ALLOWLIST_VERSION,
+      approvals: approvedBodies.map((b) => ({
+        adr: 'ADR-0005',
+        bodySha256: capabilityBodySha256(b),
+      })),
+    },
+  };
+}
+
+function file(descriptors: unknown[]) {
+  return { registryVersion: CAPABILITY_REGISTRY_VERSION, descriptors };
+}
+
+function register(composition: CapabilityComposition, bodies: CapabilityDescriptorBody[]) {
+  return validateCapabilityRegistry(
+    file(bodies.map((b) => linked(b))),
+    policy(composition, bodies),
+  );
 }
 
 describe('capability registration contract (proposed, issue #122)', () => {
   it('accepts an empty registry, so the default server is unchanged', () => {
-    const result = registry('read-only', []);
+    const result = validateCapabilityRegistry(file([]), policy('read-only', []));
     expect(result.ok).toBe(true);
     if (result.ok) expect(result.registry.names).toEqual([]);
   });
 
-  it('accepts a reviewed read descriptor and returns a frozen finite registry', () => {
-    const result = registry('read-only', [reviewed(body())]);
+  it('accepts an approved read descriptor and returns a frozen finite registry', () => {
+    const result = register('read-only', [body()]);
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     expect(result.registry.names).toEqual(['app_example_lookup']);
     expect(Object.isFrozen(result.registry)).toBe(true);
     expect(Object.isFrozen(result.registry.names)).toBe(true);
     const entry = result.registry.resolve('app_example_lookup');
-    expect(entry?.rpc).toEqual({ schema: 'app_synthetic', function: 'example_lookup' });
+    expect(entry?.rpc).toEqual({ schema: SCHEMA, function: 'example_lookup' });
     expect(Object.isFrozen(entry?.rpc)).toBe(true);
   });
 
   it('resolves nothing that is not listed (deny by default)', () => {
-    const result = registry('application', [reviewed(body())]);
+    const result = register('application', [body()]);
     if (!result.ok) throw new Error('expected ok');
     for (const name of ['memory_search', 'app_other', '__proto__', 'constructor', 'toString', '']) {
       expect(result.registry.resolve(name)).toBeUndefined();
@@ -78,84 +107,23 @@ describe('capability registration contract (proposed, issue #122)', () => {
 
   it('enforces the finite bound', () => {
     const many = Array.from({ length: MAX_REGISTERED_CAPABILITIES + 1 }, (_, i) =>
-      reviewed(
-        body({ name: `app_cap_${i}`, rpc: { schema: 'app_synthetic', function: `cap_${i}` } }),
-      ),
+      body({ name: `app_cap_${i}`, rpc: { schema: SCHEMA, function: `cap_${i}` } }),
     );
-    expect(registry('application', many)).toEqual({ ok: false, code: 'registry_too_large' });
-    expect(registry('application', many.slice(0, MAX_REGISTERED_CAPABILITIES)).ok).toBe(true);
+    const allowed = many.slice(0, MAX_REGISTERED_CAPABILITIES);
+    expect(
+      validateCapabilityRegistry(file(many.map((b) => linked(b))), policy('application', allowed)),
+    ).toEqual({
+      ok: false,
+      code: 'registry_too_large',
+    });
+    expect(register('application', allowed).ok).toBe(true);
   });
 
   it('rejects reserved and non-prefixed names', () => {
     for (const name of [...RESERVED_TOOL_NAMES, 'lookup', 'App_x', 'app_', 'app_admin x']) {
-      expect(registry('application', [reviewed(body({ name }))])).toMatchObject({
-        ok: false,
-        code: 'descriptor_invalid',
-      });
-    }
-  });
-
-  it('rejects name and RPC collisions', () => {
-    expect(registry('application', [reviewed(body()), reviewed(body())])).toEqual({
-      ok: false,
-      code: 'name_collision',
-      index: 1,
-    });
-    expect(
-      registry('application', [reviewed(body()), reviewed(body({ name: 'app_second' }))]),
-    ).toEqual({
-      ok: false,
-      code: 'rpc_collision',
-      index: 1,
-    });
-  });
-
-  it('denies proposal capabilities in the read-only composition only', () => {
-    const proposal = reviewed(body({ kind: 'proposal' }));
-    expect(registry('read-only', [proposal])).toEqual({
-      ok: false,
-      code: 'kind_denied_in_composition',
-      index: 0,
-    });
-    expect(registry('application', [proposal]).ok).toBe(true);
-  });
-
-  it('has no approval, admin or write kind', () => {
-    for (const kind of ['approval', 'admin', 'write', 'execute']) {
-      const b = { ...body(), kind } as unknown as CapabilityDescriptorBody;
-      expect(registry('application', [reviewed(b)])).toMatchObject({
-        ok: false,
-        code: 'descriptor_invalid',
-      });
-    }
-  });
-
-  it('rejects a descriptor whose body differs from the reviewed digest', () => {
-    const approved = reviewed(body());
-    const tampered = {
-      ...approved,
-      body: body({ rpc: { schema: 'app_synthetic', function: 'other' } }),
-    };
-    expect(registry('application', [tampered])).toEqual({
-      ok: false,
-      code: 'descriptor_not_reviewed',
-      index: 0,
-    });
-  });
-
-  it('rejects forbidden schemas', () => {
-    for (const schema of [
-      'auth',
-      'storage',
-      'vault',
-      'pg_catalog',
-      'pg_anything',
-      'supabase_functions',
-      'Public',
-      'a.b',
-    ]) {
+      const b = body({ name });
       expect(
-        registry('application', [reviewed(body({ rpc: { schema, function: 'f' } }))]),
+        validateCapabilityRegistry(file([linked(b)]), policy('application', [b])),
       ).toMatchObject({
         ok: false,
         code: 'descriptor_invalid',
@@ -163,21 +131,284 @@ describe('capability registration contract (proposed, issue #122)', () => {
     }
   });
 
-  it('rejects routing and identity fields declared as arguments', () => {
-    for (const name of FORBIDDEN_ARGUMENT_NAMES) {
-      const b = body();
-      const forged = {
-        ...b,
-        inputSchema: {
-          ...b.inputSchema,
-          properties: { ...b.inputSchema.properties, [name]: { type: 'string', maxLength: 8 } },
-        },
-      } as CapabilityDescriptorBody;
-      expect(registry('application', [reviewed(forged)])).toMatchObject({
+  it('rejects name and RPC collisions', () => {
+    const second = body({ name: 'app_second' });
+    expect(
+      validateCapabilityRegistry(
+        file([linked(body()), linked(body())]),
+        policy('application', [body()]),
+      ),
+    ).toEqual({
+      ok: false,
+      code: 'name_collision',
+      index: 1,
+    });
+    expect(register('application', [body(), second])).toEqual({
+      ok: false,
+      code: 'rpc_collision',
+      index: 1,
+    });
+  });
+
+  it('has no approval, admin or write kind', () => {
+    for (const kind of ['approval', 'admin', 'write', 'execute']) {
+      const b = { ...body(), kind } as unknown as CapabilityDescriptorBody;
+      expect(
+        validateCapabilityRegistry(file([linked(b)]), policy('application', [b])),
+      ).toMatchObject({
         ok: false,
         code: 'descriptor_invalid',
       });
     }
+  });
+});
+
+describe('M1: approval lives outside the descriptor file', () => {
+  it('rejects a self-consistent descriptor that the release allowlist does not approve', () => {
+    const edited = body({ limits: { maxResponseBytes: 65_536, timeoutMs: 2_000 } });
+    // Body edited and digest recomputed in config: integrity passes, approval does not.
+    expect(
+      validateCapabilityRegistry(file([linked(edited)]), policy('read-only', [body()])),
+    ).toEqual({
+      ok: false,
+      code: 'descriptor_not_approved',
+      index: 0,
+    });
+  });
+
+  it('rejects an unlisted ADR reference even when the digest is approved under another ADR', () => {
+    expect(
+      validateCapabilityRegistry(file([linked(body(), 'ADR-9999')]), policy('read-only', [body()])),
+    ).toEqual({
+      ok: false,
+      code: 'descriptor_not_approved',
+      index: 0,
+    });
+  });
+
+  it('reports a body that does not match its own link as a digest mismatch', () => {
+    const tampered = {
+      ...linked(body()),
+      body: body({ rpc: { schema: SCHEMA, function: 'other' } }),
+    };
+    expect(validateCapabilityRegistry(file([tampered]), policy('read-only', [body()]))).toEqual({
+      ok: false,
+      code: 'descriptor_digest_mismatch',
+      index: 0,
+    });
+  });
+
+  it('parses the release allowlist strictly and freezes it', () => {
+    const ok = parseCapabilityApprovalAllowlist({
+      allowlistVersion: CAPABILITY_APPROVAL_ALLOWLIST_VERSION,
+      approvals: [{ adr: 'ADR-0005', bodySha256: capabilityBodySha256(body()) }],
+    });
+    expect(ok.ok).toBe(true);
+    if (ok.ok) expect(Object.isFrozen(ok.allowlist.approvals)).toBe(true);
+    for (const bad of [
+      { allowlistVersion: 'v0', approvals: [] },
+      {
+        allowlistVersion: CAPABILITY_APPROVAL_ALLOWLIST_VERSION,
+        approvals: [{ adr: 'ADR-5', bodySha256: 'x' }],
+      },
+      { allowlistVersion: CAPABILITY_APPROVAL_ALLOWLIST_VERSION, approvals: [], extra: true },
+      JSON.parse(
+        `{"allowlistVersion":"${CAPABILITY_APPROVAL_ALLOWLIST_VERSION}","approvals":[],"__proto__":{}}`,
+      ),
+    ]) {
+      expect(parseCapabilityApprovalAllowlist(bad)).toEqual({ ok: false });
+    }
+  });
+});
+
+describe('M2: composition is a server parameter', () => {
+  it('denies proposal in a read-only server and allows it only when the server selects application', () => {
+    const proposal = body({ kind: 'proposal' });
+    expect(register('read-only', [proposal])).toEqual({
+      ok: false,
+      code: 'kind_denied_in_composition',
+      index: 0,
+    });
+    expect(register('application', [proposal]).ok).toBe(true);
+  });
+
+  it('rejects a registry file that tries to declare its own composition', () => {
+    const proposal = body({ kind: 'proposal' });
+    const declared = { ...file([linked(proposal)]), composition: 'application' };
+    expect(validateCapabilityRegistry(declared, policy('read-only', [proposal]))).toEqual({
+      ok: false,
+      code: 'registry_invalid',
+    });
+  });
+
+  it('rejects an invalid server policy', () => {
+    const bad = {
+      ...policy('read-only', []),
+      composition: 'admin',
+    } as unknown as CapabilityServerPolicy;
+    expect(validateCapabilityRegistry(file([]), bad)).toEqual({
+      ok: false,
+      code: 'policy_invalid',
+    });
+  });
+});
+
+describe('M3: adopter schema allowlist', () => {
+  it('rejects a schema the server did not list', () => {
+    const b = body({ rpc: { schema: 'app_other', function: 'f' } });
+    expect(validateCapabilityRegistry(file([linked(b)]), policy('read-only', [b]))).toEqual({
+      ok: false,
+      code: 'schema_not_allowed',
+      index: 0,
+    });
+  });
+
+  it('refuses public and platform schemas in descriptors and in server policy', () => {
+    for (const schema of [
+      'public',
+      'auth',
+      'storage',
+      'vault',
+      'realtime',
+      'graphql',
+      'graphql_public',
+      'graphql_x',
+      'pg_catalog',
+      'pgsodium',
+      'pgsodium_masks',
+      'pgmq',
+      'pgmq_public',
+      'pgtle',
+      'supabase_functions',
+      '_realtime',
+      '_analytics',
+      '_supavisor',
+      'information_schema',
+      'Public',
+      'a.b',
+    ]) {
+      const b = body({ rpc: { schema, function: 'f' } });
+      expect(
+        validateCapabilityRegistry(file([linked(b)]), policy('application', [b])),
+      ).toMatchObject({
+        ok: false,
+        code: 'descriptor_invalid',
+      });
+      expect(validateCapabilityRegistry(file([]), policy('application', [], [schema]))).toEqual({
+        ok: false,
+        code: 'policy_invalid',
+      });
+    }
+  });
+});
+
+describe('M4 and minors: descriptor bounds', () => {
+  const withLabel = (label: unknown): CapabilityDescriptorBody => {
+    const b = body();
+    return {
+      ...b,
+      inputSchema: { ...b.inputSchema, properties: { ...b.inputSchema.properties, label } },
+    } as CapabilityDescriptorBody;
+  };
+  const rejects = (b: CapabilityDescriptorBody) =>
+    expect(validateCapabilityRegistry(file([linked(b)]), policy('application', [b]))).toMatchObject(
+      {
+        ok: false,
+        code: 'descriptor_invalid',
+      },
+    );
+
+  it('M4: has no regex pattern field', () => {
+    rejects(withLabel({ type: 'string', maxLength: 64, pattern: '^(a+)+$' }));
+  });
+
+  it('m1: rejects routing, identity and approval argument names by token', () => {
+    for (const token of FORBIDDEN_ARGUMENT_TOKENS)
+      expect(isForbiddenArgumentName(token)).toBe(true);
+    for (const name of [
+      'userid',
+      'user_uuid',
+      'auth_uid',
+      'service_role',
+      'role_name',
+      'jwt_claims',
+      'is_approved',
+      'approved_by',
+      'approval_state',
+      'tenant',
+      'owner_uuid',
+      'password',
+      'secret',
+      'api_key',
+    ]) {
+      const b = body();
+      rejects({
+        ...b,
+        inputSchema: {
+          ...b.inputSchema,
+          properties: { ...b.inputSchema.properties, [name]: { type: 'boolean' } },
+        },
+      });
+    }
+    expect(isForbiddenArgumentName('label')).toBe(false);
+    expect(isForbiddenArgumentName('limit')).toBe(false);
+  });
+
+  it('m2: rejects internally inconsistent string arguments', () => {
+    rejects(withLabel({ type: 'string', minLength: 10, maxLength: 5 }));
+    rejects(withLabel({ type: 'string', maxLength: 3, enum: ['abcd'] }));
+    rejects(withLabel({ type: 'string', minLength: 2, maxLength: 8, enum: ['a'] }));
+    rejects(withLabel({ type: 'string', maxLength: 8, enum: ['a\u0000b'] }));
+    rejects(withLabel({ type: 'string', maxLength: 8, enum: ['a', 'a'] }));
+  });
+
+  it('m4: rejects own __proto__ keys at registry, body and argument level', () => {
+    const b = body();
+    const sha = capabilityBodySha256(b);
+    const allow = policy('application', [b]);
+    const encoded = JSON.stringify(b);
+    for (const text of [
+      `{"registryVersion":"${CAPABILITY_REGISTRY_VERSION}","descriptors":[],"__proto__":{"x":1}}`,
+      `{"registryVersion":"${CAPABILITY_REGISTRY_VERSION}","descriptors":[{"body":${encoded.replace('{', '{"__proto__":{},')},"approval":{"adr":"ADR-0005","bodySha256":"${sha}"}}]}`,
+      `{"registryVersion":"${CAPABILITY_REGISTRY_VERSION}","descriptors":[{"body":${encoded.replace('"properties":{', '"properties":{"__proto__":{"type":"boolean"},')},"approval":{"adr":"ADR-0005","bodySha256":"${sha}"}}]}`,
+    ]) {
+      expect(validateCapabilityRegistry(JSON.parse(text), allow)).toEqual({
+        ok: false,
+        code: 'registry_invalid',
+      });
+    }
+  });
+
+  it('m5: rejects format, bidi, zero-width and line-separator characters in model-facing text', () => {
+    for (const ch of ['\u0085', '\u202e', '\u200b', '\u2028', '\u2029', '\u0007']) {
+      rejects(body({ description: `Synthetic ${ch} text` }));
+      rejects(body({ title: `Title${ch}` }));
+    }
+  });
+
+  it('m7: rejects oversized text quickly', () => {
+    const started = performance.now();
+    rejects(body({ description: '\u200b'.repeat(5_000_000) }));
+    expect(performance.now() - started).toBeLessThan(1_000);
+  });
+
+  it('m8: reads untrusted input once and refuses non-cloneable values', () => {
+    let reads = 0;
+    const input = {
+      registryVersion: CAPABILITY_REGISTRY_VERSION,
+      get descriptors() {
+        reads += 1;
+        return [];
+      },
+    };
+    expect(validateCapabilityRegistry(input, policy('read-only', [])).ok).toBe(true);
+    expect(reads).toBe(1);
+    expect(
+      validateCapabilityRegistry({ ...file([]), fn: () => 1 }, policy('read-only', [])),
+    ).toEqual({
+      ok: false,
+      code: 'registry_invalid',
+    });
   });
 
   it('rejects unknown descriptor fields, open envelopes, nested arguments and over-limit bounds', () => {
@@ -193,27 +424,12 @@ describe('capability registration contract (proposed, issue #122)', () => {
       { ...b, descriptorVersion: 'supabase-user-mcp.capability-descriptor.v2' },
     ];
     for (const v of variants) {
-      const raw = { body: v, review: { adr: 'ADR-0005', approvedBodySha256: '0'.repeat(64) } };
-      expect(registry('application', [raw])).toMatchObject({
+      const raw = { body: v, approval: { adr: 'ADR-0005', bodySha256: '0'.repeat(64) } };
+      expect(validateCapabilityRegistry(file([raw]), policy('application', []))).toMatchObject({
         ok: false,
         code: 'descriptor_invalid',
       });
     }
-    expect(
-      validateCapabilityRegistry({
-        registryVersion: CAPABILITY_REGISTRY_VERSION,
-        composition: 'admin',
-        descriptors: [],
-      }),
-    ).toEqual({ ok: false, code: 'registry_invalid' });
-    expect(
-      validateCapabilityRegistry({
-        registryVersion: CAPABILITY_REGISTRY_VERSION,
-        composition: 'read-only',
-        descriptors: [],
-        discover: true,
-      }),
-    ).toEqual({ ok: false, code: 'registry_invalid' });
   });
 
   it('call-time arguments are closed: extra or forged fields are rejected, not stripped', () => {
@@ -239,17 +455,22 @@ describe('capability registration contract (proposed, issue #122)', () => {
 
 describe('capability registration is not wired into runtime', () => {
   const root = resolve(import.meta.dirname, '../../..');
-  it('is not exported from the contracts package index', () => {
+  const pattern = /capability-registration|validateCapabilityRegistry|CapabilityServerPolicy/;
+
+  it('is not exported from the contracts package index or exports map', () => {
     expect(readFileSync(join(root, 'packages/contracts/src/index.ts'), 'utf8')).not.toMatch(
-      /capability-registration/,
+      pattern,
     );
+    const pkg = JSON.parse(readFileSync(join(root, 'packages/contracts/package.json'), 'utf8'));
+    expect(Object.keys(pkg.exports)).toEqual(['.']);
   });
-  it('is not imported by any server source file', () => {
+
+  it('is not imported by any server source file (recursive)', () => {
     const dir = join(root, 'packages/server/src');
-    for (const file of readdirSync(dir).filter((f) => f.endsWith('.ts'))) {
-      expect(readFileSync(join(dir, file), 'utf8')).not.toMatch(
-        /capability-registration|validateCapabilityRegistry/,
-      );
-    }
+    const files = readdirSync(dir, { recursive: true, encoding: 'utf8' }).filter((f) =>
+      f.endsWith('.ts'),
+    );
+    expect(files.length).toBeGreaterThan(0);
+    for (const f of files) expect(readFileSync(join(dir, f), 'utf8')).not.toMatch(pattern);
   });
 });
