@@ -1,6 +1,6 @@
 import { readdirSync, readFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import {
   CAPABILITY_APPROVAL_ALLOWLIST_VERSION,
@@ -386,10 +386,24 @@ describe('M4 and minors: descriptor bounds', () => {
     }
   });
 
-  it('m7: rejects oversized text quickly', () => {
-    const started = performance.now();
-    rejects(body({ description: '\u200b'.repeat(5_000_000) }));
-    expect(performance.now() - started).toBeLessThan(1_000);
+  it('m7/n1: checks length before scanning characters (scan never sees oversized text)', () => {
+    const scanned: number[] = [];
+    const original = RegExp.prototype.test;
+    const spy = vi.spyOn(RegExp.prototype, 'test').mockImplementation(function (
+      this: RegExp,
+      value: string,
+    ) {
+      scanned.push(String(value).length);
+      return original.call(this, value);
+    });
+    try {
+      rejects(body({ description: 'x'.repeat(100_000) }));
+      rejects(body({ title: 'x'.repeat(10_000) }));
+    } finally {
+      spy.mockRestore();
+    }
+    expect(scanned.length).toBeGreaterThan(0);
+    expect(Math.max(...scanned)).toBeLessThanOrEqual(1_024);
   });
 
   it('m8: reads untrusted input once and refuses non-cloneable values', () => {
@@ -449,6 +463,114 @@ describe('M4 and minors: descriptor bounds', () => {
       null,
     ]) {
       expect(validateCapabilityArguments(b, args)).toEqual({ ok: false });
+    }
+  });
+});
+
+describe('r3 hardening', () => {
+  it('n3: snapshots the policy once, so a getter cannot switch composition mid-validation', () => {
+    const proposal = body({ kind: 'proposal' });
+    const base = policy('read-only', [proposal]);
+    let reads = 0;
+    const tricky = {
+      adopterSchemas: base.adopterSchemas,
+      approvals: base.approvals,
+      get composition() {
+        reads += 1;
+        return reads === 1 ? 'read-only' : 'application';
+      },
+    } as unknown as CapabilityServerPolicy;
+    expect(validateCapabilityRegistry(file([linked(proposal)]), tricky)).toEqual({
+      ok: false,
+      code: 'kind_denied_in_composition',
+      index: 0,
+    });
+    expect(reads).toBe(1);
+  });
+
+  it('n3: mutating the policy after validation does not change the registry', () => {
+    const p = policy('read-only', [body()]) as { composition: CapabilityComposition };
+    const result = validateCapabilityRegistry(file([linked(body())]), p as CapabilityServerPolicy);
+    p.composition = 'application';
+    expect(result.ok && result.registry.composition).toBe('read-only');
+  });
+
+  it('n4: rejects concatenated and synonym identity, credential and routing names', () => {
+    for (const name of [
+      'tenantid',
+      'ownerid',
+      'actorid',
+      'roleid',
+      'accesstoken',
+      'apitoken',
+      'authtoken',
+      'sessionid',
+      'passwd',
+      'pwd',
+      'email',
+      'impersonate',
+      'on_behalf_of',
+      'grant',
+      'scope',
+      'permission',
+      'privilege',
+      'claims',
+      'identity',
+      'host',
+      'path',
+      'webhook',
+      'redirect',
+      'username',
+    ]) {
+      expect(isForbiddenArgumentName(name), name).toBe(true);
+    }
+    for (const name of ['label', 'limit', 'category', 'start_date', 'page']) {
+      expect(isForbiddenArgumentName(name), name).toBe(false);
+    }
+  });
+
+  it('n5: refuses further platform schema names in descriptors and policy', () => {
+    for (const schema of [
+      'supabase',
+      'auth_x',
+      'storage_api',
+      'vault_x',
+      'realtime_x',
+      'net_x',
+      'cron_x',
+      'tiger',
+      'tiger_data',
+      'topology',
+    ]) {
+      const b = body({ rpc: { schema, function: 'f' } });
+      expect(
+        validateCapabilityRegistry(file([linked(b)]), policy('application', [b])),
+      ).toMatchObject({
+        ok: false,
+        code: 'descriptor_invalid',
+      });
+      expect(validateCapabilityRegistry(file([]), policy('application', [], [schema]))).toEqual({
+        ok: false,
+        code: 'policy_invalid',
+      });
+    }
+  });
+
+  it('n7: rejects an oversized descriptors array before copying it', () => {
+    const spy = vi.spyOn(globalThis, 'structuredClone');
+    try {
+      const huge = {
+        registryVersion: CAPABILITY_REGISTRY_VERSION,
+        descriptors: new Array(1_000_000).fill(0),
+      };
+      expect(validateCapabilityRegistry(huge, policy('read-only', []))).toEqual({
+        ok: false,
+        code: 'registry_too_large',
+      });
+      const cloned = spy.mock.calls.some(([value]) => value === huge);
+      expect(cloned).toBe(false);
+    } finally {
+      spy.mockRestore();
     }
   });
 });

@@ -61,9 +61,26 @@ export const FORBIDDEN_RPC_SCHEMAS = Object.freeze([
   'cron',
   'pgbouncer',
   'information_schema',
+  'supabase',
+  'tiger',
+  'tiger_data',
+  'topology',
 ] as const);
-/** Prefixes covering platform families (graphql*, pg*, pgsodium*, pgmq*, pgtle, supabase_*). */
-export const FORBIDDEN_RPC_SCHEMA_PREFIXES = Object.freeze(['graphql', 'pg', 'supabase_'] as const);
+/**
+ * Prefixes covering platform families: graphql*, pg* (pgsodium*, pgmq*, pgtle),
+ * supabase*, and auth*, storage*, vault*, realtime*, net*, cron*.
+ */
+export const FORBIDDEN_RPC_SCHEMA_PREFIXES = Object.freeze([
+  'graphql',
+  'pg',
+  'supabase',
+  'auth',
+  'storage',
+  'vault',
+  'realtime',
+  'net',
+  'cron',
+] as const);
 
 /**
  * Argument-name tokens (split on "_") that could forge routing, identity,
@@ -111,8 +128,53 @@ export const FORBIDDEN_ARGUMENT_TOKENS = Object.freeze([
 ] as const);
 const forbiddenTokens = new Set<string>(FORBIDDEN_ARGUMENT_TOKENS);
 
+/**
+ * Substrings that reject an argument name wherever they occur, catching
+ * concatenated forms such as `tenantid`, `accesstoken` or `passwd`.
+ */
+export const FORBIDDEN_ARGUMENT_SUBSTRINGS = Object.freeze([
+  'token',
+  'auth',
+  'role',
+  'owner',
+  'tenant',
+  'actor',
+  'session',
+  'passw',
+  'secret',
+  'user',
+  'approv',
+  'admin',
+  'jwt',
+  'apikey',
+  'credential',
+  'impersonat',
+  'behalf',
+  'permission',
+  'privilege',
+  'webhook',
+  'redirect',
+] as const);
+
+/** Whole-token synonyms for identity, credentials, scope or routing. */
+export const FORBIDDEN_ARGUMENT_SYNONYMS = Object.freeze([
+  'pwd',
+  'email',
+  'grant',
+  'scope',
+  'claim',
+  'claims',
+  'identity',
+  'host',
+  'path',
+] as const);
+const forbiddenSynonyms = new Set<string>(FORBIDDEN_ARGUMENT_SYNONYMS);
+
 export function isForbiddenArgumentName(name: string): boolean {
-  return name.split('_').some((token) => forbiddenTokens.has(token) || token.startsWith('approv'));
+  if (FORBIDDEN_ARGUMENT_SUBSTRINGS.some((part) => name.includes(part))) return true;
+  return name
+    .split('_')
+    .some((token) => forbiddenTokens.has(token) || forbiddenSynonyms.has(token));
 }
 
 export function isForbiddenSchemaName(schema: string): boolean {
@@ -380,16 +442,51 @@ function deepFreeze<T>(value: T): T {
   return value;
 }
 
-function validatePolicy(policy: CapabilityServerPolicy): ReadonlySet<string> | undefined {
-  if (!CapabilityCompositionSchema.safeParse(policy?.composition).success) return undefined;
-  const schemas = policy.adopterSchemas;
+interface ValidatedPolicy {
+  readonly composition: CapabilityComposition;
+  readonly schemas: ReadonlySet<string>;
+  readonly approved: ReadonlySet<string>;
+}
+
+/**
+ * Snapshots the caller-supplied policy once and validates the copy, so later
+ * reads or mutation of the original (including getters) cannot change the
+ * decision. Provenance of the policy is the caller's responsibility.
+ */
+function validatePolicy(policy: unknown): ValidatedPolicy | undefined {
+  const copy = snapshot(policy);
+  if (!copy.ok || copy.value === null || typeof copy.value !== 'object') return undefined;
+  const value = copy.value as Record<string, unknown>;
+  const composition = CapabilityCompositionSchema.safeParse(value.composition);
+  if (!composition.success) return undefined;
+  const schemas = value.adopterSchemas;
   if (!Array.isArray(schemas) || schemas.length > MAX_ADOPTER_SCHEMAS) return undefined;
   for (const schema of schemas) {
     if (typeof schema !== 'string' || !schemaNamePattern.test(schema)) return undefined;
     if (isForbiddenSchemaName(schema)) return undefined;
   }
-  if (!CapabilityApprovalAllowlistSchema.safeParse(policy.approvals).success) return undefined;
-  return new Set(schemas);
+  const approvals = CapabilityApprovalAllowlistSchema.safeParse(value.approvals);
+  if (!approvals.success) return undefined;
+  return {
+    composition: composition.data,
+    schemas: new Set(schemas as string[]),
+    approved: new Set(approvals.data.approvals.map((entry) => `${entry.adr}:${entry.bodySha256}`)),
+  };
+}
+
+/**
+ * Cheap size check before any copy. Only an own data property is inspected,
+ * so a getter is not invoked here (it is read once, by the snapshot).
+ */
+function descriptorsTooLarge(input: unknown): boolean {
+  if (input === null || typeof input !== 'object') return false;
+  const property = Object.getOwnPropertyDescriptor(input, 'descriptors');
+  return (
+    property !== undefined &&
+    'value' in property &&
+    Array.isArray(property.value) &&
+    property.value.length > MAX_REGISTERED_CAPABILITIES
+  );
 }
 
 /**
@@ -402,12 +499,11 @@ export function validateCapabilityRegistry(
   input: unknown,
   policy: CapabilityServerPolicy,
 ): CapabilityRegistrationResult {
-  const allowedSchemas = validatePolicy(policy);
-  if (allowedSchemas === undefined) return { ok: false, code: 'policy_invalid' };
-  const approved = new Set(
-    policy.approvals.approvals.map((entry) => `${entry.adr}:${entry.bodySha256}`),
-  );
+  const validated = validatePolicy(policy);
+  if (validated === undefined) return { ok: false, code: 'policy_invalid' };
+  const { composition, schemas: allowedSchemas, approved } = validated;
 
+  if (descriptorsTooLarge(input)) return { ok: false, code: 'registry_too_large' };
   const copy = snapshot(input);
   if (!copy.ok) return { ok: false, code: 'registry_invalid' };
   const data = copy.value;
@@ -422,7 +518,6 @@ export function validateCapabilityRegistry(
   const parsed = CapabilityRegistryInputSchema.safeParse(data);
   if (!parsed.success) return { ok: false, code: 'registry_invalid' };
 
-  const { composition } = policy;
   const entries = new Map<string, CapabilityDescriptorBody>();
   const targets = new Set<string>();
 
