@@ -203,6 +203,19 @@ as $$
   );
 $$;
 
+-- The one seam for the object prefix layout. Option A: agents write under the human's prefix,
+-- `<storage principal uuid>/`. Whether agents get a `<human>/agents/<agent>/` sub-prefix is an open
+-- question; changing the answer means changing only this function. Null means no access.
+create function policy_lab.storage_object_prefix()
+returns text
+language sql
+stable
+security invoker
+set search_path = ''
+as $$
+  select policy_lab.storage_principal()::text || '/';
+$$;
+
 -- One object name check for every storage.objects policy.
 create function policy_lab.storage_object_allowed(object_name text, required_capability text)
 returns boolean
@@ -214,10 +227,10 @@ as $$
   select coalesce(
     policy_lab.storage_has_capability(required_capability)
       and (
-        select principal is not null
-          and left(object_name, 37) = principal::text || '/'
-          and policy_lab.storage_relative_key_ok(substr(object_name, 38))
-        from (select policy_lab.storage_principal() as principal) as resolved
+        select prefix is not null
+          and starts_with(object_name, prefix)
+          and policy_lab.storage_relative_key_ok(substr(object_name, length(prefix) + 1))
+        from (select policy_lab.storage_object_prefix() as prefix) as resolved
       ),
     false
   );
@@ -227,11 +240,13 @@ revoke all on function policy_lab.storage_has_capability(text) from public, anon
 revoke all on function policy_lab.storage_principal() from public, anon;
 revoke all on function policy_lab.storage_session_capabilities() from public, anon;
 revoke all on function policy_lab.storage_relative_key_ok(text) from public, anon;
+revoke all on function policy_lab.storage_object_prefix() from public, anon;
 revoke all on function policy_lab.storage_object_allowed(text, text) from public, anon;
 grant execute on function policy_lab.storage_has_capability(text) to authenticated;
 grant execute on function policy_lab.storage_principal() to authenticated;
 grant execute on function policy_lab.storage_session_capabilities() to authenticated;
 grant execute on function policy_lab.storage_relative_key_ok(text) to authenticated;
+grant execute on function policy_lab.storage_object_prefix() to authenticated;
 grant execute on function policy_lab.storage_object_allowed(text, text) to authenticated;
 
 -- 5. The fixed private bucket. Size and MIME limits mirror the S1 bounds.

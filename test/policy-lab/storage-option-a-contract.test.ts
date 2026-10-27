@@ -48,7 +48,7 @@ describe('issue #123 S4 storage RLS (option A)', () => {
   it('is fail-closed: invoker rights, fixed search_path, no service role, no UPDATE policy', () => {
     expect(code).not.toMatch(/service_role|bypassrls|security\s+definer/i);
     const functions = code.match(/create function[\s\S]*?\$\$;/gi) ?? [];
-    expect(functions.length).toBe(6);
+    expect(functions.length).toBe(7);
     for (const fn of functions) {
       expect(fn).toMatch(/security invoker/);
       expect(fn).toMatch(/set search_path = ''/);
@@ -63,6 +63,16 @@ describe('issue #123 S4 storage RLS (option A)', () => {
     for (const policy of policies) expect(policy).toMatch(/to authenticated\b/);
     for (const policy of objectPolicies) expect(policy).toContain("bucket_id = 'mcp-user-storage'");
     expect(code).not.toMatch(/grant[^;]*to[^;]*\banon\b/i);
+  });
+
+  it('keeps the agent sub-prefix choice behind one seam', () => {
+    expect(code.match(/storage_principal\(\)::text/g)).toHaveLength(1);
+    expect(code).toMatch(
+      /create function policy_lab\.storage_object_prefix\(\)[\s\S]*?storage_principal\(\)::text \|\| '\/'/,
+    );
+    for (const policy of code.match(/create policy[^;]*on storage\.objects[^;]*;/gi) ?? []) {
+      expect(policy).toContain('policy_lab.storage_object_allowed(name,');
+    }
   });
 
   it('only widens the grant vocabulary by the two storage capabilities', () => {

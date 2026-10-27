@@ -13,13 +13,19 @@
   - adds `policy_lab.storage_delegations` (agent, human, client, capabilities, state, expiry) with
     CHECK constraints, a kind guard trigger, forced RLS, and SELECT-only access for the agent itself;
   - adds SECURITY INVOKER functions `storage_has_capability`, `storage_principal`,
-    `storage_session_capabilities`, `storage_relative_key_ok`, and `storage_object_allowed`, each with
+    `storage_session_capabilities`, `storage_relative_key_ok`, `storage_object_prefix`, and
+    `storage_object_allowed`, each with
     `search_path = ''`, revoked from `PUBLIC` and `anon`;
   - creates the private bucket `mcp-user-storage` with the S1 size and MIME limits;
   - adds SELECT, INSERT, and DELETE policies on `storage.objects` for `authenticated` only.
-- `supabase/tests/database/storage_option_a_test.sql`: 67 pgTAP assertions, no psql meta-commands.
+- `supabase/tests/database/storage_option_a_test.sql`: 69 pgTAP assertions, no psql meta-commands.
 - `test/policy-lab/storage-option-a-contract.test.ts`: static checks, including byte pins for the
   grant-check invariant migrations.
+
+## Open: agent sub-prefix
+
+Agents write under the human's prefix. A `<human>/agents/<agent>/` sub-prefix is still open. The
+choice is kept in one function, `policy_lab.storage_object_prefix()`.
 
 ## Threat and invariant mapping
 
@@ -41,7 +47,7 @@
 
 - `npm run check` (format, lint, typecheck, vitest).
 - The pgTAP file was run in PGlite with Supabase-shaped stubs for `auth.uid()`, `auth.jwt()`,
-  `storage.buckets`, and `storage.objects`, after all repository migrations: 67 of 67 passed. The
+  `storage.buckets`, and `storage.objects`, after all repository migrations: 69 of 69 passed. The
   harness is local evidence and is not added to the repository.
 - `supabase test db` was not run: it needs Docker and a local Supabase stack.
 
