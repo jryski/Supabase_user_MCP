@@ -2,7 +2,7 @@
 -- Synthetic fixtures only; everything rolls back.
 BEGIN;
 CREATE EXTENSION IF NOT EXISTS pgtap WITH SCHEMA extensions;
-SELECT extensions.plan(73);
+SELECT extensions.plan(78);
 
 -- Fixtures (two users, two delegated agents, one denied user, one service agent).
 INSERT INTO policy_lab.principals (principal_id, principal_kind, identity_eligibility) VALUES
@@ -242,6 +242,11 @@ SELECT extensions.throws_ok(
   '42501', NULL, 'agent_a: put under user_b prefix denied');
 SELECT extensions.is_empty(
   $$SELECT 1 FROM storage.objects WHERE name LIKE 'bbbbbbbb-%'$$, 'agent_a: cannot see user_b objects');
+SELECT extensions.results_eq(
+  $$SELECT principal_id::text, capability FROM policy_lab.capability_grants WHERE principal_id <> auth.uid() ORDER BY capability$$,
+  $$VALUES ('aaaaaaaa-0000-4000-8000-000000000001'::text, 'storage:read'::text),
+           ('aaaaaaaa-0000-4000-8000-000000000001', 'storage:write')$$,
+  'agent_a: sees only the delegating human storage grants for this client');
 
 -- agent_a through client b (wrong client for its delegation).
 SELECT set_config('request.jwt.claims', '{"sub":"aaaaaaaa-0000-4000-8000-0000000000a1","role":"authenticated","app_metadata":{"client_id":"s4-client-b"}}', true);
@@ -256,6 +261,10 @@ SELECT extensions.results_eq(
 SELECT extensions.throws_ok(
   $$INSERT INTO storage.objects (bucket_id, name) VALUES ('mcp-user-storage', 'bbbbbbbb-0000-4000-8000-000000000002/y.txt')$$,
   '42501', NULL, 'agent_b: put denied without delegated write');
+SELECT extensions.results_eq(
+  $$SELECT principal_id::text, capability FROM policy_lab.capability_grants WHERE principal_id <> auth.uid()$$,
+  $$VALUES ('bbbbbbbb-0000-4000-8000-000000000002'::text, 'storage:read'::text)$$,
+  'agent_b: sees only the delegated capability of its human grants');
 
 -- Revoked and expired clients, denied and non-human/agent principals, malformed claims.
 SELECT set_config('request.jwt.claims', '{"sub":"aaaaaaaa-0000-4000-8000-000000000001","role":"authenticated","app_metadata":{"client_id":"s4-client-revoked"}}', true);
@@ -302,6 +311,11 @@ SELECT extensions.is_empty($$SELECT 1 FROM storage.objects$$, 'revoked read gran
 SELECT set_config('request.jwt.claims', '{"sub":"bbbbbbbb-0000-4000-8000-000000000002","role":"authenticated","app_metadata":{"client_id":"s4-client-b"}}', true);
 SELECT extensions.is(policy_lab.storage_session_capabilities(), '[]'::jsonb, 'expired grants: user_b has none');
 SELECT extensions.is_empty($$SELECT 1 FROM storage.objects$$, 'expired grants: user_b sees nothing');
+-- agent_b's delegation is still active, but user_b's own storage grants have expired.
+SELECT set_config('request.jwt.claims', '{"sub":"bbbbbbbb-0000-4000-8000-0000000000b1","role":"authenticated","app_metadata":{"client_id":"s4-client-b"}}', true);
+SELECT extensions.is(policy_lab.storage_session_capabilities(), '[]'::jsonb, 'expired human grants: agent_b has no capabilities');
+SELECT extensions.ok(policy_lab.storage_principal() IS NULL, 'expired human grants: agent_b has no principal');
+SELECT extensions.is_empty($$SELECT 1 FROM storage.objects$$, 'expired human grants: agent_b sees nothing');
 
 RESET ROLE;
 SET LOCAL ROLE anon;

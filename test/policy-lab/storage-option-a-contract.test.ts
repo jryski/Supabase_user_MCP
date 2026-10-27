@@ -20,6 +20,7 @@ const sha256 = (path: string) =>
     .digest('hex');
 
 const MIGRATION = 'supabase/migrations/20261027000100_storage_option_a.sql';
+const FOLLOW_UP = 'supabase/migrations/20261027000200_storage_delegation_human_grant.sql';
 const PGTAP = 'supabase/tests/database/storage_option_a_test.sql';
 const CAVEAT = 'assumes option A; pending RLS layout decision';
 
@@ -124,6 +125,8 @@ describe('issue #123 S4 storage RLS (option A)', () => {
       'anon cannot call',
       'no UPDATE policy',
       'has_active_capability is unchanged',
+      'expired human grants',
+      'direct delete without the Storage API flag is refused',
     ]) {
       expect(pgtap).toContain(marker);
     }
@@ -132,11 +135,44 @@ describe('issue #123 S4 storage RLS (option A)', () => {
   it('labels every S4 doc with the option A caveat', () => {
     for (const path of [
       MIGRATION,
+      FOLLOW_UP,
       PGTAP,
       'docs/decisions/0009-storage-rls-option-a.md',
       'docs/evidence/ISSUE_123_STORAGE_S4_RLS.md',
     ]) {
       expect(read(path).toLowerCase(), path).toContain(CAVEAT.toLowerCase());
     }
+  });
+
+  it('adds the human-grant check for agents without touching earlier grant checks', () => {
+    const followUp = read(FOLLOW_UP).replace(/--[^\n]*/g, '');
+    expect(followUp).not.toMatch(/service_role|bypassrls|security\s+definer/i);
+    expect(followUp).not.toMatch(/has_active_capability\s*\(\s*required_capability text/i);
+    expect(followUp).not.toMatch(/(?:drop|alter)\s+(?:policy|table)/i);
+    expect(followUp).not.toMatch(/for (?:update|all)\b/i);
+    expect(followUp).not.toMatch(/on storage\./i);
+    const policies = followUp.match(/create policy[\s\S]*?;/gi) ?? [];
+    expect(policies).toHaveLength(1);
+    expect(policies[0]).toMatch(/on policy_lab\.capability_grants\s+for select to authenticated/);
+    const functions = followUp.match(/create or replace function[\s\S]*?\$\$;/gi) ?? [];
+    expect(functions).toHaveLength(1);
+    expect(functions[0]).toMatch(
+      /^create or replace function policy_lab\.storage_has_capability\(/,
+    );
+    expect(functions[0]).toMatch(/security invoker/);
+    expect(functions[0]).toMatch(/set search_path = ''/);
+    expect(functions[0]).toMatch(/g\.principal_id = d\.human_principal_id/);
+    // The replaced body keeps every check of the original and only adds the human grant.
+    const original = /create function policy_lab\.storage_has_capability[\s\S]*?\$\$;/.exec(
+      code,
+    )?.[0];
+    const humanGrant =
+      /\n\s+and exists \(\n\s+select 1\n\s+from policy_lab\.capability_grants g[\s\S]*?g\.valid_until > now\(\)\n\s+\)/;
+    expect(
+      functions[0]
+        ?.replace(humanGrant, '')
+        .replace('create or replace function', 'create function'),
+    ).toBe(original);
+    expect(followUp).not.toMatch(/to\s+anon\b/i);
   });
 });

@@ -81,10 +81,14 @@ accepted until the Primary Users record the RLS layout decision.
   caller see its own active storage grants. Both need review against the grant-check invariant.
 - There is no UPDATE policy, so overwrite, upsert, and move are denied.
 - Delete needs `storage:write` and `storage:read`, because Storage reads the row it deletes.
-- Signed URLs already issued stay valid until they expire (60 s in S1); revocation does not
-  cancel them.
-- A delegated agent's access does not check the human's own grants, which the agent cannot see
-  under RLS. The delegation row is the human-side authorization.
+- Revocation does **not** cancel signed URLs that were already issued. They stay valid until
+  they expire (60 s in S1).
+- A delegated agent also needs the human's own active grant for the same capability through the
+  same client (`20261027000200_storage_delegation_human_grant.sql`). One additive SELECT policy
+  lets the agent see only those grant rows. The human's membership and identity eligibility are
+  not re-checked on the agent path.
+- Hosted Storage refuses direct SQL deletes on its tables unless `storage.allow_delete_query` is
+  set. The Storage API sets it; SQL tests must set it too.
 - Workspaces are not a storage partition under option A.
 - The S2 client calls the RPCs in schema `policy_lab`, which `supabase/config.toml` does not expose
   through the Data API. Exposing `policy_lab`, or moving the two RPCs to a narrow exposed schema, is a
@@ -98,7 +102,7 @@ accepted until the Primary Users record the RLS layout decision.
 
 ## Validation
 
-`supabase/tests/database/storage_option_a_test.sql` (69 assertions) and
+`supabase/tests/database/storage_option_a_test.sql` (78 assertions) and
 `test/policy-lab/storage-option-a-contract.test.ts`. See
 [ISSUE_123_STORAGE_S4_RLS](../evidence/ISSUE_123_STORAGE_S4_RLS.md).
 
@@ -110,5 +114,6 @@ accepted until the Primary Users record the RLS layout decision.
 ## References
 
 - `supabase/migrations/20261027000100_storage_option_a.sql`
+- `supabase/migrations/20261027000200_storage_delegation_human_grant.sql`
 - `packages/contracts/src/storage-bounds.ts`
 - `packages/server/src/user-scoped-storage-client.ts`
