@@ -2,7 +2,7 @@
 -- Synthetic fixtures only; everything rolls back.
 BEGIN;
 CREATE EXTENSION IF NOT EXISTS pgtap WITH SCHEMA extensions;
-SELECT extensions.plan(67);
+SELECT extensions.plan(69);
 
 -- Fixtures (two users, two delegated agents, one denied user, one service agent).
 INSERT INTO policy_lab.principals (principal_id, principal_kind, identity_eligibility) VALUES
@@ -198,6 +198,7 @@ SELECT extensions.is_empty(
 -- agent_a (delegated by user_a, read+write) through client a.
 SELECT set_config('request.jwt.claims', '{"sub":"aaaaaaaa-0000-4000-8000-0000000000a1","role":"authenticated","app_metadata":{"client_id":"s4-client-a"}}', true);
 SELECT extensions.is(policy_lab.storage_principal(), 'aaaaaaaa-0000-4000-8000-000000000001'::uuid, 'agent_a: principal is user_a');
+SELECT extensions.is(policy_lab.storage_object_prefix(), 'aaaaaaaa-0000-4000-8000-000000000001/', 'agent_a: prefix seam is the human prefix (sub-prefix open)');
 SELECT extensions.results_eq(
   $$SELECT name FROM storage.objects ORDER BY name$$,
   $$VALUES ('aaaaaaaa-0000-4000-8000-000000000001/new.txt'::text), ('aaaaaaaa-0000-4000-8000-000000000001/notes/a.txt')$$,
@@ -237,6 +238,7 @@ SELECT set_config('request.jwt.claims', '{"sub":"dddddddd-0000-4000-8000-0000000
 SELECT extensions.ok(policy_lab.storage_principal() IS NULL, 'denied principal: no principal');
 SELECT set_config('request.jwt.claims', '{"sub":"eeeeeeee-0000-4000-8000-000000000005","role":"authenticated","app_metadata":{"client_id":"s4-client-a"}}', true);
 SELECT extensions.ok(policy_lab.storage_principal() IS NULL, 'service agent: no principal');
+SELECT extensions.ok(policy_lab.storage_object_prefix() IS NULL, 'service agent: no prefix');
 SELECT extensions.is_empty($$SELECT 1 FROM storage.objects$$, 'service agent: sees nothing');
 SELECT set_config('request.jwt.claims', '{"sub":"aaaaaaaa-0000-4000-8000-000000000001","role":"authenticated"}', true);
 SELECT extensions.ok(policy_lab.storage_principal() IS NULL, 'missing client claim: no principal');

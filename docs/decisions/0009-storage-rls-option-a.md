@@ -41,10 +41,25 @@ Object name is `<storage principal uuid>/<relative key>` in the private bucket
 caller, or the human named by an active `policy_lab.storage_delegations` row keyed on the agent's
 `auth.uid()` and the `app_metadata.client_id` claim.
 
-### Option C and the agent sub-prefix
+Two details differ in form from the short definition
+`(storage.foldername(name))[1] = storage_principal()::text and has_active_capability(...)`, with the
+same intent:
 
-The alternative layouts and an `<human>/agents/<agent>/` sub-prefix remain open. They are not
-implemented here.
+- The prefix is an exact `starts_with(name, policy_lab.storage_object_prefix())` match plus the S1
+  key-shape check on the rest. `storage_object_prefix()` is the single seam for the layout.
+- `has_active_capability` takes a workspace. `storage_has_capability` calls it, unchanged, for each
+  of the caller's visible memberships, and for an agent also requires the capability in the
+  delegation row.
+
+### Open: agent sub-prefix
+
+Agents currently write under the human's prefix. Whether they should use a
+`<human>/agents/<agent>/` sub-prefix is open. The choice lives only in
+`policy_lab.storage_object_prefix()`; changing it does not touch the policies.
+
+### Option C
+
+The alternative layout remains open and is not implemented here.
 
 ## Decision
 
@@ -83,7 +98,7 @@ accepted until the Primary Users record the RLS layout decision.
 
 ## Validation
 
-`supabase/tests/database/storage_option_a_test.sql` (67 assertions) and
+`supabase/tests/database/storage_option_a_test.sql` (69 assertions) and
 `test/policy-lab/storage-option-a-contract.test.ts`. See
 [ISSUE_123_STORAGE_S4_RLS](../evidence/ISSUE_123_STORAGE_S4_RLS.md).
 
