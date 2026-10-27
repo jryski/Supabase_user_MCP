@@ -141,7 +141,7 @@ function stubFetch(tokenB: string, liveRef: { live: boolean }) {
         headers: { 'content-type': 'application/json' },
       });
     }
-    if (url.endsWith('/rpc/ari_probe_source_session_live_v1')) {
+    if (url.endsWith('/rpc/source_session_live_v1')) {
       return new Response(liveRef.live ? 'true' : 'false', { status: 200 });
     }
     if (url.endsWith('/auth/v1/user')) {
@@ -254,7 +254,7 @@ describe('native user MCP remote pilot: https callback (opt-in)', () => {
     liveRef.live = true;
     const accepted = await handler(mcpPost(tokenA));
     expect(accepted.status).toBe(200);
-    const liveness = calls.find((call) => call.url.includes('ari_probe_source_session_live_v1'));
+    const liveness = calls.find((call) => call.url.includes('source_session_live_v1'));
     expect(liveness?.authorization).toBe(`Bearer ${tokenB}`);
     expect(calls.every((call) => call.authorization !== `Bearer ${tokenA}`)).toBe(true);
     const text = await accepted.text();
@@ -383,7 +383,7 @@ describe('native user MCP remote pilot: authorization surfaced through tool resu
       mcpRpc(tokenA, 5, 'tools/call', { name: 'memory_list_recent', arguments: {} }),
     );
     expect(denied.status).toBe(403);
-    const liveness = calls.find((call) => call.url.includes('ari_probe_source_session_live_v1'));
+    const liveness = calls.find((call) => call.url.includes('source_session_live_v1'));
     expect(liveness?.authorization).toBe(`Bearer ${tokenB}`);
     expect(calls.every((call) => call.authorization !== `Bearer ${tokenA}`)).toBe(true);
   });

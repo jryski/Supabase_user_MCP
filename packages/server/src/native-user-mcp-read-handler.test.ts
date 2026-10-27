@@ -107,7 +107,7 @@ describe('native user MCP read composition', () => {
           headers: { 'content-type': 'application/json' },
         });
       }
-      if (url.endsWith('/rpc/ari_probe_source_session_live_v1')) {
+      if (url.endsWith('/rpc/source_session_live_v1')) {
         return new Response(live ? 'true' : 'false', { status: 200 });
       }
       if (url.endsWith('/auth/v1/user')) {
@@ -194,7 +194,7 @@ describe('native user MCP read composition', () => {
     expect(observation.sourceSessionId).toBe(SOURCE);
     expect(observation.bSessionId).toBe(B_SESSION);
     expect(calls.some((call) => call.url.endsWith('/auth/v1/user'))).toBe(false);
-    const liveness = calls.find((call) => call.url.includes('ari_probe_source_session_live_v1'));
+    const liveness = calls.find((call) => call.url.includes('source_session_live_v1'));
     expect(liveness?.authorization).toBe(`Bearer ${tokenB}`);
     expect(liveness?.authorization).not.toContain(tokenA);
     expect(JSON.parse(liveness?.body ?? '{}')).toEqual({

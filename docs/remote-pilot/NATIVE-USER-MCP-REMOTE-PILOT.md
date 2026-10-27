@@ -15,7 +15,9 @@ The existing native read composition is reused unchanged:
 2. The server binds a distinct downstream **grant B** for the same user through
    a one-time PKCE handshake.
 3. Before every dispatch, **source-session liveness** is checked with B
-   (`ari_probe_source_session_live_v1`). A revoked source session is denied.
+   (`public.source_session_live_v1`, defined in
+   `sql/liveness/source_session_live_v1.sql`). A revoked source session is
+   denied, and anything other than JSON `true` fails closed.
 4. The fixed read tools (`memory_search`, `memory_get`, `memory_list_recent`)
    run with B only.
 
@@ -51,7 +53,11 @@ These are inputs, not facts established by this change:
   callback, with the Auth hook minting A as described above.
 - Client B registered with redirect `https://<host>/oauth/downstream/callback`
   and the same agent claim.
-- `ari_probe_source_session_live_v1` installed on the target project.
+- `public.source_session_live_v1` installed on the target project from
+  `sql/liveness/source_session_live_v1.sql`. It is not a migration and nothing
+  in this repository applies it; installing it is a separate approved step.
+  Where the project's `auth.sessions` has no `oauth_client_id`, the function
+  returns false and every dispatch is denied.
 - Synthetic users and fixtures only, until real-data use is approved.
 
 ## Environment (names only)

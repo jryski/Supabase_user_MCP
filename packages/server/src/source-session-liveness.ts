@@ -3,7 +3,7 @@ import { RemoteOAuthClientIdSchema, RemotePrincipalIdSchema } from '@supabase-us
 import { isLoopbackHostname } from './loopback-host.js';
 
 /** Lives in public so PostgREST can expose it to authenticated. */
-export const SOURCE_SESSION_LIVENESS_RPC = 'ari_probe_source_session_live_v1' as const;
+export const SOURCE_SESSION_LIVENESS_RPC = 'source_session_live_v1' as const;
 
 const DEFAULT_TIMEOUT_MS = 5_000;
 
@@ -81,7 +81,7 @@ function categoryForHttp(status: number): LivenessCategory {
 }
 
 /**
- * Calls `public.ari_probe_source_session_live_v1` with Token B.
+ * Calls `public.source_session_live_v1` (sql/liveness/source_session_live_v1.sql) with Token B.
  * Anything other than JSON `true` fails closed, including timeout and error.
  * The category is a bounded label. The response body is not returned.
  */
@@ -163,7 +163,7 @@ export async function classifySourceSessionLiveness(
 }
 
 /**
- * Calls `public.ari_probe_source_session_live_v1` with Token B.
+ * Calls `public.source_session_live_v1` (sql/liveness/source_session_live_v1.sql) with Token B.
  * Anything other than JSON `true` fails closed, including timeout and error.
  */
 export async function probeSourceSessionLive(
