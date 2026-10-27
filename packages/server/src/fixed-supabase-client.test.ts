@@ -120,7 +120,7 @@ describe('createFixedSupabaseClient', () => {
     const fetch = vi.fn<typeof globalThis.fetch>();
     const client = createFixedSupabaseClient({
       origin,
-      credentials: { projectPublishableKey: 'key', userAccessToken: token },
+      credentials: { projectPublishableKey: 'sb_publishable_synthetic', userAccessToken: token },
       fetch,
     });
     await expect(
@@ -136,7 +136,10 @@ describe('createFixedSupabaseClient', () => {
   });
 
   it('rejects invalid cursors, excess rows, and non-allowlisted response fields', async () => {
-    const credentials = { projectPublishableKey: 'key', userAccessToken: token };
+    const credentials = {
+      projectPublishableKey: 'sb_publishable_synthetic',
+      userAccessToken: token,
+    };
     const input = { query: 'x', mode: 'text' as const, limit: 1 };
     for (const [body, status, code] of [
       ['{}', 400, 'FIXED_CLIENT_INVALID_CURSOR'],
@@ -173,7 +176,7 @@ describe('createFixedSupabaseClient', () => {
     );
     const client = createFixedSupabaseClient({
       origin,
-      credentials: { projectPublishableKey: 'key', userAccessToken: token },
+      credentials: { projectPublishableKey: 'sb_publishable_synthetic', userAccessToken: token },
       fetch,
       timeoutMs: 25,
     });
@@ -212,7 +215,7 @@ describe('createFixedSupabaseClient', () => {
     const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(response('[]'));
     const client = createFixedSupabaseClient({
       origin,
-      credentials: { projectPublishableKey: 'publishable', userAccessToken: token },
+      credentials: { projectPublishableKey: 'sb_publishable_synthetic', userAccessToken: token },
       fetch,
     });
     expect(Object.keys(client)).toEqual([
@@ -250,7 +253,7 @@ describe('createFixedSupabaseClient', () => {
     );
     const client = createFixedSupabaseClient({
       origin,
-      credentials: { projectPublishableKey: 'key', userAccessToken: token },
+      credentials: { projectPublishableKey: 'sb_publishable_synthetic', userAccessToken: token },
       fetch,
     });
 
@@ -268,7 +271,7 @@ describe('createFixedSupabaseClient', () => {
       'Content-Profile': 'memory',
       'Content-Type': 'application/json',
       Authorization: `Bearer ${token}`,
-      apikey: 'key',
+      apikey: 'sb_publishable_synthetic',
     });
     expect(JSON.parse(init.body as string)).toEqual({ id: 'mem_ABCDEFGHIJKLMNOPQRSTUV' });
   });
@@ -292,7 +295,7 @@ describe('createFixedSupabaseClient', () => {
     );
     const client = createFixedSupabaseClient({
       origin,
-      credentials: { projectPublishableKey: 'key', userAccessToken: token },
+      credentials: { projectPublishableKey: 'sb_publishable_synthetic', userAccessToken: token },
       fetch,
     });
 
@@ -321,14 +324,14 @@ describe('createFixedSupabaseClient', () => {
     const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(response('{"record":null}'));
     const client = createFixedSupabaseClient({
       origin,
-      credentials: { projectPublishableKey: 'key', userAccessToken: token },
+      credentials: { projectPublishableKey: 'sb_publishable_synthetic', userAccessToken: token },
       fetch,
     });
     await expect(client.getMemoryRow({ id: 'mem_ABCDEFGHIJKLMNOPQRSTUV' })).resolves.toBeNull();
 
     const missingRecord = createFixedSupabaseClient({
       origin,
-      credentials: { projectPublishableKey: 'key', userAccessToken: token },
+      credentials: { projectPublishableKey: 'sb_publishable_synthetic', userAccessToken: token },
       fetch: vi.fn<typeof globalThis.fetch>().mockResolvedValue(response('{}')),
     });
     await expect(
@@ -352,7 +355,7 @@ describe('createFixedSupabaseClient', () => {
     );
     const malformedListClient = createFixedSupabaseClient({
       origin,
-      credentials: { projectPublishableKey: 'key', userAccessToken: token },
+      credentials: { projectPublishableKey: 'sb_publishable_synthetic', userAccessToken: token },
       fetch: missingColumn,
     });
 
@@ -366,7 +369,7 @@ describe('createFixedSupabaseClient', () => {
       'invalid credential',
       {
         origin: 'http://project-ref.supabase.co',
-        credentials: { projectPublishableKey: 'key', userAccessToken: token },
+        credentials: { projectPublishableKey: 'sb_publishable_synthetic', userAccessToken: token },
       },
       'FIXED_CLIENT_INVALID_CREDENTIAL',
     ],
@@ -404,7 +407,7 @@ describe('createFixedSupabaseClient', () => {
     for (const [, fetch, code] of cases) {
       const client = createFixedSupabaseClient({
         origin,
-        credentials: { projectPublishableKey: 'key', userAccessToken: token },
+        credentials: { projectPublishableKey: 'sb_publishable_synthetic', userAccessToken: token },
         fetch,
         maxResponseBytes: 128,
       });
@@ -429,7 +432,7 @@ describe('createFixedSupabaseClient', () => {
     );
     const client = createFixedSupabaseClient({
       origin,
-      credentials: { projectPublishableKey: 'key', userAccessToken: token },
+      credentials: { projectPublishableKey: 'sb_publishable_synthetic', userAccessToken: token },
       fetch,
       timeoutMs: 25,
     });
@@ -457,7 +460,7 @@ describe('createFixedSupabaseClient', () => {
     );
     const client = createFixedSupabaseClient({
       origin,
-      credentials: { projectPublishableKey: 'key', userAccessToken: token },
+      credentials: { projectPublishableKey: 'sb_publishable_synthetic', userAccessToken: token },
       fetch,
       timeoutMs: 25,
     });
