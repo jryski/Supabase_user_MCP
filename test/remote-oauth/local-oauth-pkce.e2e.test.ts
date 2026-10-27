@@ -8,8 +8,8 @@ import {
 } from '@supabase-user-mcp/contracts';
 import { afterAll, describe, expect, it } from 'vitest';
 
-import { createAuthorizationServerMetadata } from './authorization-server-metadata.js';
-import { createGoTrueSessionRevocationAuthority } from './gotrue-revocation-authority.js';
+import { createAuthorizationServerMetadata } from '../../packages/server/src/authorization-server-metadata.js';
+import { createGoTrueSessionRevocationAuthority } from '../../packages/server/src/gotrue-revocation-authority.js';
 import {
   approveLocalAuthorization,
   decodeJwtPayloadClaims,
@@ -17,10 +17,10 @@ import {
   exchangeLocalAuthorizationCode,
   generateS256PkceChallenge,
   logoutLocalSession,
-  registerLocalPublicOAuthClient,
   startLocalAuthorization,
-} from './local-oauth-pkce-client.js';
-import { createRemoteHttpProfile } from './remote-http-profile.js';
+} from '../../packages/server/src/local-oauth-pkce-client.js';
+import { createRemoteHttpProfile } from '../../packages/server/src/remote-http-profile.js';
+import { registerLocalPublicOAuthClient } from '../support/local-oauth-admin-lab.js';
 
 const requiredEnvironment = [
   'M4_SUPABASE_URL',

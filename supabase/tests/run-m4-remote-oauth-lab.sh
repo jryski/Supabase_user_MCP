@@ -79,7 +79,7 @@ export M4_BOB_TOKEN
 log "Minted synthetic local Auth sessions for consent without printing bearer material."
 
 log "Running real local GoTrue PKCE/consent + remote MCP HTTP tests."
-npx vitest run packages/server/src/local-oauth-pkce.e2e.test.ts packages/server/src/remote-http-profile.test.ts
+npx vitest run test/remote-oauth/local-oauth-pkce.e2e.test.ts packages/server/src/remote-http-profile.test.ts
 
 NODE_VERSION="$(node --version)"
 NPM_VERSION="$(npm --version)"

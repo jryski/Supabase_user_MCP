@@ -51,7 +51,7 @@
 | HTTP profile | `packages/server/src/remote-http-profile.test.ts` |
 | Ingress | `packages/server/src/remote-http-startup.test.ts` |
 | SQL | `supabase/tests/database/oauth_client_claim_test.sql` |
-| Local Auth PKCE | `packages/server/src/local-oauth-pkce.e2e.test.ts` via `npm run test:remote-oauth` |
+| Local Auth PKCE | `test/remote-oauth/local-oauth-pkce.e2e.test.ts` via `npm run test:remote-oauth` |
 
 ## Reproduction
 
