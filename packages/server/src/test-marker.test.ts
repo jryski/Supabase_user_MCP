@@ -3,11 +3,7 @@ import { Client } from '@modelcontextprotocol/client';
 import { StreamTransport } from '@supabase/mcp-utils';
 import { describe, expect, it } from 'vitest';
 
-import {
-  ARI_TEST_MARKER_PATH,
-  ARI_TEST_MARKER_TOOL_NAME,
-  readAriTestMarker,
-} from './ari-test-marker.js';
+import { TEST_MARKER_PATH, TEST_MARKER_TOOL_NAME, readTestMarker } from './test-marker.js';
 import type { VerifiedFixedSupabaseClient } from './fixed-supabase-client.js';
 import { createReadOnlyServer } from './server.js';
 
@@ -45,28 +41,28 @@ async function toolNames(server: ReturnType<typeof createReadOnlyServer>): Promi
   }
 }
 
-describe('Ari TEST marker seam', () => {
+describe('TEST marker seam', () => {
   it('stays off the default server and the CLI', async () => {
     const names = await toolNames(createReadOnlyServer({ client: emptyClient() }));
-    expect(names).not.toContain(ARI_TEST_MARKER_TOOL_NAME);
+    expect(names).not.toContain(TEST_MARKER_TOOL_NAME);
     const cli = await readFile(new URL('./cli.ts', import.meta.url), 'utf8');
     const stdio = await readFile(new URL('./stdio-startup.ts', import.meta.url), 'utf8');
-    expect(cli).not.toContain('ariTestMarker');
-    expect(stdio).not.toContain('ariTestMarker');
-    expect(stdio).not.toContain(ARI_TEST_MARKER_TOOL_NAME);
+    expect(cli).not.toContain('testMarker');
+    expect(stdio).not.toContain('testMarker');
+    expect(stdio).not.toContain(TEST_MARKER_TOOL_NAME);
   });
 
   it('registers the fixed GET only when the seam is enabled and uses Token B', async () => {
     const names = await toolNames(
       createReadOnlyServer({
         client: emptyClient(),
-        ariTestMarker: { readMarker: async () => 'ari-probe-marker-synthetic' },
+        testMarker: { readMarker: async () => 'test-marker-synthetic' },
       }),
     );
-    expect(names).toContain(ARI_TEST_MARKER_TOOL_NAME);
+    expect(names).toContain(TEST_MARKER_TOOL_NAME);
 
     const calls: Array<{ url: string; method: string; authorization: string | null }> = [];
-    const marker = await readAriTestMarker({
+    const marker = await readTestMarker({
       origin: ORIGIN,
       accessToken: TOKEN_B,
       publishableKey: 'sb_publishable_test',
@@ -76,15 +72,15 @@ describe('Ari TEST marker seam', () => {
           method: init?.method ?? 'GET',
           authorization: new Headers(init?.headers).get('authorization'),
         });
-        return new Response(JSON.stringify([{ marker: 'ari-probe-marker-synthetic' }]), {
+        return new Response(JSON.stringify([{ marker: 'test-marker-synthetic' }]), {
           status: 200,
         });
       },
     });
-    expect(marker).toBe('ari-probe-marker-synthetic');
+    expect(marker).toBe('test-marker-synthetic');
     expect(calls).toEqual([
       {
-        url: `${ORIGIN}${ARI_TEST_MARKER_PATH}`,
+        url: `${ORIGIN}${TEST_MARKER_PATH}`,
         method: 'GET',
         authorization: `Bearer ${TOKEN_B}`,
       },

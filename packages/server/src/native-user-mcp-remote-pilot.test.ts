@@ -185,7 +185,7 @@ describe('native user MCP remote pilot: https callback (opt-in)', () => {
         downstreamRedirectUri: 'http://127.0.0.1:8788/oauth/downstream/callback',
       }),
     ).toThrow(NativeUserMcpConfigError);
-    expect(() => createNativeUserMcpReadHandler({ ...optIn, enableAriTestMarker: true })).toThrow(
+    expect(() => createNativeUserMcpReadHandler({ ...optIn, enableTestMarker: true })).toThrow(
       NativeUserMcpConfigError,
     );
     expect(() =>

@@ -4,7 +4,7 @@ import {
   RemoteOAuthClientIdSchema,
 } from '@supabase-user-mcp/contracts';
 
-import { readAriTestMarker } from './ari-test-marker.js';
+import { readTestMarker } from './test-marker.js';
 import {
   DOWNSTREAM_AUTHORIZATION_REQUIRED,
   DOWNSTREAM_B_GRANT_PROFILE,
@@ -43,13 +43,13 @@ export interface NativeUserMcpReadHandlerConfig {
   readonly downstreamClientId: string;
   readonly downstreamRedirectUri: string;
   /** Programmatic TEST marker. Default CLI leaves this off. */
-  readonly enableAriTestMarker?: boolean;
+  readonly enableTestMarker?: boolean;
   readonly fetch?: typeof globalThis.fetch;
   readonly now?: () => number;
   readonly handshakeTtlMs?: number;
   readonly livenessTimeoutMs?: number;
-  /** In-process counters for the Lane B parent. Never store a bearer here. */
-  readonly observation?: LaneBRunObservation;
+  /** In-process counters for test harnesses. Never store a bearer here. */
+  readonly observation?: ReadCompositionObservation;
   /**
    * Loopback diagnostic injection. Called only after liveness reports live.
    * A returned response replaces tool dispatch. It does not skip liveness
@@ -80,7 +80,7 @@ export interface NativeUserMcpReadHandlerConfig {
   readonly downstreamAuthorizationViaToolResult?: boolean;
 }
 
-export interface LaneBRunObservation {
+export interface ReadCompositionObservation {
   livenessChecks: number;
   livenessDenials: number;
   markerReads: number;
@@ -202,7 +202,7 @@ export function createNativeUserMcpReadHandler(
     }
     if (redirect.protocol !== 'https:') invalidConfig();
     if (
-      config.enableAriTestMarker === true ||
+      config.enableTestMarker === true ||
       config.observation !== undefined ||
       config.dispatchGate !== undefined
     ) {
@@ -230,7 +230,7 @@ export function createNativeUserMcpReadHandler(
     ...(fetchImpl === undefined ? {} : { fetch: fetchImpl }),
     ...(config.onGrantFact === undefined ? {} : { onGrantFact: config.onGrantFact }),
   });
-  const enableMarker = config.enableAriTestMarker === true;
+  const enableMarker = config.enableTestMarker === true;
   const authorizationViaTool = config.downstreamAuthorizationViaToolResult === true;
   if (authorizationViaTool && !httpsBehindTerminator) invalidConfig();
 
@@ -271,10 +271,10 @@ export function createNativeUserMcpReadHandler(
         client,
         ...(enableMarker
           ? {
-              ariTestMarker: {
+              testMarker: {
                 readMarker: (signal) => {
                   if (config.observation !== undefined) config.observation.markerReads += 1;
-                  return readAriTestMarker({
+                  return readTestMarker({
                     origin: authOrigin,
                     accessToken,
                     publishableKey: config.publishableKey,

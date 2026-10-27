@@ -384,9 +384,9 @@ describe('native user MCP adapter', () => {
   });
 
   it('normalizes direct 500 JWKS fetch and config failures without library detail', async () => {
-    const fetchSentinel = 'mc1585-jwks-fetch-sentinel';
-    const outageSentinel = 'mc1585-jwks-outage-sentinel';
-    const configSentinel = 'mc1585-jwks-config-sentinel';
+    const fetchSentinel = 'jwks-fetch-sentinel';
+    const outageSentinel = 'jwks-outage-sentinel';
+    const configSentinel = 'jwks-config-sentinel';
     const { privateKey } = await es256Jwks();
     const token = await signToken(privateKey);
     const originalFetch = globalThis.fetch;
@@ -449,7 +449,7 @@ describe('native user MCP adapter', () => {
   });
 
   it('normalizes a direct 503 pool-style library error and leaves headerless responses untouched', async () => {
-    const sentinel = 'mc1585-pool-503-sentinel';
+    const sentinel = 'pool-503-sentinel';
     const { privateKey, jwks } = await es256Jwks();
     const agent = 'hook-only-agent';
     const source = '55555555-5555-4555-8555-555555555555';

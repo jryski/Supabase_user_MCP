@@ -1,29 +1,29 @@
 import type { McpServer } from '@modelcontextprotocol/server';
 import { z } from 'zod';
 
-/** Fixed PostgREST read. F1 covers this marker table only. */
-export const ARI_TEST_MARKER_TOOL_NAME = 'ari_test_marker_get' as const;
-export const ARI_TEST_MARKER_PATH = '/rest/v1/ari_probe_marker?select=marker' as const;
-export const ARI_TEST_MARKER_PROFILE = 'TEST_ONLY' as const;
+/** Fixed PostgREST read of one synthetic marker table. Evidence covers that table only. */
+export const TEST_MARKER_TOOL_NAME = 'test_marker_get' as const;
+export const TEST_MARKER_PATH = '/rest/v1/test_marker?select=marker' as const;
+export const TEST_MARKER_PROFILE = 'TEST_ONLY' as const;
 
-const AriTestMarkerInputSchema = z.object({}).strict();
-const AriTestMarkerOutputSchema = z
+const TestMarkerInputSchema = z.object({}).strict();
+const TestMarkerOutputSchema = z
   .object({
     marker: z.string().min(1).max(256),
   })
   .strict();
 
-export interface AriTestMarkerSeam {
+export interface TestMarkerSeam {
   readonly readMarker: (signal: AbortSignal) => Promise<string>;
 }
 
-const MARKER_UNAVAILABLE = 'ari_test_marker_unavailable';
+const MARKER_UNAVAILABLE = 'test_marker_unavailable';
 
 /**
  * GET the TEST marker with the supplied bearer. The caller passes Token B.
  * The path and method are fixed.
  */
-export async function readAriTestMarker(input: {
+export async function readTestMarker(input: {
   readonly origin: string;
   readonly accessToken: string;
   readonly publishableKey: string;
@@ -35,11 +35,11 @@ export async function readAriTestMarker(input: {
   }
   let target: URL;
   try {
-    target = new URL(ARI_TEST_MARKER_PATH, input.origin);
+    target = new URL(TEST_MARKER_PATH, input.origin);
   } catch {
     throw new Error(MARKER_UNAVAILABLE);
   }
-  if (target.pathname !== '/rest/v1/ari_probe_marker' || target.search !== '?select=marker') {
+  if (target.pathname !== '/rest/v1/test_marker' || target.search !== '?select=marker') {
     throw new Error(MARKER_UNAVAILABLE);
   }
   const controller = new AbortController();
@@ -76,15 +76,15 @@ export async function readAriTestMarker(input: {
   }
 }
 
-export function registerAriTestMarkerTool(server: McpServer, seam: AriTestMarkerSeam): void {
+export function registerTestMarkerTool(server: McpServer, seam: TestMarkerSeam): void {
   server.registerTool(
-    ARI_TEST_MARKER_TOOL_NAME,
+    TEST_MARKER_TOOL_NAME,
     {
-      title: 'Ari TEST marker',
+      title: 'TEST marker',
       description:
-        'TEST-only read of public.ari_probe_marker. Not a default CLI tool. F1 on this table does not cover other surfaces.',
-      inputSchema: AriTestMarkerInputSchema,
-      outputSchema: AriTestMarkerOutputSchema,
+        'TEST-only read of public.test_marker. Not a default CLI tool. Evidence from this table does not cover other surfaces.',
+      inputSchema: TestMarkerInputSchema,
+      outputSchema: TestMarkerOutputSchema,
       annotations: {
         readOnlyHint: true,
         destructiveHint: false,
@@ -95,7 +95,7 @@ export function registerAriTestMarkerTool(server: McpServer, seam: AriTestMarker
     async (_input, context) => {
       try {
         const marker = await seam.readMarker(context.mcpReq.signal);
-        const structured = AriTestMarkerOutputSchema.parse({ marker });
+        const structured = TestMarkerOutputSchema.parse({ marker });
         return {
           content: [{ type: 'text' as const, text: structured.marker }],
           structuredContent: structured,

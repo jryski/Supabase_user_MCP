@@ -12,7 +12,7 @@ import {
   MEMORY_SEARCH_TOOL,
   SESSION_CAPABILITIES_GET_TOOL,
 } from '@supabase-user-mcp/contracts';
-import { type AriTestMarkerSeam, registerAriTestMarkerTool } from './ari-test-marker.js';
+import { type TestMarkerSeam, registerTestMarkerTool } from './test-marker.js';
 import {
   type ArtifactMcpRegistrationConfig,
   prepareArtifactMcpRegistration,
@@ -37,10 +37,10 @@ export interface ReadOnlyServerOptions {
   /** Opt-in draft two-tool registration for synthetic contract tests only. */
   readonly registerDraftTwoTools?: boolean;
   /**
-   * TEST-only marker tool. Omitted by the default CLI. F1 on the marker
-   * table does not cover other surfaces.
+   * TEST-only marker tool. Omitted by the default CLI. Evidence from the
+   * marker table does not cover other surfaces.
    */
-  readonly ariTestMarker?: AriTestMarkerSeam;
+  readonly testMarker?: TestMarkerSeam;
 }
 
 /** Guarded read-only product server; must be a real {@link McpServer} for process stdio negotiation. */
@@ -336,8 +336,8 @@ export async function createReadOnlyServer(
   }
 
   artifactRegistration?.register(server);
-  if (options.ariTestMarker !== undefined) {
-    registerAriTestMarkerTool(server, options.ariTestMarker);
+  if (options.testMarker !== undefined) {
+    registerTestMarkerTool(server, options.testMarker);
   }
 
   const connectWithBoundedTransport = server.connect.bind(server);

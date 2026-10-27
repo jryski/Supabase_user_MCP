@@ -1,11 +1,11 @@
 export {
-  ARI_TEST_MARKER_PATH,
-  ARI_TEST_MARKER_PROFILE,
-  ARI_TEST_MARKER_TOOL_NAME,
-  type AriTestMarkerSeam,
-  readAriTestMarker,
-  registerAriTestMarkerTool,
-} from './ari-test-marker.js';
+  TEST_MARKER_PATH,
+  TEST_MARKER_PROFILE,
+  TEST_MARKER_TOOL_NAME,
+  type TestMarkerSeam,
+  readTestMarker,
+  registerTestMarkerTool,
+} from './test-marker.js';
 export {
   ARTIFACT_INSPECTOR_PROFILE_VERSION,
   type ArtifactInspector,
