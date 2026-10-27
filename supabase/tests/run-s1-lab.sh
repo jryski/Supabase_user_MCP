@@ -39,7 +39,7 @@ LC_TAG="s1-lab"
 NETWORK_NAME="${S1_DOCKER_NETWORK:-supabase-s1-loopback}"
 # shellcheck source=lib/lifecycle.sh
 source "$PROJECT_ROOT/supabase/tests/lib/lifecycle.sh"
-lc_require_tools docker supabase curl node
+lc_require_tools docker supabase curl node psql shasum
 lc_read_project_id
 
 TMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/supabase-s1-lab.XXXXXX")"
