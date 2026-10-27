@@ -1,6 +1,6 @@
 import { DOWNSTREAM_CREDENTIAL_UNRESOLVED } from '@supabase-user-mcp/contracts';
 import { exportJWK, generateKeyPair, type JWK, SignJWT } from 'jose';
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { DOWNSTREAM_AUTHORIZATION_REQUIRED } from './downstream-oauth-grant.js';
 import { MCP_INGRESS_ROLE, NativeUserMcpConfigError } from './native-user-mcp.js';
@@ -18,7 +18,9 @@ import {
   NATIVE_REMOTE_PILOT_JWKS_URL_ENV,
   NATIVE_REMOTE_PILOT_OPT_IN_ENV,
   NATIVE_REMOTE_PILOT_OPT_IN_VALUE,
+  NATIVE_REMOTE_PILOT_OPTIONAL_ENV,
   NATIVE_REMOTE_PILOT_REQUIRED_ENV,
+  NATIVE_REMOTE_PILOT_STORAGE_BUCKET_ENV,
   NATIVE_REMOTE_PILOT_SUPABASE_URL_ENV,
 } from './native-user-mcp-remote-pilot.js';
 import { LISTEN_PORT_ENV, PUBLISHABLE_KEY_ENV, RESOURCE_URI_ENV } from './remote-http-startup.js';
@@ -529,5 +531,192 @@ describe('native user MCP remote pilot: environment entrypoint', () => {
       env: { ...validEnv(), [PUBLISHABLE_KEY_ENV]: REMOTE_KEY_ACCEPTED },
     });
     expect(typeof pilot.handler).toBe('function');
+  });
+});
+
+describe('native user MCP remote pilot: storage through the environment entrypoint', () => {
+  const BUCKET = 'mcp-user-storage';
+  const READ_TOOLS = ['storage_capabilities', 'storage_get', 'storage_list'];
+  const ALL_STORAGE_TOOLS = [...READ_TOOLS, 'storage_put', 'storage_delete'];
+  const pilotEnv = (bucket?: string): Record<string, string> => ({
+    [NATIVE_REMOTE_PILOT_OPT_IN_ENV]: NATIVE_REMOTE_PILOT_OPT_IN_VALUE,
+    [RESOURCE_URI_ENV]: RESOURCE,
+    [NATIVE_REMOTE_PILOT_SUPABASE_URL_ENV]: SUPABASE_URL,
+    [NATIVE_REMOTE_PILOT_A_CLIENT_ID_ENV]: A_CLIENT,
+    [NATIVE_REMOTE_PILOT_AGENT_ID_ENV]: AGENT,
+    [PUBLISHABLE_KEY_ENV]: PUBLISHABLE,
+    [NATIVE_REMOTE_PILOT_JWKS_URL_ENV]: `${SUPABASE_URL}/auth/v1/.well-known/jwks.json`,
+    [NATIVE_REMOTE_PILOT_B_CLIENT_ID_ENV]: B_CLIENT,
+    [NATIVE_REMOTE_PILOT_B_REDIRECT_URI_ENV]: REDIRECT,
+    [LISTEN_PORT_ENV]: '8788',
+    ...(bucket === undefined ? {} : { [NATIVE_REMOTE_PILOT_STORAGE_BUCKET_ENV]: bucket }),
+  });
+  const json = (value: unknown) =>
+    new Response(JSON.stringify(value), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    });
+
+  let sharedKeys: ReturnType<typeof keys> | undefined;
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  /** Builds the pilot from env, binds B through the https callback, returns an MCP session. */
+  async function pilotSession(options: {
+    readonly bucket?: string;
+    readonly capabilities: ReadonlyArray<string>;
+  }) {
+    // One key set for the block: a remote JWKS may be cached per URL.
+    sharedKeys ??= keys();
+    const material = await sharedKeys;
+    const tokenA = await signA(material.privateKey);
+    const tokenB = await signB(material.privateKey);
+    const calls: Array<{ url: string; method: string; authorization: string | null }> = [];
+    const fetchImpl: typeof fetch = async (input, init) => {
+      const url = String(input);
+      calls.push({
+        url,
+        method: init?.method ?? 'GET',
+        authorization: new Headers(init?.headers).get('authorization'),
+      });
+      if (url === `${SUPABASE_URL}/auth/v1/.well-known/jwks.json`) return json(material.jwks);
+      if (url.endsWith('/auth/v1/oauth/token')) {
+        return json({ access_token: tokenB, refresh_token: REFRESH });
+      }
+      if (url.endsWith('/rpc/source_session_live_v1')) return new Response('true', { status: 200 });
+      if (url.endsWith('/auth/v1/user')) return json({ id: SUB, aud: 'authenticated' });
+      if (url.endsWith('/rest/v1/rpc/mcp_storage_session_capabilities_v1')) {
+        return json(options.capabilities);
+      }
+      if (url.endsWith('/rest/v1/rpc/mcp_storage_principal_v1')) return json(SUB);
+      if (url.endsWith(`/storage/v1/object/list/${BUCKET}`)) {
+        return json([
+          {
+            name: 'note.txt',
+            id: '55555555-5555-4555-8555-555555555555',
+            updated_at: '2026-10-27T16:00:00.000Z',
+            metadata: { size: 5, mimetype: 'text/plain' },
+          },
+        ]);
+      }
+      return new Response('unexpected', { status: 500 });
+    };
+    // The env entry passes a JWKS URL; the verifier fetches it with the
+    // global fetch, so route only that synthetic URL to the stub.
+    const realFetch = globalThis.fetch;
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) =>
+      String(input) === `${SUPABASE_URL}/auth/v1/.well-known/jwks.json`
+        ? json(material.jwks)
+        : realFetch(input, init),
+    );
+    const pilot = createNativeUserMcpRemotePilotFromEnvironment({
+      env: pilotEnv(options.bucket),
+      fetch: fetchImpl,
+    });
+    const handler = pilot.handler;
+    expect((await handler(mcpPost(tokenA))).status).toBe(200);
+    // Before B exists, a tool call returns the authorization link.
+    const pending = await rpcResult(
+      await handler(mcpRpc(tokenA, 2, 'tools/call', { name: 'memory_list_recent', arguments: {} })),
+    );
+    const text = (pending.result as { content: Array<{ text: string }> }).content[0]?.text ?? '';
+    const state = new URL(/(https:\/\/\S+)/u.exec(text)?.[1] ?? '').searchParams.get('state');
+    const bound = await handler(callback(TERMINATED_CALLBACK, state ?? '', PUBLIC_HOST));
+    expect(bound.status).toBe(200);
+    calls.length = 0;
+
+    const listNames = async () => {
+      const listed = await rpcResult(await handler(mcpRpc(tokenA, 3, 'tools/list', {})));
+      return ((listed.result as { tools?: Array<{ name: string }> }).tools ?? []).map(
+        (tool) => tool.name,
+      );
+    };
+    const call = async (name: string, args: Record<string, unknown> = {}) =>
+      (await rpcResult(
+        await handler(mcpRpc(tokenA, 4, 'tools/call', { name, arguments: args })),
+      )) as {
+        result?: { isError?: boolean };
+        error?: { code: number };
+      };
+    const storageRequests = () => calls.filter((entry) => entry.url.includes('/storage/v1/'));
+    return { listNames, call, calls, storageRequests, tokenA, tokenB };
+  }
+
+  it('lists the storage name as optional, never required', () => {
+    expect([...NATIVE_REMOTE_PILOT_OPTIONAL_ENV]).toEqual([NATIVE_REMOTE_PILOT_STORAGE_BUCKET_ENV]);
+    expect(NATIVE_REMOTE_PILOT_REQUIRED_ENV).not.toContain(NATIVE_REMOTE_PILOT_STORAGE_BUCKET_ENV);
+  });
+
+  it('with a configured bucket and storage:read, tools/list has the storage read tools and storage_list runs with B', async () => {
+    const session = await pilotSession({ bucket: BUCKET, capabilities: ['storage:read'] });
+    const names = await session.listNames();
+    expect(names).toEqual(expect.arrayContaining(READ_TOOLS));
+    const reply = await session.call('storage_list');
+    expect(reply.error).toBeUndefined();
+    expect(reply.result?.isError).not.toBe(true);
+    expect(JSON.stringify(reply.result)).toContain('note.txt');
+    const storage = session.storageRequests();
+    expect(storage.map((entry) => entry.url)).toEqual([
+      `${SUPABASE_URL}/storage/v1/object/list/${BUCKET}`,
+    ]);
+    expect(storage.every((entry) => entry.authorization === `Bearer ${session.tokenB}`)).toBe(true);
+    expect(session.calls.every((entry) => entry.authorization !== `Bearer ${session.tokenA}`)).toBe(
+      true,
+    );
+  });
+
+  it('stays read-only: a storage:write grant adds no put or delete tool and a direct call is refused', async () => {
+    const session = await pilotSession({
+      bucket: BUCKET,
+      capabilities: ['storage:read', 'storage:write'],
+    });
+    const names = await session.listNames();
+    expect(names.filter((name) => name.startsWith('storage_')).sort()).toEqual(READ_TOOLS);
+    for (const name of ['storage_put', 'storage_delete']) {
+      const reply = await session.call(name, { key: 'note.txt', content: 'x' });
+      expect(reply.error?.code, name).toBe(-32602);
+    }
+    expect(session.storageRequests()).toEqual([]);
+  });
+
+  for (const [label, options] of [
+    ['a configured bucket but no storage grant', { bucket: BUCKET, capabilities: [] }],
+    [
+      'a configured bucket and only storage:write',
+      { bucket: BUCKET, capabilities: ['storage:write'] },
+    ],
+    ['no bucket configured', { capabilities: ['storage:read'] }],
+    ['an empty bucket setting', { bucket: '', capabilities: ['storage:read'] }],
+  ] as const) {
+    it(`with ${label}, tools/list has no storage tools and direct calls are refused`, async () => {
+      const session = await pilotSession(options);
+      const names = await session.listNames();
+      expect(names).toEqual(expect.arrayContaining(['memory_list_recent']));
+      expect(names.filter((name) => name.startsWith('storage_'))).toEqual([]);
+      for (const name of ALL_STORAGE_TOOLS) {
+        const reply = await session.call(name, { key: 'note.txt' });
+        expect(reply.error?.code, name).toBe(-32602);
+      }
+      expect(session.storageRequests()).toEqual([]);
+      if (options.bucket === undefined || options.bucket === '') {
+        expect(session.calls.filter((entry) => entry.url.includes('/rpc/mcp_storage_'))).toEqual(
+          [],
+        );
+      }
+    });
+  }
+
+  it('fails closed on an invalid bucket name without echoing it', () => {
+    for (const bucket of ['../b', 'a/b', ' padded-bucket ', 'https://evil.example/b']) {
+      let caught: unknown;
+      try {
+        createNativeUserMcpRemotePilotFromEnvironment({ env: pilotEnv(bucket) });
+      } catch (error) {
+        caught = error;
+      }
+      expect(caught, bucket).toBeInstanceOf(NativeUserMcpConfigError);
+      expect(String((caught as Error).message)).not.toContain(bucket.trim());
+    }
   });
 });

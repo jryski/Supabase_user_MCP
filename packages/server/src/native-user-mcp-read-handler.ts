@@ -84,9 +84,16 @@ export interface NativeUserMcpReadHandlerConfig {
   /**
    * Opt-in storage tools (#123). The fixed Storage bucket. Storage requests
    * carry the downstream grant B and the publishable key, exactly like the
-   * Data API client; Token A is never used. Off by default.
+   * Data API client; Token A is never used. Off by default. The remote pilot
+   * entry sets it from `SUPABASE_USER_MCP_STORAGE_BUCKET`. Tools are listed
+   * only when the session holds `storage:read`.
    */
   readonly storageBucket?: string;
+  /**
+   * With `storageBucket`, register read tools only, even when the session
+   * holds `storage:write`. The remote pilot entry always sets it.
+   */
+  readonly storageReadOnly?: boolean;
 }
 
 export interface ReadCompositionObservation {
@@ -179,8 +186,9 @@ function callbackUrl(
 }
 
 /**
- * TEST-only composition: verify A, bind B from the one-time handshake, check
- * source-session liveness with B, then dispatch tools with B.
+ * Read composition, used by tests and by the opt-in remote pilot entry
+ * (`native-user-mcp-remote-pilot.ts`): verify A, bind B from the one-time
+ * handshake, check source-session liveness with B, then dispatch tools with B.
  * Token A is never placed on the Data API client.
  * Without this handler, `createNativeUserMcpHandler` stays fail-closed.
  */
@@ -232,6 +240,7 @@ export function createNativeUserMcpReadHandler(
   const fetchImpl = config.fetch;
   const storageBucket = config.storageBucket;
   if (storageBucket !== undefined && !checkStorageBucketId(storageBucket).ok) invalidConfig();
+  const storageReadOnly = config.storageReadOnly === true;
   const store = new DownstreamOAuthGrantStore({
     issuer,
     authOrigin,
@@ -297,6 +306,7 @@ export function createNativeUserMcpReadHandler(
                   },
                   ...(fetchImpl === undefined ? {} : { fetch: fetchImpl }),
                 }),
+                ...(storageReadOnly ? { readOnly: true } : {}),
               };
         return createReadOnlyServer({
           client,

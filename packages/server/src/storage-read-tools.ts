@@ -341,6 +341,12 @@ export interface StorageRegistrationConfig {
   readonly principalResolver?: StoragePrincipalResolver;
   readonly governance?: ReadToolGovernancePolicy;
   readonly now?: () => number;
+  /**
+   * Read-only surfaces (the remote pilot). A `storage:write` grant is ignored:
+   * `storage_put` and `storage_delete` are never registered and
+   * `storage_capabilities` reports `storage:read` only. Off by default.
+   */
+  readonly readOnly?: boolean;
 }
 
 export type StorageRegistrationStatus = 'registered' | 'not_granted' | 'unavailable';
@@ -388,7 +394,10 @@ export async function prepareStorageMcpRegistration(
   let capabilities: StorageCapability[];
   try {
     const grants = new Set(await config.client.fetchStorageGrants(signal));
-    capabilities = STORAGE_CAPABILITIES.filter((capability) => grants.has(capability));
+    capabilities = STORAGE_CAPABILITIES.filter(
+      (capability) =>
+        grants.has(capability) && !(config.readOnly === true && capability === 'storage:write'),
+    );
   } catch {
     return unregistered('unavailable');
   }

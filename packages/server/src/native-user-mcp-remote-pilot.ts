@@ -15,7 +15,8 @@ import {
  * verified, a distinct downstream grant B is bound through a one-time PKCE
  * handshake, source-session liveness is checked with B before every dispatch,
  * and the fixed read tools run with B only. TEST diagnostics are off and
- * cannot be enabled here.
+ * cannot be enabled here. Read-only storage tools are added only when
+ * `SUPABASE_USER_MCP_STORAGE_BUCKET` names a bucket and B holds `storage:read`.
  *
  * Transport: the listener binds 127.0.0.1 only. An operator TLS terminator
  * (reverse proxy or tunnel) publishes `https://<host>` and forwards to it.
@@ -32,6 +33,13 @@ export const NATIVE_REMOTE_PILOT_JWKS_URL_ENV = 'SUPABASE_USER_MCP_JWKS_URL';
 export const NATIVE_REMOTE_PILOT_B_CLIENT_ID_ENV = 'SUPABASE_USER_MCP_B_CLIENT_ID';
 export const NATIVE_REMOTE_PILOT_B_REDIRECT_URI_ENV = 'SUPABASE_USER_MCP_B_REDIRECT_URI';
 
+/**
+ * Optional. A Storage bucket name (never a key or URL). Unset or empty keeps
+ * storage off. When set, read-only storage tools are listed for a session
+ * whose grant B holds `storage:read`; other sessions see no storage tools.
+ */
+export const NATIVE_REMOTE_PILOT_STORAGE_BUCKET_ENV = 'SUPABASE_USER_MCP_STORAGE_BUCKET';
+
 /** Names only. Values are never logged or echoed. */
 export const NATIVE_REMOTE_PILOT_REQUIRED_ENV = Object.freeze([
   NATIVE_REMOTE_PILOT_OPT_IN_ENV,
@@ -44,6 +52,11 @@ export const NATIVE_REMOTE_PILOT_REQUIRED_ENV = Object.freeze([
   NATIVE_REMOTE_PILOT_B_CLIENT_ID_ENV,
   NATIVE_REMOTE_PILOT_B_REDIRECT_URI_ENV,
   LISTEN_PORT_ENV,
+]);
+
+/** Optional names. Unset means the feature is off. */
+export const NATIVE_REMOTE_PILOT_OPTIONAL_ENV = Object.freeze([
+  NATIVE_REMOTE_PILOT_STORAGE_BUCKET_ENV,
 ]);
 
 /**
@@ -131,6 +144,14 @@ export function createNativeUserMcpRemotePilotFromEnvironment(
   const listenPort = Number(requiredText(env[LISTEN_PORT_ENV]));
   if (!Number.isSafeInteger(listenPort) || listenPort < 1 || listenPort > 65_535) invalid();
 
+  // Storage is off unless a bucket name is configured. The read handler
+  // validates the name and fails closed on an invalid one.
+  const storageBucketValue = env[NATIVE_REMOTE_PILOT_STORAGE_BUCKET_ENV];
+  const storageBucket =
+    storageBucketValue === undefined || storageBucketValue === ''
+      ? undefined
+      : requiredText(storageBucketValue);
+
   const handler = createNativeUserMcpReadHandler({
     resourceServer: resource.href,
     supabaseUrl: supabase.href,
@@ -143,6 +164,7 @@ export function createNativeUserMcpRemotePilotFromEnvironment(
     downstreamRedirectUri: redirect.href,
     httpsCallbackBehindTlsTerminator: true,
     downstreamAuthorizationViaToolResult: true,
+    ...(storageBucket === undefined ? {} : { storageBucket, storageReadOnly: true }),
     ...(options.fetch === undefined ? {} : { fetch: options.fetch }),
     ...(options.now === undefined ? {} : { now: options.now }),
   });
