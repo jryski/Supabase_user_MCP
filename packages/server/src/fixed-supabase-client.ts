@@ -90,6 +90,7 @@ export interface FixedSupabaseClient {
 
 export interface VerifiedUserIdentity {
   readonly principalId: string;
+  readonly clientId?: string;
 }
 
 export interface VerifiedFixedSupabaseClient extends FixedSupabaseClient {
