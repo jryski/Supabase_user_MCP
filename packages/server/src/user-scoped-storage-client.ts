@@ -77,6 +77,14 @@ export const STORAGE_RPC_SCHEMA = 'policy_lab';
 const MAX_JSON_BYTES = 256 * 1024;
 const MAX_SIGNED_URL_BYTES = 2048;
 
+/** Only publishable project keys are accepted; every other key shape is refused. */
+const PUBLISHABLE_KEY_PATTERN = /^sb_publishable_[A-Za-z0-9_-]+$/;
+const SECRET_KEY_PATTERN = /^sb_secret_/i;
+const JWT_SEGMENT_PATTERN = /^[A-Za-z0-9_-]+$/;
+const TOKEN_SUBJECT_PATTERN =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+const USER_TOKEN_ROLE = 'authenticated';
+
 function invalidConfig(): never {
   throw new StorageClientError('STORAGE_CLIENT_INVALID_CONFIG');
 }
@@ -130,6 +138,36 @@ function isDenied(status: number): boolean {
   return status === 400 || status === 401 || status === 403 || status === 404;
 }
 
+/**
+ * Decodes the user access token payload WITHOUT verifying its signature and
+ * returns its `sub`. Signature and expiry verification stay with the upstream
+ * identity check; this only refuses tokens that are plainly not a signed-in
+ * user's (for example `role: service_role`) before they are ever sent.
+ */
+function userTokenSubject(token: string): string {
+  const parts = token.split('.');
+  if (parts.length !== 3 || !parts.every((part) => JWT_SEGMENT_PATTERN.test(part))) {
+    invalidConfig();
+  }
+  let payload: unknown;
+  try {
+    payload = JSON.parse(
+      new TextDecoder('utf-8', { fatal: true }).decode(Buffer.from(parts[1] ?? '', 'base64url')),
+    );
+  } catch {
+    invalidConfig();
+  }
+  if (
+    !isRecord(payload) ||
+    payload.role !== USER_TOKEN_ROLE ||
+    typeof payload.sub !== 'string' ||
+    !TOKEN_SUBJECT_PATTERN.test(payload.sub)
+  ) {
+    invalidConfig();
+  }
+  return payload.sub;
+}
+
 function toIso(value: unknown): string {
   if (typeof value !== 'string') malformed();
   const time = Date.parse(value);
@@ -157,10 +195,14 @@ export function createUserScopedStorageClient(
   if (!checkStorageBucketId(config.bucket).ok) invalidConfig();
   const key = config.credentials.projectPublishableKey?.trim();
   const token = config.credentials.userAccessToken?.trim();
-  // The publishable key is not a JWT; the user token must be one. A JWT in the
-  // key slot (for example a privileged project key) is refused outright.
-  if (!key || !token || key === token || key.split('.').length === 3) invalidConfig();
-  if (token.split('.').length !== 3) invalidConfig();
+  // Only an `sb_publishable_` key may fill the key slot. Secret keys (any case)
+  // and JWT-shaped keys (for example a legacy privileged project key) are refused.
+  if (!key || !token || key === token) invalidConfig();
+  if (SECRET_KEY_PATTERN.test(key)) invalidConfig();
+  if (!PUBLISHABLE_KEY_PATTERN.test(key)) invalidConfig();
+  if (key.split('.').length === 3) invalidConfig();
+  // The user token must be a JWT whose (unverified) role is `authenticated`.
+  userTokenSubject(token);
   const fetchImplementation = config.fetch ?? globalThis.fetch;
   const bucket = config.bucket;
   const baseHeaders = Object.freeze({ Authorization: `Bearer ${token}`, apikey: key });
