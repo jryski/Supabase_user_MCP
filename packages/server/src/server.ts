@@ -1,17 +1,18 @@
-import { McpServer, type JSONRPCMessage, type Transport } from '@modelcontextprotocol/server';
+import { type JSONRPCMessage, McpServer, type Transport } from '@modelcontextprotocol/server';
 import {
+  ARTIFACT_INSPECTION_TOOLS,
   COMPATIBILITY_PROBE_TOOL,
   CompatibilityProbeOutputSchema,
   createReadToolMcpResult,
   MAX_REQUEST_ID_BYTES,
   MAX_RESPONSE_BYTES,
-  ARTIFACT_INSPECTION_TOOLS,
   MEMORY_GET_TOOL,
   MEMORY_LIST_RECENT_TOOL,
   MEMORY_RETRIEVE_TOOL,
   MEMORY_SEARCH_TOOL,
   SESSION_CAPABILITIES_GET_TOOL,
 } from '@supabase-user-mcp/contracts';
+import { type TestMarkerSeam, registerTestMarkerTool } from './test-marker.js';
 import {
   type ArtifactMcpRegistrationConfig,
   prepareArtifactMcpRegistration,
@@ -21,8 +22,8 @@ import { createMemoryGet } from './memory-get.js';
 import { createMemoryListRecent } from './memory-list-recent.js';
 import { createMemoryRetrieve } from './memory-retrieve.js';
 import { createMemorySearch } from './memory-search.js';
-import { createSessionCapabilitiesGet } from './session-capabilities-get.js';
 import type { ReadToolGovernancePolicy, ReadToolOperationalEvent } from './read-tool-governor.js';
+import { createSessionCapabilitiesGet } from './session-capabilities-get.js';
 
 export const SERVER_NAME = 'supabase-user-mcp';
 export const SERVER_VERSION = '0.1.0-alpha.1';
@@ -35,6 +36,11 @@ export interface ReadOnlyServerOptions {
   readonly artifactRegistration?: ArtifactMcpRegistrationConfig;
   /** Opt-in draft two-tool registration for synthetic contract tests only. */
   readonly registerDraftTwoTools?: boolean;
+  /**
+   * TEST-only marker tool. Omitted by the default CLI. Evidence from the
+   * marker table does not cover other surfaces.
+   */
+  readonly testMarker?: TestMarkerSeam;
 }
 
 /** Guarded read-only product server; must be a real {@link McpServer} for process stdio negotiation. */
@@ -225,6 +231,7 @@ export async function createReadOnlyServer(
     requestId,
     principalId: identity.principalId,
     signal,
+    ...(identity.clientId === undefined ? {} : { clientId: identity.clientId }),
     ...(options.emitOperationalEvent === undefined
       ? {}
       : { emitOperationalEvent: options.emitOperationalEvent }),
@@ -329,7 +336,80 @@ export async function createReadOnlyServer(
   }
 
   artifactRegistration?.register(server);
+  if (options.testMarker !== undefined) {
+    registerTestMarkerTool(server, options.testMarker);
+  }
 
+  const connectWithBoundedTransport = server.connect.bind(server);
+  server.connect = async (transport: Transport) =>
+    connectWithBoundedTransport(new BoundedReadOnlyTransport(transport));
+  return server;
+}
+
+export interface AuthorizationPendingServerOptions {
+  /**
+   * Starts (or restarts) the one-time downstream authorization for the
+   * already-verified principal. Called only inside a tool call, never on
+   * initialize or tools/list.
+   */
+  readonly beginAuthorization: () => {
+    readonly authorizationUrl: string;
+    readonly expiresAtMs: number;
+  };
+  readonly now?: () => number;
+}
+
+/**
+ * Server answered before the user's downstream data grant exists (#110).
+ *
+ * Declares exactly the three default memory tools with the same metadata and
+ * schemas as {@link createReadOnlyServer}, so a client's cached tool list stays
+ * valid after authorization. This parity holds only while the read handler
+ * mounts the default three tools (no draft or artifact tools); a test asserts
+ * the two tool lists are equal. It holds no data client: every tool call
+ * returns an error result carrying the authorization link, and nothing else.
+ * `isError: true` is what exempts that result from the declared outputSchema.
+ */
+export function createAuthorizationPendingServer(
+  options: AuthorizationPendingServerOptions,
+): ReadOnlyServer {
+  const now = options.now ?? Date.now;
+  const server = new McpServer(
+    { name: SERVER_NAME, version: SERVER_VERSION },
+    {
+      instructions:
+        'Read-only user-context server. Data access is not connected yet: a tool call returns a link the user must open to approve read access, then retry.',
+    },
+  );
+  const pendingResult = () => {
+    const { authorizationUrl, expiresAtMs } = options.beginAuthorization();
+    const minutes = Math.max(1, Math.floor((expiresAtMs - now()) / 60_000));
+    return {
+      isError: true,
+      content: [
+        {
+          type: 'text' as const,
+          text:
+            'Read access to your data is not connected yet. ' +
+            `Open this link, sign in with the same account, and approve access: ${authorizationUrl} ` +
+            `The link works once and expires in about ${minutes} minute(s). ` +
+            'Then ask again.',
+        },
+      ],
+    };
+  };
+  for (const tool of [MEMORY_SEARCH_TOOL, MEMORY_GET_TOOL, MEMORY_LIST_RECENT_TOOL] as const) {
+    server.registerTool(
+      tool.name,
+      {
+        ...READ_ONLY_TOOL_METADATA[tool.name],
+        inputSchema: tool.inputSchema,
+        outputSchema: tool.outputSchema,
+        annotations: READ_ONLY_ANNOTATIONS,
+      },
+      async () => pendingResult(),
+    );
+  }
   const connectWithBoundedTransport = server.connect.bind(server);
   server.connect = async (transport: Transport) =>
     connectWithBoundedTransport(new BoundedReadOnlyTransport(transport));
