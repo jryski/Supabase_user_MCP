@@ -7,6 +7,7 @@ import {
   MAX_TOOL_EXECUTION_MS,
 } from '@supabase-user-mcp/contracts';
 
+import { classifyIssuerTransport } from './loopback-host.js';
 import { createRemoteHttpProfile, type RemoteHttpHandler } from './remote-http-profile.js';
 import type { AccessTokenRevocationAuthority } from './remote-token-verifier.js';
 import { assertBoundAuthorizationServerMetadata } from './validate-bound-authorization-server-metadata.js';
@@ -97,6 +98,8 @@ export function createRemoteHttpHandlerFromEnvironment(
   ) {
     invalid();
   }
+  const issuerTransport = classifyIssuerTransport(issuer);
+  if (issuerTransport === undefined) invalid();
   let canonicalIssuer: string;
   try {
     canonicalIssuer = canonicalizeResourceUri(issuer);
@@ -115,7 +118,7 @@ export function createRemoteHttpHandlerFromEnvironment(
     signingKey: { kind: 'jwks', jwksUrl: jwksUrlFromMetadata(options.authorizationServerMetadata) },
     revocationAuthority: options.revocationAuthority,
     authorizationServerMetadata: options.authorizationServerMetadata,
-    allowInsecureIssuer: issuer.startsWith('http://127.0.0.1'),
+    allowInsecureIssuer: issuerTransport === 'loopback-http',
     ...(options.fetch === undefined ? {} : { fetch: options.fetch }),
   });
 }

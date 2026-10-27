@@ -1,5 +1,7 @@
 import { RemoteOAuthClientIdSchema, RemotePrincipalIdSchema } from '@supabase-user-mcp/contracts';
 
+import { isLoopbackHostname } from './loopback-host.js';
+
 /** Lives in public so PostgREST can expose it to authenticated. */
 export const SOURCE_SESSION_LIVENESS_RPC = 'ari_probe_source_session_live_v1' as const;
 
@@ -37,10 +39,6 @@ export interface SourceSessionLivenessInput {
   readonly accessToken: string;
   readonly sourceSessionId: string;
   readonly aClientId: string;
-}
-
-function isLoopbackHostname(hostname: string): boolean {
-  return hostname === 'localhost' || hostname === '::1' || hostname.startsWith('127.');
 }
 
 /** https anywhere. http only when the host is loopback. */

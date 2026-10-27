@@ -573,6 +573,21 @@ describe('native user MCP adapter', () => {
     expect(passed.headers.get('x-request-id')).toBe(sentinel);
   });
 
+  it('fetches a plaintext JWKS only from an exact loopback host', () => {
+    for (const url of [
+      'http://127.0.0.1.evil.example/auth/v1/.well-known/jwks.json',
+      'http://127.0.0.1evil.example/auth/v1/.well-known/jwks.json',
+      'http://localhost.evil.example/auth/v1/.well-known/jwks.json',
+      'http://evil.example/auth/v1/.well-known/jwks.json',
+      'http://[::ffff:127.0.0.1]/auth/v1/.well-known/jwks.json',
+    ]) {
+      expect(() => handlerFor(new URL(url)), url).toThrow(NativeUserMcpConfigError);
+    }
+    expect(typeof handlerFor(new URL('http://127.0.0.1:54321/auth/v1/.well-known/jwks.json'))).toBe(
+      'function',
+    );
+  });
+
   it('rejects symmetric JWKS and JWT-shaped publishable keys', async () => {
     expect(() =>
       createNativeUserMcpHandler({

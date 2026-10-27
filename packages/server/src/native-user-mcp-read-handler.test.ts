@@ -214,6 +214,33 @@ describe('native user MCP read composition', () => {
     expect(body).not.toContain(REFRESH);
   });
 
+  it('refuses a plaintext callback whose host only looks like loopback', async () => {
+    const material = await keys();
+    const build = (downstreamRedirectUri: string) =>
+      createNativeUserMcpReadHandler({
+        resourceServer: RESOURCE,
+        supabaseUrl: SUPABASE_URL,
+        expectedClientId: A_CLIENT,
+        expectedAgentId: AGENT,
+        ingressRole: MCP_INGRESS_ROLE,
+        publishableKey: PUBLISHABLE,
+        jwks: material.jwks,
+        downstreamClientId: B_CLIENT,
+        downstreamRedirectUri,
+        fetch: async () => new Response('unexpected', { status: 500 }),
+      });
+    for (const redirect of [
+      'http://127.0.0.1.evil.example:8788/oauth/downstream/callback',
+      'http://127.0.0.1evil.example/oauth/downstream/callback',
+      'http://localhost.evil.example/oauth/downstream/callback',
+      'http://evil.example@127.0.0.1:8788/oauth/downstream/callback',
+      'http://evil.example/oauth/downstream/callback',
+    ]) {
+      expect(() => build(redirect), redirect).toThrow();
+    }
+    expect(typeof build(REDIRECT)).toBe('function');
+  });
+
   it('rejects a decoy source session and a missing agent before any handshake', async () => {
     const material = await keys();
     const handler = createNativeUserMcpReadHandler({

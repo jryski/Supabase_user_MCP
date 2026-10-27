@@ -18,6 +18,8 @@ import {
   userMetadataAttemptsAuthorization,
 } from '@supabase-user-mcp/contracts';
 
+import { isLoopbackHttpUrl } from './loopback-host.js';
+
 /**
  * G2 native-user adapter.
  *
@@ -213,11 +215,6 @@ function isJwtShaped(value: string): boolean {
   return value.split('.').length === 3;
 }
 
-function isLoopbackHttp(url: URL): boolean {
-  if (url.protocol !== 'http:') return false;
-  return url.hostname === 'localhost' || url.hostname === '::1' || url.hostname.startsWith('127.');
-}
-
 function sessionIdRejected(value: unknown): boolean {
   if (typeof value !== 'string') return true;
   if (value.length === 0 || value.trim().length === 0 || value.trim() !== value) return true;
@@ -249,7 +246,7 @@ function assertPublishableKey(value: string): string {
 function assertJwks(jwks: Exclude<SupabaseEnv['jwks'], null>): Exclude<SupabaseEnv['jwks'], null> {
   if (jwks instanceof URL) {
     if (jwks.username !== '' || jwks.password !== '' || jwks.hash !== '') invalidConfig();
-    if (jwks.protocol === 'https:' || isLoopbackHttp(jwks)) return jwks;
+    if (jwks.protocol === 'https:' || isLoopbackHttpUrl(jwks)) return jwks;
     invalidConfig();
   }
   if (!Array.isArray(jwks.keys) || jwks.keys.length === 0) invalidConfig();

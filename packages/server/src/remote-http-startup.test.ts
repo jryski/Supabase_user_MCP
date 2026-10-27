@@ -168,6 +168,50 @@ describe('remote HTTP startup', () => {
     expect(typeof handler).toBe('function');
   });
 
+  it('refuses plaintext issuers unless the parsed host is exactly 127.0.0.1', () => {
+    const authority = { inspectAccessToken: async () => 'active' as const };
+    for (const issuer of [
+      'http://127.0.0.1.evil.example/auth/v1',
+      'http://127.0.0.1.evil.example:62421/auth/v1',
+      'http://evil.example/auth/v1',
+      'http://evil.example@127.0.0.1:62421/auth/v1',
+      'http://127.0.0.1:62421@evil.example/auth/v1',
+      'http://127.0.0.1.:62421/auth/v1',
+      'http://127.1:62421/auth/v1',
+      'http://localhost:62421/auth/v1',
+      'http://[::1]:62421/auth/v1',
+      'http://[::ffff:127.0.0.1]:62421/auth/v1',
+    ]) {
+      // Some of these cannot even produce metadata; hand startup metadata that
+      // names the hostile issuer so only the startup issuer policy is tested.
+      let metadata: ReturnType<typeof createAuthorizationServerMetadata>;
+      try {
+        metadata = createAuthorizationServerMetadata(issuer);
+      } catch {
+        metadata = { ...createAuthorizationServerMetadata(ISSUER), issuer };
+      }
+      expect(
+        () =>
+          createRemoteHttpHandlerFromEnvironment({
+            env: { ...validEnv(), SUPABASE_USER_MCP_AUTHORIZATION_SERVER: issuer },
+            revocationAuthority: authority,
+            authorizationServerMetadata: metadata,
+          }),
+        issuer,
+      ).toThrow(REMOTE_HTTP_STARTUP_ERROR);
+    }
+  });
+
+  it('serves metadata for an https lookalike issuer without the insecure-issuer exception', async () => {
+    const issuer = 'https://127.0.0.1.evil.example/auth/v1';
+    const handler = createRemoteHttpHandlerFromEnvironment({
+      env: { ...validEnv(), SUPABASE_USER_MCP_AUTHORIZATION_SERVER: issuer },
+      revocationAuthority: { inspectAccessToken: async () => 'active' },
+      authorizationServerMetadata: createAuthorizationServerMetadata(issuer),
+    });
+    expect(typeof handler).toBe('function');
+  });
+
   it('rejects a missing OAuth client id or authorization-server JWKS URI', () => {
     const authority = { inspectAccessToken: async () => 'active' as const };
     const valid = validEnv();

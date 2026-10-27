@@ -13,6 +13,7 @@ import {
   DownstreamOAuthGrantStore,
 } from './downstream-oauth-grant.js';
 import { createFixedSupabaseClient } from './fixed-supabase-client.js';
+import { isLoopbackHostname, isLoopbackHttpUrl } from './loopback-host.js';
 import {
   createNativeUserMcpHandler,
   MCP_INGRESS_ROLE,
@@ -126,10 +127,6 @@ function principalBinding(principal: VerifiedNativeUserPrincipal): DownstreamHan
   };
 }
 
-function isLoopbackHostname(hostname: string): boolean {
-  return hostname === 'localhost' || hostname === '::1' || hostname.startsWith('127.');
-}
-
 /**
  * Callback GET only. Same Host rule as the remote HTTP profile: a present
  * Host must be the redirect host. http is accepted only for loopback.
@@ -185,6 +182,17 @@ export function createNativeUserMcpReadHandler(
   if (config.downstreamClientId === config.expectedClientId) invalidConfig();
   if (config.ingressRole !== MCP_INGRESS_ROLE) invalidConfig();
   const httpsBehindTerminator = config.httpsCallbackBehindTlsTerminator === true;
+  // A plaintext callback must be an exact loopback host. Lookalike domains such
+  // as `127.0.0.1.example` never reach the grant store.
+  let configuredRedirect: URL;
+  try {
+    configuredRedirect = new URL(config.downstreamRedirectUri);
+  } catch {
+    invalidConfig();
+  }
+  if (configuredRedirect.protocol === 'http:' && !isLoopbackHttpUrl(configuredRedirect)) {
+    invalidConfig();
+  }
   if (httpsBehindTerminator) {
     let redirect: URL;
     try {

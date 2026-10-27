@@ -195,4 +195,26 @@ describe('source session liveness caller', () => {
     expect(loopback).toBe(true);
     expect(fetches).toBe(1);
   });
+
+  it('refuses plaintext origins whose host only looks like loopback', async () => {
+    let fetches = 0;
+    const fetchImpl: typeof fetch = async () => {
+      fetches += 1;
+      return new Response('true', { status: 200 });
+    };
+    for (const supabaseUrl of [
+      'http://127.0.0.1.evil.example:54321',
+      'http://127.0.0.1evil.example',
+      'http://localhost.evil.example',
+      'http://evil.example@127.0.0.1:54321',
+      'http://[::ffff:127.0.0.1]:54321',
+    ]) {
+      const live = await probeSourceSessionLive(
+        { supabaseUrl, publishableKey: 'sb_publishable_test', fetch: fetchImpl },
+        { accessToken: TOKEN_B, sourceSessionId: SOURCE, aClientId: A_CLIENT },
+      );
+      expect(live, supabaseUrl).toBe(false);
+    }
+    expect(fetches).toBe(0);
+  });
 });
