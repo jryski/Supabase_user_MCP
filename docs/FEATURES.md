@@ -1,7 +1,7 @@
 # Feature Catalog
 
 - **Status:** Mixed — merged local contracts and factories; later capabilities proposed
-- **Last reviewed:** 2026-09-02
+- **Last reviewed:** 2026-09-06
 
 This catalog defines both merged foundations and the intended product surface. Each section's
 status governs its named scope. `Implemented` or `Partially implemented` does not mean that a
@@ -221,15 +221,16 @@ The exact user experience is deliberately open; the database state machine is no
 ### Remote HTTP OAuth profile
 
 - **Milestone:** M4
-- **Status:** Research / blocked
+- **Status:** Experimental (local lab only)
 
 - Current MCP HTTP protocol and protected-resource metadata.
-- Supabase Auth OAuth 2.1 integration.
-- PKCE, exact issuer and audience validation, and secure client registration strategy.
-- A standards-compliant downstream credential chain.
-- Stateless authorization and horizontally scalable request handling.
-
-Blocked by [ADR-0002](decisions/0002-remote-identity-chain.md).
+- Local Supabase Auth OAuth 2.1 + PKCE with pre-registered public clients.
+- Mandatory dual issuer/resource/`authenticated` audience validation at MCP
+  ([ADR-0005](decisions/0005-dual-resource-data-api-binding.md)). Dual audience does not
+  authorize forwarding the inbound MCP bearer to the Data API.
+- Remote Data API dispatch is fail-closed until a supported separate downstream credential exists.
+- Process-global principal-scoped rate-limit counters survive request-scoped client rebuilds.
+- Hosted live OAuth, tunnels, public listeners, and external MCP clients remain unmet.
 
 ## Governed Artifact Inspection
 
