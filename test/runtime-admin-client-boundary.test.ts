@@ -78,7 +78,9 @@ describe('runtime admin-client boundary', () => {
     expect(await offenders(files)).toEqual([]);
   });
 
-  it('does not export an Auth admin client registration helper from the PKCE client', async () => {
+  it('keeps the lab helper in test support only', async () => {
+    const lab = await readFile(join(ROOT, 'test/support/local-oauth-admin-lab.ts'), 'utf8');
+    expect(lab).toContain('/auth/v1/admin/oauth/clients');
     const client = await readFile(join(PACKAGES, 'server/src/local-oauth-pkce-client.ts'), 'utf8');
     expect(client).not.toContain('registerLocalPublicOAuthClient');
   });
