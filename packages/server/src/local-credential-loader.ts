@@ -1,11 +1,8 @@
 import { constants } from 'node:fs';
 import { open } from 'node:fs/promises';
+import { isPublishableProjectKey, isSecretProjectKey } from './publishable-key.js';
 
 const MAX_CREDENTIAL_BYTES = 16_384;
-/** Only publishable project keys are accepted in the key slot. */
-const PUBLISHABLE_KEY_PATTERN = /^sb_publishable_[A-Za-z0-9_-]+$/;
-/** Secret project keys (any letter case) get their own refusal code. */
-const SECRET_KEY_PATTERN = /^sb_secret_/i;
 const TOKEN_SEGMENT_PATTERN = /^[A-Za-z0-9_-]+$/;
 const TOKEN_SUBJECT_PATTERN =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
@@ -180,11 +177,11 @@ export async function loadLocalCredentials(
   // Only an `sb_publishable_` key may fill the key slot. A secret key (any
   // letter case) and a JWT-shaped key keep their specific codes; every other
   // shape is refused as not publishable.
-  if (SECRET_KEY_PATTERN.test(projectPublishableKey)) fail('CREDENTIAL_SECRET_KEY');
+  if (isSecretProjectKey(projectPublishableKey)) fail('CREDENTIAL_SECRET_KEY');
   if (projectPublishableKey === userAccessToken || projectPublishableKey.split('.').length === 3) {
     fail('CREDENTIAL_CONFLATED');
   }
-  if (!PUBLISHABLE_KEY_PATTERN.test(projectPublishableKey)) fail('CREDENTIAL_KEY_NOT_PUBLISHABLE');
+  if (!isPublishableProjectKey(projectPublishableKey)) fail('CREDENTIAL_KEY_NOT_PUBLISHABLE');
   const expiresAt = parseTokenExpiry(userAccessToken);
   if (expiresAt <= Math.floor((options.now?.() ?? Date.now()) / 1000)) {
     fail('CREDENTIAL_TOKEN_EXPIRED');
