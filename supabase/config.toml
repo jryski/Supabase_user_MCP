@@ -39,6 +39,17 @@ jwt_expiry = 3600
 minimum_password_length = 8
 password_requirements = "lower_upper_letters_digits"
 
+[auth.oauth_server]
+enabled = true
+authorization_url_path = "/oauth/consent"
+allow_dynamic_registration = false
+
+# In-lab only: bind OAuth access tokens to the disposable MCP resource URI.
+# Password-grant M2 tokens have no top-level client_id and are left unchanged.
+[auth.hook.custom_access_token]
+enabled = true
+uri = "pg-functions://postgres/policy_lab/custom_access_token_hook"
+
 [storage]
 enabled = true
 file_size_limit = "8MiB"
