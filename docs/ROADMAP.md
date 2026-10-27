@@ -6,11 +6,19 @@
 
 ## Active execution slice
 
+The 2026-10-27 priority is [native-first integration](NATIVE_FIRST.md): reuse maintained
+Supabase/MCP mechanics, preserve policy and identity controls, then finish storage
+[issue #123](https://github.com/jryski/Supabase_user_MCP/issues/123) and application-write
+[epic #111](https://github.com/jryski/Supabase_user_MCP/issues/111). Candidate code,
+synthetic evidence and deployed behavior remain distinct. The completed local pilot
+and artifact track below retain their historical scope; they are not a reason to
+continue duplicate OAuth/transport development.
+
 The local-stdio, read-only v0.1 pilot described in
 [IMPLEMENTATION_PLAN.md](IMPLEMENTATION_PLAN.md) is complete for its experimental synthetic profile;
 [epic #19](https://github.com/jryski/Supabase_user_MCP/issues/19) is closed.
 
-The active extension is [issue #34](https://github.com/jryski/Supabase_user_MCP/issues/34),
+The retained artifact-inspection extension is [issue #34](https://github.com/jryski/Supabase_user_MCP/issues/34),
 Governed Artifact Inspection. S0 contracts, the synthetic S1 Storage/RLS laboratory, S1b
 chunk/Merkle calibration, the M1 identity prerequisite, the synthetic/local S2 fixed inspector, S3
 optional MCP registration/Storage closure, bounded S4 deterministic Markdown line/heading integration,
