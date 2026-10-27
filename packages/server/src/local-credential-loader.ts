@@ -1,7 +1,12 @@
 import { constants } from 'node:fs';
 import { open } from 'node:fs/promises';
+import { isPublishableProjectKey, isSecretProjectKey } from './publishable-key.js';
 
 const MAX_CREDENTIAL_BYTES = 16_384;
+const TOKEN_SEGMENT_PATTERN = /^[A-Za-z0-9_-]+$/;
+const TOKEN_SUBJECT_PATTERN =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+const USER_TOKEN_ROLE = 'authenticated';
 
 export type LocalCredentialErrorCode =
   | 'CREDENTIAL_FILE_MISSING'
@@ -15,6 +20,8 @@ export type LocalCredentialErrorCode =
   | 'CREDENTIAL_SCHEMA_INVALID'
   | 'CREDENTIAL_BLANK'
   | 'CREDENTIAL_CONFLATED'
+  | 'CREDENTIAL_SECRET_KEY'
+  | 'CREDENTIAL_KEY_NOT_PUBLISHABLE'
   | 'CREDENTIAL_TOKEN_INVALID'
   | 'CREDENTIAL_TOKEN_EXPIRED';
 
@@ -57,19 +64,33 @@ const defaultPermissionInspector: PermissionInspector = (_path, mode, ownerUid) 
   return ownerUid === currentUid && (mode & 0o077) === 0 ? 'secure' : 'insecure';
 };
 
+/**
+ * Decodes the user access token payload WITHOUT verifying its signature and
+ * returns its `exp`. The token must be a signed-in user's: `role` exactly
+ * `authenticated` and a lowercase UUID `sub`. Signature verification stays
+ * with the upstream identity check; this only refuses tokens that are plainly
+ * not a user's (for example `service_role` or `anon`) before they are used.
+ */
 function parseTokenExpiry(token: string): number {
   const parts = token.split('.');
-  if (parts.length !== 3 || parts.some((part) => part.length === 0)) {
+  if (parts.length !== 3 || !parts.every((part) => TOKEN_SEGMENT_PATTERN.test(part))) {
     fail('CREDENTIAL_TOKEN_INVALID');
   }
   try {
-    const payload: unknown = JSON.parse(Buffer.from(parts[1] ?? '', 'base64url').toString('utf8'));
+    const payload: unknown = JSON.parse(
+      new TextDecoder('utf-8', { fatal: true }).decode(Buffer.from(parts[1] ?? '', 'base64url')),
+    );
     if (
       typeof payload !== 'object' ||
       payload === null ||
       !('exp' in payload) ||
       typeof payload.exp !== 'number' ||
-      !Number.isSafeInteger(payload.exp)
+      !Number.isSafeInteger(payload.exp) ||
+      !('role' in payload) ||
+      payload.role !== USER_TOKEN_ROLE ||
+      !('sub' in payload) ||
+      typeof payload.sub !== 'string' ||
+      !TOKEN_SUBJECT_PATTERN.test(payload.sub)
     ) {
       fail('CREDENTIAL_TOKEN_INVALID');
     }
@@ -153,9 +174,14 @@ export async function loadLocalCredentials(
   const projectPublishableKey = record.projectPublishableKey.trim();
   const userAccessToken = record.userAccessToken.trim();
   if (projectPublishableKey.length === 0 || userAccessToken.length === 0) fail('CREDENTIAL_BLANK');
+  // Only an `sb_publishable_` key may fill the key slot. A secret key (any
+  // letter case) and a JWT-shaped key keep their specific codes; every other
+  // shape is refused as not publishable.
+  if (isSecretProjectKey(projectPublishableKey)) fail('CREDENTIAL_SECRET_KEY');
   if (projectPublishableKey === userAccessToken || projectPublishableKey.split('.').length === 3) {
     fail('CREDENTIAL_CONFLATED');
   }
+  if (!isPublishableProjectKey(projectPublishableKey)) fail('CREDENTIAL_KEY_NOT_PUBLISHABLE');
   const expiresAt = parseTokenExpiry(userAccessToken);
   if (expiresAt <= Math.floor((options.now?.() ?? Date.now()) / 1000)) {
     fail('CREDENTIAL_TOKEN_EXPIRED');

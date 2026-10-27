@@ -10,15 +10,57 @@ the first public package is released.
 
 ### Added
 
+- Draft G2 native-user fetch adapter. Pins `@supabase/server@1.9.2` and verifies Token A
+  with the stable nested `withOAuthProtectedResource(withSupabase({ auth: 'user' }))` form.
+  The bare adapter does not hold Token B, so its Data API dispatch stays
+  `downstream_credential_unresolved`. An opt-in read composition binds a separate grant B
+  (PKCE, memory-only custody), checks source-session liveness with B before every dispatch
+  ([`sql/liveness/source_session_live_v1.sql`](sql/liveness/source_session_live_v1.sql),
+  not a migration), and runs the fixed read tools with B. This does not complete issue #62 and does not add an MCP issuer. See
+  [G2 evidence](docs/evidence/G2_NATIVE_USER_MCP.md).
+- The remote pilot reads an optional `SUPABASE_USER_MCP_STORAGE_BUCKET` (a bucket name
+  only, unset by default). When set, a session whose grant B holds `storage:read` lists the
+  storage read tools. The pilot never registers `storage_put` or `storage_delete`, even
+  with `storage:write`. See the [remote pilot guide](docs/remote-pilot/NATIVE-USER-MCP-REMOTE-PILOT.md).
 - Opt-in candidate contracts for `memory_retrieve` and `session_capabilities_get`,
   reusing the existing read parser, result renderer and governance checks.
 - Synthetic regressions for contradictory results and six fresh-process MCP
   scenarios. Default startup continues to expose the original three memory tools.
 - [Controlled-client candidate guide](docs/status/2026-09-15-controlled-client-candidate.md),
   separating synthetic validation from live authorization and deployment.
+- Experimental local remote HTTP + OAuth 2.1 scaffolding: JWKS verification, PKCE S256, exact
+  redirects, live access-token revocation, bounded ingress (including TRACE/malformed-Host
+  Request-construction failures), and fail-closed Data API dispatch in the default remote profile.
+  Dual audience does not authorize MCP bearer passthrough. Durable downstream-credential custody and
+  hosted live OAuth are unmet. See [ADR-0005](docs/decisions/0005-dual-resource-data-api-binding.md)
+  and [issue 62 evidence](docs/evidence/ISSUE_62_REMOTE_OAUTH_HTTP.md).
+
+### Changed
+
+- Upgraded `@supabase/server` 1.7.2 → 1.9.2 (pulls `@supabase/middleware` 1.0.0),
+  `@modelcontextprotocol/server`, `client` and `core` 2.0.0 → 2.4.0, and `zod`
+  4.4.3 → 4.6.7. `@supabase/supabase-js` stays at 2.117.2.
+- The native adapter no longer passes a placeholder admin secret. `@supabase/server`
+  1.9.2 builds its admin client lazily, and the adapter passes an empty secret key set.
+
+### Security
+
+- Every MCP server sets `maxToolInputElements` (`MCP_MAX_TOOL_INPUT_ELEMENTS`, 32) and
+  every MCP HTTP handler sets `maxRequestBodySize` (`MCP_MAX_REQUEST_BODY_BYTES`,
+  65,536), addressing GHSA-46jr-4wx8-v453.
+- The downstream OAuth redirect accepts plain `http` only for an exact loopback host
+  (`localhost`, a canonical `127.0.0.0/8` address, or `[::1]`). Look-alike hosts such as
+  `127.0.0.1.evil.example` were accepted before and are now refused. The grant store and
+  the read handler share one rule for this check, so a `[::1]` redirect is accepted at
+  startup and at the callback alike.
+- The storage client's key check reuses the shared publishable-key allowlist instead of a
+  local copy. Accepted and refused keys are unchanged.
 
 ### Fixed
 
+- Native-user Token A must use configured `role=mcp_ingress`. `role=authenticated`
+  is rejected. A nil or empty `session_id` is rejected. This change does not create the
+  `mcp_ingress` role or install an Auth hook. No live probe was run.
 - Read-only stdio factory returns the SDK server required for modern negotiation,
   while preserving bounded transport checks. The former connect/close-only wrapper
   prevented discovery before tool calls. This correction is unreleased.

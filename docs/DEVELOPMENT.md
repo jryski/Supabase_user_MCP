@@ -21,11 +21,11 @@ fixtures must be synthetic.
 | Node.js | `22.20.0` | Pinned runtime |
 | npm | `11.19.0` | Pinned package manager |
 | TypeScript | `7.0.2` | Strict compiler and project references |
-| MCP server SDK | `@modelcontextprotocol/server@2.0.0` | Modern stdio server |
-| MCP client SDK | `@modelcontextprotocol/client@2.0.0` | Compatibility harness |
+| MCP server SDK | `@modelcontextprotocol/server@2.4.0` | Modern stdio server |
+| MCP client SDK | `@modelcontextprotocol/client@2.4.0` | Compatibility harness |
 | Supabase Auth client | `@supabase/auth-js@2.112.4` | Synthetic M2 sign-in only |
 | Supabase CLI | `2.115.0` | Synthetic local Auth/PostgREST/RLS lifecycle |
-| Zod | `4.4.3` | Runtime input/output contracts |
+| Zod | `4.6.7` | Runtime input/output contracts |
 | Vitest | `4.1.10` | Unit and stdio compatibility tests |
 | Biome | `2.5.8` | Formatting and linting |
 

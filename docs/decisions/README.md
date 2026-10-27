@@ -8,9 +8,11 @@ be rediscovered or silently reversed.
 | ADR | Title | Status |
 | --- | --- | --- |
 | [0001](0001-reference-implementation-language.md) | Reference implementation language | Accepted |
-| [0002](0002-remote-identity-chain.md) | Remote identity and downstream token chain | Proposed / blocking |
+| [0002](0002-remote-identity-chain.md) | Remote identity and downstream token chain | Accepted stdio-first / production-remote-block; mechanism in [0005](0005-dual-resource-data-api-binding.md) |
 | [0003](0003-local-credential-and-protocol-policy.md) | Local credential and protocol policy | Accepted |
 | [0004](0004-narrow-upstream-mcp-reuse.md) | Narrow upstream Supabase MCP reuse | Accepted |
+| [0005](0005-dual-resource-data-api-binding.md) | Dual resource and Data API binding | Proposed — Option A rejected; opt-in grant-B read composition (Option D) for TEST and pilot use; default remote profile fail-closed |
+| [0009](0009-storage-rls-option-a.md) | Storage RLS layout, option A (assumes option A; pending RLS layout decision) | Proposed |
 
 ## Process
 
