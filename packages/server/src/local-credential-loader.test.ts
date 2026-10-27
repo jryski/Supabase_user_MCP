@@ -8,7 +8,7 @@ import {
   type PermissionInspector,
 } from './local-credential-loader.js';
 
-const SUBJECT = 'abcdef01-2345-4678-9abc-def012345678';
+const SUBJECT = 'abcdef01-2345-4678-9123-456789abcdef';
 const FUTURE_EXP = Math.floor(Date.now() / 1000) + 3600;
 
 /** Synthetic, unsigned token shape assembled at runtime; never a real credential. */
