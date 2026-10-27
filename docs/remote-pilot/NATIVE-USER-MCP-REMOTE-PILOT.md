@@ -68,7 +68,7 @@ These are inputs, not facts established by this change:
 | `SUPABASE_USER_MCP_RESOURCE_URI` | `https://<host>/mcp` |
 | `SUPABASE_USER_MCP_SUPABASE_URL` | `https://<project>.supabase.co` |
 | `SUPABASE_USER_MCP_JWKS_URL` | https JWKS on the project origin |
-| `SUPABASE_USER_MCP_PUBLISHABLE_KEY` | project publishable key |
+| `SUPABASE_USER_MCP_PUBLISHABLE_KEY` | project publishable key, exactly `sb_publishable_<token chars>` with no padding |
 | `SUPABASE_USER_MCP_A_CLIENT_ID` | client A id |
 | `SUPABASE_USER_MCP_B_CLIENT_ID` | client B id (must differ from A) |
 | `SUPABASE_USER_MCP_B_REDIRECT_URI` | `https://<host>/oauth/downstream/callback` |
@@ -78,6 +78,9 @@ These are inputs, not facts established by this change:
 Startup fails closed on any missing or insecure value, on a redirect off the
 resource host, on a JWKS off the project origin, on any argv, and if a
 service-role, secret-key, credential-file, or user-bearer variable is set.
+The key slot accepts only an `sb_publishable_` key. A secret key (`sb_secret_`
+in any letter case), a legacy JWT-shaped anon key, or any other shape fails
+startup with a fixed error that never contains the key.
 
 Run after build: `node packages/server/dist/native-user-mcp-remote-pilot-cli.js`.
 The listener binds `127.0.0.1` only.

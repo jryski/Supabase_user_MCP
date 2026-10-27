@@ -38,6 +38,29 @@ const B_SESSION = '33333333-3333-4333-8333-333333333333';
 const PUBLISHABLE = 'sb_publishable_pilot_test_not_a_secret';
 const REFRESH = 'refresh-sentinel-must-not-remain';
 
+// Remote key-slot cases, built at runtime. Synthetic only; none is a credential.
+const REMOTE_KEY_SECRET_SENTINEL = ['sb', 'SeCrEt', 'remote_key_sentinel_must_not_echo'].join('_');
+const REMOTE_KEY_LEGACY_ANON = [
+  Buffer.from(JSON.stringify({ alg: 'HS256', typ: 'JWT' })).toString('base64url'),
+  Buffer.from(JSON.stringify({ role: 'anon' })).toString('base64url'),
+  'synthetic-signature',
+].join('.');
+const REMOTE_KEY_REFUSED: ReadonlyArray<readonly [string, string]> = [
+  ['secret key, mixed case', REMOTE_KEY_SECRET_SENTINEL],
+  ['secret key, upper case', 'SB_SECRET_REMOTE_KEY_SENTINEL'],
+  ['secret key, padded', `  ${['sb', 'secret', 'padded_sentinel'].join('_')}\t`],
+  ['publishable key, padded', ' sb_publishable_remote_padded '],
+  ['legacy JWT-shaped anon key', REMOTE_KEY_LEGACY_ANON],
+  ['empty', ''],
+  ['blank', '   '],
+  ['lookalike prefix', 'sb_publishab1e_remote_lookalike'],
+  ['lookalike case', 'SB_PUBLISHABLE_remote_lookalike'],
+  ['zero-width lookalike', 'sb_publishable\u200b_remote_lookalike'],
+  ['bare prefix', 'sb_publishable_'],
+  ['unprefixed', 'synthetic-remote-key'],
+];
+const REMOTE_KEY_ACCEPTED = 'sb_publishable_remote_valid_Key-123';
+
 async function keys() {
   const { privateKey, publicKey } = await generateKeyPair('ES256', { extractable: true });
   const jwk = await exportJWK(publicKey);
@@ -486,5 +509,25 @@ describe('native user MCP remote pilot: environment entrypoint', () => {
     expect(() =>
       createNativeUserMcpRemotePilotFromEnvironment({ env: validEnv(), argv: ['--debug'] }),
     ).toThrow(NativeUserMcpConfigError);
+  });
+  it('accepts only an sb_publishable_ project key from the environment', () => {
+    for (const [label, key] of REMOTE_KEY_REFUSED) {
+      let caught: unknown;
+      try {
+        createNativeUserMcpRemotePilotFromEnvironment({
+          env: { ...validEnv(), [PUBLISHABLE_KEY_ENV]: key },
+        });
+      } catch (error) {
+        caught = error;
+      }
+      expect(caught, label).toBeInstanceOf(NativeUserMcpConfigError);
+      const error = caught as Error;
+      const rendered = `${error.message} ${error.stack ?? ''} ${JSON.stringify(error)}`;
+      if (key.trim().length > 0) expect(rendered, label).not.toContain(key.trim());
+    }
+    const pilot = createNativeUserMcpRemotePilotFromEnvironment({
+      env: { ...validEnv(), [PUBLISHABLE_KEY_ENV]: REMOTE_KEY_ACCEPTED },
+    });
+    expect(typeof pilot.handler).toBe('function');
   });
 });

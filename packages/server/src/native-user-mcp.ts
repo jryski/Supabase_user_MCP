@@ -19,6 +19,7 @@ import {
 } from '@supabase-user-mcp/contracts';
 
 import { isLoopbackHttpUrl } from './loopback-host.js';
+import { isPublishableProjectKey, isSecretProjectKey } from './publishable-key.js';
 
 /**
  * G2 native-user adapter.
@@ -238,11 +239,17 @@ function assertAgentId(value: string | undefined): string | undefined {
   return value;
 }
 
+/**
+ * Only an untrimmed `sb_publishable_` key of at most 256 characters is
+ * accepted. Secret keys (any letter case), legacy JWT-shaped keys, padding and
+ * every other shape fail closed with the fixed config error, which never
+ * carries the key.
+ */
 function assertPublishableKey(value: string): string {
-  const key = value.trim();
-  if (key.length === 0 || key.length > 256 || key !== value || isJwtShaped(key)) invalidConfig();
-  if (/\s/u.test(key)) invalidConfig();
-  return key;
+  if (value.length === 0 || value.length > 256 || value !== value.trim()) invalidConfig();
+  if (isSecretProjectKey(value)) invalidConfig();
+  if (!isPublishableProjectKey(value)) invalidConfig();
+  return value;
 }
 
 function assertJwks(jwks: Exclude<SupabaseEnv['jwks'], null>): Exclude<SupabaseEnv['jwks'], null> {

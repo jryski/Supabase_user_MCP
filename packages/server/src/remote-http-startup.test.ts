@@ -19,6 +19,29 @@ import {
   readBoundedIncomingMessage,
 } from './remote-http-startup.js';
 
+// Remote key-slot cases, built at runtime. Synthetic only; none is a credential.
+const REMOTE_KEY_SECRET_SENTINEL = ['sb', 'SeCrEt', 'remote_key_sentinel_must_not_echo'].join('_');
+const REMOTE_KEY_LEGACY_ANON = [
+  Buffer.from(JSON.stringify({ alg: 'HS256', typ: 'JWT' })).toString('base64url'),
+  Buffer.from(JSON.stringify({ role: 'anon' })).toString('base64url'),
+  'synthetic-signature',
+].join('.');
+const REMOTE_KEY_REFUSED: ReadonlyArray<readonly [string, string]> = [
+  ['secret key, mixed case', REMOTE_KEY_SECRET_SENTINEL],
+  ['secret key, upper case', 'SB_SECRET_REMOTE_KEY_SENTINEL'],
+  ['secret key, padded', `  ${['sb', 'secret', 'padded_sentinel'].join('_')}\t`],
+  ['publishable key, padded', ' sb_publishable_remote_padded '],
+  ['legacy JWT-shaped anon key', REMOTE_KEY_LEGACY_ANON],
+  ['empty', ''],
+  ['blank', '   '],
+  ['lookalike prefix', 'sb_publishab1e_remote_lookalike'],
+  ['lookalike case', 'SB_PUBLISHABLE_remote_lookalike'],
+  ['zero-width lookalike', 'sb_publishable\u200b_remote_lookalike'],
+  ['bare prefix', 'sb_publishable_'],
+  ['unprefixed', 'synthetic-remote-key'],
+];
+const REMOTE_KEY_ACCEPTED = 'sb_publishable_remote_valid_Key-123';
+
 const ISSUER = 'http://127.0.0.1:62421/auth/v1';
 const CLIENT = 'smp-lab-inspector';
 
@@ -157,6 +180,35 @@ describe('remote HTTP startup', () => {
         }),
       ).toThrow(REMOTE_HTTP_STARTUP_ERROR);
     }
+  });
+
+  it('accepts only an sb_publishable_ project key and never echoes a refused key', () => {
+    const metadata = createAuthorizationServerMetadata(ISSUER);
+    const authority = { inspectAccessToken: async () => 'active' as const };
+    for (const [label, key] of REMOTE_KEY_REFUSED) {
+      let caught: unknown;
+      try {
+        createRemoteHttpHandlerFromEnvironment({
+          env: { ...validEnv(), SUPABASE_USER_MCP_PUBLISHABLE_KEY: key },
+          revocationAuthority: authority,
+          authorizationServerMetadata: metadata,
+        });
+      } catch (error) {
+        caught = error;
+      }
+      expect(caught, label).toBeInstanceOf(Error);
+      const error = caught as Error;
+      expect(error.message, label).toBe(REMOTE_HTTP_STARTUP_ERROR);
+      const rendered = `${error.message} ${error.stack ?? ''} ${JSON.stringify(error)}`;
+      if (key.trim().length > 0) expect(rendered, label).not.toContain(key.trim());
+    }
+    expect(
+      typeof createRemoteHttpHandlerFromEnvironment({
+        env: { ...validEnv(), SUPABASE_USER_MCP_PUBLISHABLE_KEY: REMOTE_KEY_ACCEPTED },
+        revocationAuthority: authority,
+        authorizationServerMetadata: metadata,
+      }),
+    ).toBe('function');
   });
 
   it('builds a JWKS-only loopback handler without a user bearer cache or HMAC secret', () => {

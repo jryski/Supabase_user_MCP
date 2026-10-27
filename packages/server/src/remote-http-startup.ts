@@ -8,6 +8,7 @@ import {
 } from '@supabase-user-mcp/contracts';
 
 import { classifyIssuerTransport } from './loopback-host.js';
+import { isPublishableProjectKey, isSecretProjectKey } from './publishable-key.js';
 import { createRemoteHttpProfile, type RemoteHttpHandler } from './remote-http-profile.js';
 import type { AccessTokenRevocationAuthority } from './remote-token-verifier.js';
 import { assertBoundAuthorizationServerMetadata } from './validate-bound-authorization-server-metadata.js';
@@ -93,8 +94,17 @@ export function createRemoteHttpHandlerFromEnvironment(
     typeof issuer !== 'string' ||
     typeof origin !== 'string' ||
     typeof publishableKey !== 'string' ||
-    typeof expectedClientId !== 'string' ||
-    publishableKey.split('.').length === 3
+    typeof expectedClientId !== 'string'
+  ) {
+    invalid();
+  }
+  // Only an untrimmed `sb_publishable_` key is accepted. Secret keys (any
+  // letter case), legacy JWT-shaped keys, padding and every other shape fail
+  // closed with the fixed startup error, which never carries the key.
+  if (
+    publishableKey !== publishableKey.trim() ||
+    isSecretProjectKey(publishableKey) ||
+    !isPublishableProjectKey(publishableKey)
   ) {
     invalid();
   }

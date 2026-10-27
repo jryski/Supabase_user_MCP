@@ -34,6 +34,29 @@ const LEGACY_JWT_SHAPED_PUBLISHABLE_KEY = [
 ].join('.');
 const ENV_SECRET_SENTINEL = 'sb_secret_env_sentinel_must_not_leak';
 
+// Remote key-slot cases, built at runtime. Synthetic only; none is a credential.
+const REMOTE_KEY_SECRET_SENTINEL = ['sb', 'SeCrEt', 'remote_key_sentinel_must_not_echo'].join('_');
+const REMOTE_KEY_LEGACY_ANON = [
+  Buffer.from(JSON.stringify({ alg: 'HS256', typ: 'JWT' })).toString('base64url'),
+  Buffer.from(JSON.stringify({ role: 'anon' })).toString('base64url'),
+  'synthetic-signature',
+].join('.');
+const REMOTE_KEY_REFUSED: ReadonlyArray<readonly [string, string]> = [
+  ['secret key, mixed case', REMOTE_KEY_SECRET_SENTINEL],
+  ['secret key, upper case', 'SB_SECRET_REMOTE_KEY_SENTINEL'],
+  ['secret key, padded', `  ${['sb', 'secret', 'padded_sentinel'].join('_')}\t`],
+  ['publishable key, padded', ' sb_publishable_remote_padded '],
+  ['legacy JWT-shaped anon key', REMOTE_KEY_LEGACY_ANON],
+  ['empty', ''],
+  ['blank', '   '],
+  ['lookalike prefix', 'sb_publishab1e_remote_lookalike'],
+  ['lookalike case', 'SB_PUBLISHABLE_remote_lookalike'],
+  ['zero-width lookalike', 'sb_publishable\u200b_remote_lookalike'],
+  ['bare prefix', 'sb_publishable_'],
+  ['unprefixed', 'synthetic-remote-key'],
+];
+const REMOTE_KEY_ACCEPTED = 'sb_publishable_remote_valid_Key-123';
+
 async function es256Jwks(): Promise<{
   readonly privateKey: Awaited<ReturnType<typeof generateKeyPair>>['privateKey'];
   readonly jwks: { keys: JWK[] };
@@ -609,5 +632,35 @@ describe('native user MCP adapter', () => {
         jwks: { keys: [{ kty: 'EC', alg: 'ES256', kid: 'g2', crv: 'P-256' }] },
       }),
     ).toThrow(NativeUserMcpConfigError);
+  });
+
+  it('accepts only an sb_publishable_ project key and never echoes a refused key', () => {
+    const jwks = { keys: [{ kty: 'EC', alg: 'ES256', kid: 'g2', crv: 'P-256' }] as JWK[] };
+    const build = (publishableKey: string) =>
+      createNativeUserMcpHandler({
+        resourceServer: RESOURCE,
+        supabaseUrl: SUPABASE_URL,
+        expectedClientId: CLIENT,
+        ingressRole: MCP_INGRESS_ROLE,
+        publishableKey,
+        jwks,
+      });
+    for (const [label, key] of [
+      ...REMOTE_KEY_REFUSED,
+      ['over 256 characters', `sb_publishable_${'a'.repeat(242)}`] as const,
+    ]) {
+      let caught: unknown;
+      try {
+        build(key);
+      } catch (error) {
+        caught = error;
+      }
+      expect(caught, label).toBeInstanceOf(NativeUserMcpConfigError);
+      const error = caught as Error;
+      const rendered = `${error.message} ${error.stack ?? ''} ${JSON.stringify(error)}`;
+      if (key.trim().length > 0) expect(rendered, label).not.toContain(key.trim());
+    }
+    expect(typeof build(REMOTE_KEY_ACCEPTED)).toBe('function');
+    expect(typeof build(`sb_publishable_${'a'.repeat(241)}`)).toBe('function');
   });
 });
