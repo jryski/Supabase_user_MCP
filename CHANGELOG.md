@@ -44,6 +44,9 @@ the first public package is released.
 - Every MCP server sets `maxToolInputElements` (`MCP_MAX_TOOL_INPUT_ELEMENTS`, 32) and
   every MCP HTTP handler sets `maxRequestBodySize` (`MCP_MAX_REQUEST_BODY_BYTES`,
   65,536), addressing GHSA-46jr-4wx8-v453.
+- The downstream OAuth redirect accepts plain `http` only for an exact loopback host
+  (`localhost`, a canonical `127.0.0.0/8` address, or `[::1]`). Look-alike hosts such as
+  `127.0.0.1.evil.example` were accepted before and are now refused.
 
 ### Fixed
 

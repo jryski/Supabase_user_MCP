@@ -12,7 +12,9 @@
 
 Issue #123 adds user-scoped Storage tools. S1 fixed the key, size, and MIME bounds. S2 added a
 user-scoped client that asks the database for the session's storage principal and capabilities
-through two RPCs, `storage_principal` and `storage_session_capabilities`, and composes every key as
+through two RPCs, `storage_principal` and `storage_session_capabilities`, reached over HTTP through
+the `public` wrappers `mcp_storage_principal_v1` and `mcp_storage_session_capabilities_v1`, and
+composes every key as
 `<principal>/<relative key>` in one server-configured bucket. Authorization must live in database
 RLS on `storage.objects`, evaluated with the caller's own token.
 
@@ -85,24 +87,24 @@ accepted until the Primary Users record the RLS layout decision.
   they expire (60 s in S1).
 - A delegated agent also needs the human's own active grant for the same capability through the
   same client (`20261027000200_storage_delegation_human_grant.sql`). One additive SELECT policy
-  lets the agent see only those grant rows. The human's membership and identity eligibility are
-  not re-checked on the agent path.
+  lets the agent see only those grant rows. The human must also be a verified human principal with
+  an active, unexpired membership on that client; two more SELECT policies let the agent see only
+  those rows.
 - Hosted Storage refuses direct SQL deletes on its tables unless `storage.allow_delete_query` is
   set. The Storage API sets it; SQL tests must set it too.
 - Workspaces are not a storage partition under option A.
-- The S2 client calls the RPCs in schema `policy_lab`, which `supabase/config.toml` does not expose
-  through the Data API. Exposing `policy_lab`, or moving the two RPCs to a narrow exposed schema, is a
-  separate decision. Until then the RPCs are unreachable over HTTP and storage tools stay off.
+- `policy_lab` stays unexposed in `supabase/config.toml`. The client calls two SECURITY INVOKER
+  wrappers in `public` (`20261027000300_storage_session_rpc_seam.sql`), executable by
+  `authenticated` only, so RLS on `policy_lab` still decides.
 
 ### Follow-up
 
 - Record the layout decision (A versus C, agent sub-prefix).
-- Decide the RPC schema exposure.
 - Run the pgTAP suite with `supabase test db` against a local stack.
 
 ## Validation
 
-`supabase/tests/database/storage_option_a_test.sql` (78 assertions),
+`supabase/tests/database/storage_option_a_test.sql` (99 assertions),
 `test/policy-lab/storage-option-a-contract.test.ts`, and the PGlite end-to-end run
 `test/storage-option-a-e2e.test.ts`. See
 [ISSUE_123_STORAGE_S4_RLS](../evidence/ISSUE_123_STORAGE_S4_RLS.md).
@@ -116,5 +118,6 @@ accepted until the Primary Users record the RLS layout decision.
 
 - `supabase/migrations/20261027000100_storage_option_a.sql`
 - `supabase/migrations/20261027000200_storage_delegation_human_grant.sql`
+- `supabase/migrations/20261027000300_storage_session_rpc_seam.sql`
 - `packages/contracts/src/storage-bounds.ts`
 - `packages/server/src/user-scoped-storage-client.ts`
