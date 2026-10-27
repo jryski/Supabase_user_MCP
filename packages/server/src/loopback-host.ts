@@ -29,6 +29,30 @@ export function isLoopbackHttpUrl(url: URL): boolean {
   );
 }
 
+/**
+ * Hostname rule for a plaintext OAuth redirect (RFC 8252 section 7.3):
+ * everything `isLoopbackHostname` accepts, plus the bracketed IPv6 loopback
+ * `[::1]`. The URL parser canonicalizes the long IPv6 form to `[::1]`.
+ * IPv4-mapped forms such as `[::ffff:127.0.0.1]` stay refused.
+ */
+export function isLoopbackRedirectHostname(hostname: string): boolean {
+  return isLoopbackHostname(hostname) || hostname === '[::1]';
+}
+
+/**
+ * Plain `http:` redirect to a loopback host, with no userinfo. The one rule
+ * shared by the downstream grant store and the read handler's config and
+ * callback checks, so both accept and refuse the same redirects.
+ */
+export function isLoopbackRedirectHttpUrl(url: URL): boolean {
+  return (
+    url.protocol === 'http:' &&
+    url.username === '' &&
+    url.password === '' &&
+    isLoopbackRedirectHostname(url.hostname)
+  );
+}
+
 /** The only plaintext authorization-server issuer host accepted at startup. */
 export const INSECURE_ISSUER_LOOPBACK_HOST = '127.0.0.1' as const;
 

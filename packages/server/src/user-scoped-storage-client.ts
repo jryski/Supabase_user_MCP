@@ -1,6 +1,7 @@
 import { checkStorageBucketId, STORAGE_MAX_LIST_ITEMS } from '@supabase-user-mcp/contracts';
 
 import type { LocalCredentials } from './local-credential-loader.js';
+import { PUBLISHABLE_KEY_PATTERN, SECRET_KEY_PATTERN } from './publishable-key.js';
 
 /**
  * Issue #123 S2: storage client that acts only as the calling user.
@@ -105,9 +106,6 @@ const MAX_SIGNED_URL_BYTES = 2048;
 /** Largest body this client will upload; the tool contract caps inline content lower. */
 const MAX_UPLOAD_BYTES = 16 * 1024;
 
-/** Only publishable project keys are accepted; every other key shape is refused. */
-const PUBLISHABLE_KEY_PATTERN = /^sb_publishable_[A-Za-z0-9_-]+$/;
-const SECRET_KEY_PATTERN = /^sb_secret_/i;
 const JWT_SEGMENT_PATTERN = /^[A-Za-z0-9_-]+$/;
 const TOKEN_SUBJECT_PATTERN =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
@@ -223,8 +221,9 @@ export function createUserScopedStorageClient(
   if (!checkStorageBucketId(config.bucket).ok) invalidConfig();
   const key = config.credentials.projectPublishableKey?.trim();
   const token = config.credentials.userAccessToken?.trim();
-  // Only an `sb_publishable_` key may fill the key slot. Secret keys (any case)
-  // and JWT-shaped keys (for example a legacy privileged project key) are refused.
+  // Only an `sb_publishable_` key may fill the key slot, using the shared
+  // allowlist in publishable-key.ts. Secret keys (any case) and JWT-shaped keys
+  // (for example a legacy privileged project key) are refused.
   if (!key || !token || key === token) invalidConfig();
   if (SECRET_KEY_PATTERN.test(key)) invalidConfig();
   if (!PUBLISHABLE_KEY_PATTERN.test(key)) invalidConfig();

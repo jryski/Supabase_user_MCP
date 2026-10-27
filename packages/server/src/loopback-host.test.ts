@@ -1,6 +1,12 @@
 import { describe, expect, it } from 'vitest';
 
-import { classifyIssuerTransport, isLoopbackHostname, isLoopbackHttpUrl } from './loopback-host.js';
+import {
+  classifyIssuerTransport,
+  isLoopbackHostname,
+  isLoopbackHttpUrl,
+  isLoopbackRedirectHostname,
+  isLoopbackRedirectHttpUrl,
+} from './loopback-host.js';
 
 const hostOf = (url: string): string => new URL(url).hostname;
 
@@ -51,6 +57,39 @@ describe('loopback host predicates', () => {
     expect(isLoopbackHostname('127.0.0.01')).toBe(false);
     expect(isLoopbackHostname('::1')).toBe(false);
     expect(isLoopbackHostname('LOCALHOST')).toBe(false);
+  });
+});
+
+describe('plaintext redirect loopback rule', () => {
+  it('accepts every loopback URL plus the bracketed IPv6 loopback', () => {
+    for (const url of [
+      'http://localhost/cb',
+      'http://127.0.0.1:8788/cb',
+      'http://127.1/cb',
+      'http://[::1]/cb',
+      'http://[::1]:8788/cb',
+      'http://[0:0:0:0:0:0:0:1]/cb',
+    ]) {
+      expect(isLoopbackRedirectHttpUrl(new URL(url)), url).toBe(true);
+    }
+    expect(isLoopbackRedirectHostname('[::1]')).toBe(true);
+  });
+
+  it('refuses lookalikes, other IPv6 forms, userinfo, and non-http schemes', () => {
+    for (const url of [
+      'http://127.0.0.1.evil.example/cb',
+      'http://localhost.evil.example/cb',
+      'http://user@[::1]/cb',
+      'http://[::1]@evil.example/cb',
+      'http://[::ffff:127.0.0.1]/cb',
+      'http://[::127.0.0.1]/cb',
+      'http://[::2]/cb',
+      'https://[::1]/cb',
+      'ftp://[::1]/cb',
+    ]) {
+      expect(isLoopbackRedirectHttpUrl(new URL(url)), url).toBe(false);
+    }
+    expect(isLoopbackRedirectHostname('::1')).toBe(false);
   });
 });
 

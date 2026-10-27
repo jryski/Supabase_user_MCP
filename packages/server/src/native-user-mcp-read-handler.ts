@@ -15,7 +15,7 @@ import {
   DownstreamOAuthGrantStore,
 } from './downstream-oauth-grant.js';
 import { createFixedSupabaseClient } from './fixed-supabase-client.js';
-import { isLoopbackHostname, isLoopbackHttpUrl } from './loopback-host.js';
+import { isLoopbackRedirectHostname, isLoopbackRedirectHttpUrl } from './loopback-host.js';
 import {
   createNativeUserMcpHandler,
   MCP_INGRESS_ROLE,
@@ -159,7 +159,7 @@ function callbackUrl(
   } catch {
     return undefined;
   }
-  const loopback = expected.protocol === 'http:' && isLoopbackHostname(expected.hostname);
+  const loopback = expected.protocol === 'http:' && isLoopbackRedirectHostname(expected.hostname);
   if (!loopback && httpsBehindTerminator && expected.protocol === 'https:') {
     if (actual.pathname !== expected.pathname) return undefined;
     if (actual.username !== '' || actual.password !== '') return 'hostile';
@@ -191,15 +191,16 @@ export function createNativeUserMcpReadHandler(
   if (config.downstreamClientId === config.expectedClientId) invalidConfig();
   if (config.ingressRole !== MCP_INGRESS_ROLE) invalidConfig();
   const httpsBehindTerminator = config.httpsCallbackBehindTlsTerminator === true;
-  // A plaintext callback must be an exact loopback host. Lookalike domains such
-  // as `127.0.0.1.example` never reach the grant store.
+  // A plaintext callback must be an exact loopback host, by the same rule the
+  // grant store applies (`isLoopbackRedirectHttpUrl`, which accepts `[::1]`).
+  // Lookalike domains such as `127.0.0.1.example` never reach the grant store.
   let configuredRedirect: URL;
   try {
     configuredRedirect = new URL(config.downstreamRedirectUri);
   } catch {
     invalidConfig();
   }
-  if (configuredRedirect.protocol === 'http:' && !isLoopbackHttpUrl(configuredRedirect)) {
+  if (configuredRedirect.protocol === 'http:' && !isLoopbackRedirectHttpUrl(configuredRedirect)) {
     invalidConfig();
   }
   if (httpsBehindTerminator) {

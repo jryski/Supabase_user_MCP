@@ -2,7 +2,10 @@ import { DOWNSTREAM_CREDENTIAL_UNRESOLVED } from '@supabase-user-mcp/contracts';
 import { exportJWK, generateKeyPair, type JWK, SignJWT } from 'jose';
 import { describe, expect, it } from 'vitest';
 
-import { DOWNSTREAM_AUTHORIZATION_REQUIRED } from './downstream-oauth-grant.js';
+import {
+  DOWNSTREAM_AUTHORIZATION_REQUIRED,
+  DownstreamOAuthGrantStore,
+} from './downstream-oauth-grant.js';
 import { MCP_INGRESS_ROLE, NativeUserMcpConfigError } from './native-user-mcp.js';
 import { createNativeUserMcpReadHandler } from './native-user-mcp-read-handler.js';
 
@@ -239,6 +242,104 @@ describe('native user MCP read composition', () => {
       expect(() => build(redirect), redirect).toThrow();
     }
     expect(typeof build(REDIRECT)).toBe('function');
+  });
+
+  it('accepts and refuses the same plaintext redirects as the grant store, including [::1]', async () => {
+    const material = await keys();
+    const accepts = (build: () => unknown) => {
+      try {
+        build();
+        return true;
+      } catch {
+        return false;
+      }
+    };
+    const viaHandler = (downstreamRedirectUri: string) =>
+      accepts(() =>
+        createNativeUserMcpReadHandler({
+          resourceServer: RESOURCE,
+          supabaseUrl: SUPABASE_URL,
+          expectedClientId: A_CLIENT,
+          expectedAgentId: AGENT,
+          ingressRole: MCP_INGRESS_ROLE,
+          publishableKey: PUBLISHABLE,
+          jwks: material.jwks,
+          downstreamClientId: B_CLIENT,
+          downstreamRedirectUri,
+          fetch: async () => new Response('unexpected', { status: 500 }),
+        }),
+      );
+    const viaStore = (redirectUri: string) =>
+      accepts(
+        () =>
+          new DownstreamOAuthGrantStore({
+            issuer: ISSUER,
+            authOrigin: SUPABASE_URL,
+            expectedBClientId: B_CLIENT,
+            expectedAgentId: AGENT,
+            redirectUri,
+            jwks: material.jwks,
+            fetch: async () => new Response('unexpected', { status: 500 }),
+          }),
+      );
+    const expected: ReadonlyArray<readonly [string, boolean]> = [
+      ['http://127.0.0.1:8788/oauth/downstream/callback', true],
+      ['http://localhost:8788/oauth/downstream/callback', true],
+      ['http://[::1]:8788/oauth/downstream/callback', true],
+      ['http://[0:0:0:0:0:0:0:1]:8788/oauth/downstream/callback', true],
+      ['http://[::ffff:127.0.0.1]:8788/oauth/downstream/callback', false],
+      ['http://[::2]:8788/oauth/downstream/callback', false],
+      ['http://user@[::1]:8788/oauth/downstream/callback', false],
+      ['http://127.0.0.1.evil.example:8788/oauth/downstream/callback', false],
+      ['http://localhost.evil.example/oauth/downstream/callback', false],
+      ['http://evil.example/oauth/downstream/callback', false],
+    ];
+    for (const [redirect, accepted] of expected) {
+      expect(viaStore(redirect), `store ${redirect}`).toBe(accepted);
+      expect(viaHandler(redirect), `handler ${redirect}`).toBe(accepted);
+    }
+  });
+
+  it('binds B through an exact [::1] callback and refuses a foreign Host', async () => {
+    const material = await keys();
+    const tokenB = await signB(material.privateKey);
+    const v6Redirect = 'http://[::1]:8788/oauth/downstream/callback';
+    let exchanges = 0;
+    const handler = createNativeUserMcpReadHandler({
+      resourceServer: RESOURCE,
+      supabaseUrl: SUPABASE_URL,
+      expectedClientId: A_CLIENT,
+      expectedAgentId: AGENT,
+      ingressRole: MCP_INGRESS_ROLE,
+      publishableKey: PUBLISHABLE,
+      jwks: material.jwks,
+      downstreamClientId: B_CLIENT,
+      downstreamRedirectUri: v6Redirect,
+      fetch: async (input) => {
+        if (String(input).endsWith('/auth/v1/oauth/token')) {
+          exchanges += 1;
+          return new Response(JSON.stringify({ access_token: tokenB, refresh_token: REFRESH }), {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+          });
+        }
+        return new Response('unexpected', { status: 500 });
+      },
+    });
+    const first = await handler(mcpPost(await signA(material.privateKey)));
+    expect(first.status).toBe(403);
+    const { handshake_id: state } = (await first.json()) as { handshake_id: string };
+    const hostile = await handler(
+      new Request(`${v6Redirect}?code=once&state=${state}`, { headers: { host: 'evil.example' } }),
+    );
+    expect(hostile.status).toBe(400);
+    expect(exchanges).toBe(0);
+    const bound = await handler(
+      new Request(`${v6Redirect}?code=once&state=${state}`, { headers: { host: '[::1]:8788' } }),
+    );
+    expect(bound.status).toBe(200);
+    expect(await bound.json()).toMatchObject({ bound: true });
+    expect(exchanges).toBe(1);
   });
 
   it('rejects a decoy source session and a missing agent before any handshake', async () => {

@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
+import { isPublishableProjectKey } from './publishable-key.js';
 import {
   createUserScopedStorageClient,
   STORAGE_RPC_SCHEMA,
@@ -147,6 +148,31 @@ describe('user-scoped storage client', () => {
       }),
     ).toThrow(expect.objectContaining({ code: 'STORAGE_CLIENT_INVALID_CONFIG' }));
     expect(calls).toBe(0);
+  });
+
+  it('accepts exactly the keys the shared publishable-key allowlist accepts', () => {
+    const corpus = [
+      PUBLISHABLE,
+      `  ${PUBLISHABLE}\t`,
+      'sb_publishable_Synthetic-Key_2',
+      'sb_publishable_',
+      'SB_PUBLISHABLE_synthetic_key',
+      'sb_publishable_synthetic key',
+      'sb_publishable\u200b_synthetic_key',
+      'sb_secret_synthetic_value',
+      'Sb_Secret_synthetic_value',
+      'synthetic_project_key',
+      '   ',
+    ];
+    for (const key of corpus) {
+      let accepted = true;
+      try {
+        construct(key);
+      } catch {
+        accepted = false;
+      }
+      expect(accepted, JSON.stringify(key)).toBe(isPublishableProjectKey(key));
+    }
   });
 
   it('accepts a padded publishable key and sends it trimmed', async () => {
