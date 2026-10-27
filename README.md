@@ -26,6 +26,9 @@ and troubleshooting. The public runtime is POSIX-only; native Windows, a public
 hosted endpoint, and a one-click installer are not available. Glama and M8ven are
 discovery listings, not evidence that those installation paths exist.
 
+The [orientation table](#orientation-for-people-and-ai-assistants) maps every
+question to its answer within two links.
+
 ## September 8, 2026: private-alpha validation
 
 A separate hosted OAuth candidate passed bounded synthetic SDK tests and actual
@@ -76,6 +79,19 @@ This repository owns **authenticated application data-plane capability**, not th
 The dependency direction is one way: this project may implement SMP-compatible semantics, but it must not redefine SMP through Supabase-specific mechanisms.
 
 A related proposed protocol lane is the **Agent Access Integrity Boundary**: establish a forward evidence boundary before agents are introduced to existing systems in situ. This repository can eventually provide one identity/capability mechanism for such deployments, but it does not itself establish the protocol claim.
+
+## Orientation for people and AI assistants
+
+| Question | Where to look |
+| --- | --- |
+| Purpose and place in the program | [Why this exists](#why-this-exists) and [Relationship to the Sovereign Memory program](#relationship-to-the-sovereign-memory-program); the [program map](https://github.com/WireSpeedComputing/sovereign-ai-os) lists every component |
+| Supported profile | Experimental local stdio, read-only, synthetic data, POSIX only ([getting started](docs/GETTING_STARTED.md)) |
+| Prerequisites and exact commands | Git, Docker with Linux containers, Bash, curl, Node.js 22.20.0, npm 11.19.0; `npm ci`, `npm run check`, `npm run test:m2` ([getting started](docs/GETTING_STARTED.md#1-run-the-reproducible-demo)) |
+| Expected allowed and denied results | Allowed own reads; denied cross-user, revoked, missing, expired and malformed credentials; one `supabase-user-mcp.m2-acceptance.v1` receipt ([getting started](docs/GETTING_STARTED.md#1-run-the-reproducible-demo)) |
+| Cleanup | Verified on exit; the last line must read `Cleanup verified: ...` ([getting started](docs/GETTING_STARTED.md#1-run-the-reproducible-demo)) |
+| Evidence and limits | [Current state](#current-state), [scope limits](#current-scope-limits), [evidence index](docs/evidence/) |
+| Source status | Merged and accepted on `main`: the local read path. Tested on review branches only: whatever an open draft PR states for its exact head. Operating observations: the [private-alpha status](docs/status/2026-09-08-private-alpha.md). Future direction: the [roadmap](#roadmap) |
+| License, contributing, security | [Apache-2.0](LICENSE), [CONTRIBUTING.md](CONTRIBUTING.md), [SECURITY.md](SECURITY.md) (this repository's private form, with an email fallback) |
 
 ## Target security thesis
 
