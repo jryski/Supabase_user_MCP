@@ -1,4 +1,5 @@
 import { randomBytes } from 'node:crypto';
+import { readFileSync } from 'node:fs';
 
 import { PGlite, type Transaction } from '@electric-sql/pglite';
 import { pgcrypto } from '@electric-sql/pglite/contrib/pgcrypto';
@@ -13,7 +14,7 @@ import {
 } from '../packages/server/src/storage-read-tools.js';
 import {
   createUserScopedStorageClient,
-  STORAGE_RPC_SCHEMA,
+  STORAGE_RPC,
   type UserScopedStorageClient,
 } from '../packages/server/src/user-scoped-storage-client.js';
 import { applyRepoMigrations, applySupabaseStub } from './support/pglite-supabase-stub.js';
@@ -32,6 +33,12 @@ const REPO_ROOT = new URL('..', import.meta.url).pathname;
 const ORIGIN = 'https://storage-e2e.invalid';
 const BUCKET = 'mcp-user-storage';
 const PUBLISHABLE_KEY = 'sb_publishable_synthetic';
+/** The Data API schemas supabase/config.toml exposes, read from the file itself. */
+const EXPOSED_SCHEMAS: readonly string[] = JSON.parse(
+  /^\[api\][\s\S]*?^schemas = (\[[^\]]*\])$/m.exec(
+    readFileSync(new URL('../supabase/config.toml', import.meta.url), 'utf8'),
+  )?.[1] ?? '[]',
+);
 const NOW = Date.parse('2026-10-27T16:00:00.000Z');
 
 const HUMAN_A = 'a1a1a1a1-0000-4000-8000-000000000001';
@@ -108,13 +115,16 @@ class PgliteStorageApi {
     if (claims.role !== 'authenticated') return json(401, {});
     const body = init?.body;
 
-    const rpc = url.pathname.match(
-      /^\/rest\/v1\/rpc\/(storage_principal|storage_session_capabilities)$/,
-    );
+    // PostgREST resolves /rpc/<name> in the Content-Profile schema, which must be exposed.
+    const rpc = url.pathname.match(/^\/rest\/v1\/rpc\/([a-z0-9_]+)$/);
     if (rpc !== null) {
-      if (headers.get('content-profile') !== STORAGE_RPC_SCHEMA) return json(406, {});
+      const profile = headers.get('content-profile') ?? 'public';
+      if (!EXPOSED_SCHEMAS.includes(profile)) return json(406, {});
+      if (profile !== 'public' || !Object.values(STORAGE_RPC).includes(rpc[1] as never)) {
+        return json(404, {});
+      }
       const value = await this.asCaller(claims, async (tx) => {
-        const result = await tx.query<{ v: unknown }>(`select policy_lab.${rpc[1]}() as v`);
+        const result = await tx.query<{ v: unknown }>(`select public.${rpc[1]}() as v`);
         return result.rows[0]?.v ?? null;
       });
       return json(200, value);

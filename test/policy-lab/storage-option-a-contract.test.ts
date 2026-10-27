@@ -102,8 +102,8 @@ describe('issue #123 S4 storage RLS (option A)', () => {
     expect(code).toContain('octet_length(s.segment) > 128');
   });
 
-  it('provides the session RPCs the S2 client calls, in its schema', () => {
-    expect(STORAGE_RPC_SCHEMA).toBe('policy_lab');
+  it('provides the session RPCs the S2 client calls, through an exposed schema', () => {
+    expect(STORAGE_RPC_SCHEMA).toBe('public');
     expect(code).toContain('create function policy_lab.storage_principal()\nreturns uuid');
     expect(code).toContain(
       'create function policy_lab.storage_session_capabilities()\nreturns jsonb',

@@ -19,7 +19,7 @@ health_timeout = "2m"
 
 [db.seed]
 enabled = true
-sql_paths = ["./seed.sql", "./seed-m2.sql"]
+sql_paths = ["./seed.sql", "./seed-m2.sql", "./seed-storage-m2.sql"]
 
 [db.migrations]
 enabled = true

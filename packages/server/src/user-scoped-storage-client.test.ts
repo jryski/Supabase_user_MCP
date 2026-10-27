@@ -56,8 +56,9 @@ const json = (value: unknown, status = 200) =>
 describe('user-scoped storage client', () => {
   it('sends only the caller user token and the publishable key on every request', async () => {
     const { client, requests } = harness((request) => {
-      if (request.url.endsWith('/rpc/storage_principal')) return json(PRINCIPAL);
-      if (request.url.endsWith('/rpc/storage_session_capabilities')) return json(['storage:read']);
+      if (request.url.endsWith('/rpc/mcp_storage_principal_v1')) return json(PRINCIPAL);
+      if (request.url.endsWith('/rpc/mcp_storage_session_capabilities_v1'))
+        return json(['storage:read']);
       if (request.url.includes('/object/list/')) return json([]);
       if (request.url.includes('/object/sign/'))
         return json({ signedURL: '/object/sign/x?token=t' });
@@ -88,6 +89,7 @@ describe('user-scoped storage client', () => {
       expect(JSON.stringify(request)).not.toMatch(/service_role|secret/i);
     }
     expect(requests[0]?.headers['Content-Profile']).toBe(STORAGE_RPC_SCHEMA);
+    expect(STORAGE_RPC_SCHEMA).toBe('public');
   });
 
   it.each([

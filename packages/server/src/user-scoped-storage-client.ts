@@ -89,8 +89,17 @@ export interface UserScopedStorageClientConfig {
   readonly fetch?: typeof globalThis.fetch;
 }
 
-/** Schema of the S4 session RPCs (`storage_principal`, `storage_session_capabilities`). */
-export const STORAGE_RPC_SCHEMA = 'policy_lab';
+/**
+ * Data API schema of the S4 session RPCs. `public` is exposed; `policy_lab` is not. The
+ * wrappers there call `policy_lab.storage_principal()` and
+ * `policy_lab.storage_session_capabilities()` as the caller.
+ */
+export const STORAGE_RPC_SCHEMA = 'public';
+/** Data API names of the session RPCs. */
+export const STORAGE_RPC = Object.freeze({
+  principal: 'mcp_storage_principal_v1',
+  sessionCapabilities: 'mcp_storage_session_capabilities_v1',
+} as const);
 const MAX_JSON_BYTES = 256 * 1024;
 const MAX_SIGNED_URL_BYTES = 2048;
 /** Largest body this client will upload; the tool contract caps inline content lower. */
@@ -259,14 +268,14 @@ export function createUserScopedStorageClient(
   const client: UserScopedStorageClient = {
     tokenSubject,
     async fetchStorageGrants(signal: AbortSignal) {
-      const value = await rpc('storage_session_capabilities', signal);
+      const value = await rpc(STORAGE_RPC.sessionCapabilities, signal);
       if (!Array.isArray(value) || value.length > 8) malformed();
       if (!value.every((entry) => typeof entry === 'string')) malformed();
       return Object.freeze([...value] as string[]);
     },
 
     async fetchStoragePrincipal(signal: AbortSignal) {
-      const value = await rpc('storage_principal', signal);
+      const value = await rpc(STORAGE_RPC.principal, signal);
       if (typeof value !== 'string') malformed();
       return value;
     },

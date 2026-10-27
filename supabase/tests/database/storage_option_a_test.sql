@@ -2,7 +2,7 @@
 -- Synthetic fixtures only; everything rolls back.
 BEGIN;
 CREATE EXTENSION IF NOT EXISTS pgtap WITH SCHEMA extensions;
-SELECT extensions.plan(93);
+SELECT extensions.plan(99);
 
 -- Fixtures (two users, two delegated agents, one denied user, one service agent).
 INSERT INTO policy_lab.principals (principal_id, principal_kind, identity_eligibility) VALUES
@@ -292,6 +292,25 @@ SELECT extensions.ok(
   EXISTS (SELECT 1 FROM storage.objects WHERE name = 'aaaaaaaa-0000-4000-8000-000000000001/notes/a.txt'),
   'user_a: no UPDATE policy, so rename had no effect');
 
+-- Data API seam: public wrappers return exactly what the policy_lab functions return, as the
+-- caller, and only authenticated may execute them. policy_lab itself stays unexposed.
+SELECT extensions.is(
+  (SELECT count(*) FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
+   WHERE n.nspname = 'public'
+     AND p.proname IN ('mcp_storage_principal_v1', 'mcp_storage_session_capabilities_v1')
+     AND NOT p.prosecdef AND p.proconfig = array['search_path=""']
+     AND has_function_privilege('authenticated', p.oid, 'EXECUTE')
+     AND NOT has_function_privilege('anon', p.oid, 'EXECUTE')
+     AND NOT has_function_privilege('service_role', p.oid, 'EXECUTE')),
+  2::bigint, 'session RPC wrappers: SECURITY INVOKER, empty search_path, authenticated only');
+SET LOCAL ROLE authenticated;
+SELECT set_config('request.jwt.claims', '{"sub":"aaaaaaaa-0000-4000-8000-000000000001","role":"authenticated","app_metadata":{"client_id":"s4-client-a"}}', true);
+SELECT extensions.is(public.mcp_storage_principal_v1(), policy_lab.storage_principal(), 'seam: user_a principal matches policy_lab');
+SELECT extensions.is(public.mcp_storage_session_capabilities_v1(), policy_lab.storage_session_capabilities(), 'seam: user_a capabilities match policy_lab');
+SELECT set_config('request.jwt.claims', '{"sub":"aaaaaaaa-0000-4000-8000-0000000000a1","role":"authenticated","app_metadata":{"client_id":"s4-client-a"}}', true);
+SELECT extensions.is(public.mcp_storage_principal_v1(), 'aaaaaaaa-0000-4000-8000-000000000001'::uuid, 'seam: agent_a principal is user_a');
+RESET ROLE;
+
 -- The delegating human's current authority: agent_a's delegation and user_a's grants stay
 -- active while user_a's membership or identity eligibility changes. Each takes effect on the
 -- next statement, through the session functions and through direct storage.objects RLS.
@@ -377,6 +396,8 @@ SELECT extensions.is_empty($$SELECT 1 FROM storage.objects$$, 'expired human gra
 RESET ROLE;
 SET LOCAL ROLE anon;
 SELECT extensions.throws_ok('SELECT policy_lab.storage_principal()', '42501', NULL, 'anon cannot call storage_principal');
+SELECT extensions.throws_ok('SELECT public.mcp_storage_principal_v1()', '42501', NULL, 'anon cannot call the principal wrapper');
+SELECT extensions.throws_ok('SELECT public.mcp_storage_session_capabilities_v1()', '42501', NULL, 'anon cannot call the capabilities wrapper');
 SELECT extensions.is_empty($$SELECT 1 FROM storage.objects WHERE bucket_id = 'mcp-user-storage'$$, 'anon sees no bucket objects');
 RESET ROLE;
 
