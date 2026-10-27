@@ -202,6 +202,26 @@ describe('loadLocalCredentials', () => {
     ],
     ['empty payload segment', 'header..signature'],
     ['non-base64url payload segment', 'header.pay+load.signature'],
+    ['standard-base64 signature segment', `${futureToken}+/`],
+    [
+      'padded payload segment',
+      syntheticToken(
+        undefined,
+        `${Buffer.from(JSON.stringify({ exp: FUTURE_EXP, role: 'authenticated', sub: SUBJECT, p: 0 })).toString('base64url')}=`,
+      ),
+    ],
+    [
+      'invalid UTF-8 inside a payload string',
+      syntheticToken(
+        undefined,
+        Buffer.concat([
+          Buffer.from(`{"exp":${FUTURE_EXP},"role":"authenticated","sub":"${SUBJECT}","x":"`),
+          Buffer.from([0xff]),
+          Buffer.from('"}'),
+        ]).toString('base64url'),
+      ),
+    ],
+    ['array subject', syntheticToken({ exp: FUTURE_EXP, role: 'authenticated', sub: [SUBJECT] })],
     ['two segments', 'header.signature'],
     ['four segments', `${futureToken}.extra`],
     ['secret key as token', 'sb_secret_synthetic'],
