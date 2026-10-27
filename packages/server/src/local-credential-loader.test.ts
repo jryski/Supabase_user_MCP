@@ -73,6 +73,40 @@ describe('loadLocalCredentials', () => {
     });
   });
 
+  it.each([
+    ['lower-case secret key', 'sb_secret_synthetic'],
+    ['upper-case secret key', 'SB_SECRET_synthetic'],
+    ['mixed-case secret key', 'Sb_Secret_synthetic'],
+    ['space-padded secret key', '  sb_secret_synthetic  '],
+    ['tab- and newline-padded secret key', '\tSB_SECRET_synthetic\n'],
+    ['bare secret prefix', 'sb_secret_'],
+  ])('refuses a %s with a stable code and no disclosure', async (_name, key) => {
+    const body = JSON.stringify({ projectPublishableKey: key, userAccessToken: futureToken });
+    const error = await loadLocalCredentials(await fixture(body), {
+      permissionInspector: securePermissions,
+    }).catch((caught: unknown) => caught);
+    expectSecretFree(error);
+    expect((error as LocalCredentialError).code).toBe('CREDENTIAL_SECRET_KEY');
+    expect(JSON.stringify(error)).not.toContain('secret_');
+  });
+
+  it.each([
+    ['publishable key', 'sb_publishable_synthetic', 'sb_publishable_synthetic'],
+    ['padded publishable key', '  sb_publishable_synthetic\t', 'sb_publishable_synthetic'],
+    ['other key shape', 'key', 'key'],
+    [
+      'key that only contains the secret marker',
+      'sb_publishable_sb_secret_x',
+      'sb_publishable_sb_secret_x',
+    ],
+  ])('still accepts a %s', async (_name, key, expected) => {
+    const body = JSON.stringify({ projectPublishableKey: key, userAccessToken: futureToken });
+    const result = await loadLocalCredentials(await fixture(body), {
+      permissionInspector: securePermissions,
+    });
+    expect(result).toEqual({ projectPublishableKey: expected, userAccessToken: futureToken });
+  });
+
   it('rejects missing, non-file, symlinked, oversized, and insecure files with stable codes', async () => {
     const directory = await mkdtemp(join(tmpdir(), 'fixed-credentials-negative-'));
     const target = await fixture();

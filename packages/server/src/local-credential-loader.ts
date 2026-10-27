@@ -2,6 +2,7 @@ import { constants } from 'node:fs';
 import { open } from 'node:fs/promises';
 
 const MAX_CREDENTIAL_BYTES = 16_384;
+const SECRET_KEY_PATTERN = /^sb_secret_/i;
 
 export type LocalCredentialErrorCode =
   | 'CREDENTIAL_FILE_MISSING'
@@ -15,6 +16,7 @@ export type LocalCredentialErrorCode =
   | 'CREDENTIAL_SCHEMA_INVALID'
   | 'CREDENTIAL_BLANK'
   | 'CREDENTIAL_CONFLATED'
+  | 'CREDENTIAL_SECRET_KEY'
   | 'CREDENTIAL_TOKEN_INVALID'
   | 'CREDENTIAL_TOKEN_EXPIRED';
 
@@ -153,6 +155,8 @@ export async function loadLocalCredentials(
   const projectPublishableKey = record.projectPublishableKey.trim();
   const userAccessToken = record.userAccessToken.trim();
   if (projectPublishableKey.length === 0 || userAccessToken.length === 0) fail('CREDENTIAL_BLANK');
+  // A secret project key (any letter case) is never accepted in the publishable slot.
+  if (SECRET_KEY_PATTERN.test(projectPublishableKey)) fail('CREDENTIAL_SECRET_KEY');
   if (projectPublishableKey === userAccessToken || projectPublishableKey.split('.').length === 3) {
     fail('CREDENTIAL_CONFLATED');
   }
