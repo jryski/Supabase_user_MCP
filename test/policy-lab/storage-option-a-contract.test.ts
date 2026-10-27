@@ -144,16 +144,30 @@ describe('issue #123 S4 storage RLS (option A)', () => {
     }
   });
 
-  it('adds the human-grant check for agents without touching earlier grant checks', () => {
+  it("adds the delegating human's current authority for agents without touching earlier checks", () => {
     const followUp = read(FOLLOW_UP).replace(/--[^\n]*/g, '');
     expect(followUp).not.toMatch(/service_role|bypassrls|security\s+definer/i);
     expect(followUp).not.toMatch(/has_active_capability\s*\(\s*required_capability text/i);
     expect(followUp).not.toMatch(/(?:drop|alter)\s+(?:policy|table)/i);
-    expect(followUp).not.toMatch(/for (?:update|all)\b/i);
+    expect(followUp).not.toMatch(/for (?:update|all|insert|delete)\b/i);
     expect(followUp).not.toMatch(/on storage\./i);
     const policies = followUp.match(/create policy[\s\S]*?;/gi) ?? [];
-    expect(policies).toHaveLength(1);
-    expect(policies[0]).toMatch(/on policy_lab\.capability_grants\s+for select to authenticated/);
+    expect(
+      policies.map(
+        (policy) => /on (policy_lab\.\w+)\s+for select to authenticated\n/.exec(policy)?.[1],
+      ),
+    ).toEqual(['policy_lab.capability_grants', 'policy_lab.principals', 'policy_lab.memberships']);
+    // Each delegator policy is reachable only through an active delegation from auth.uid()
+    // through the current client claim.
+    for (const policy of policies) {
+      expect(policy).toMatch(/d\.agent_principal_id = auth\.uid\(\)/);
+      expect(policy).toMatch(/d\.state = 'active'/);
+      expect(policy).toMatch(/d\.valid_until > now\(\)/);
+      expect(policy).toMatch(/auth\.jwt\(\) -> 'app_metadata' ->> 'client_id'/);
+    }
+    expect(policies[1]).toMatch(/identity_eligibility = 'verified'/);
+    expect(policies[1]).toMatch(/principal_kind = 'human'/);
+    expect(policies[2]).toMatch(/state = 'active'\s+and valid_until > now\(\)/);
     const functions = followUp.match(/create or replace function[\s\S]*?\$\$;/gi) ?? [];
     expect(functions).toHaveLength(1);
     expect(functions[0]).toMatch(
@@ -161,17 +175,19 @@ describe('issue #123 S4 storage RLS (option A)', () => {
     );
     expect(functions[0]).toMatch(/security invoker/);
     expect(functions[0]).toMatch(/set search_path = ''/);
-    expect(functions[0]).toMatch(/g\.principal_id = d\.human_principal_id/);
-    // The replaced body keeps every check of the original and only adds the human grant.
+    expect(functions[0]).toMatch(/hp\.principal_id = d\.human_principal_id/);
+    expect(functions[0]).toMatch(/hp\.identity_eligibility = 'verified'/);
+    expect(functions[0]).toMatch(/hm\.state = 'active'\s+and hm\.valid_until > now\(\)/);
+    expect(functions[0]).toMatch(/g\.workspace_id = hm\.workspace_id/);
+    expect(functions[0]).toMatch(/and hm\.client_id = d\.client_id/);
+    // The replaced body keeps every check of the original and only adds the delegator check.
     const original = /create function policy_lab\.storage_has_capability[\s\S]*?\$\$;/.exec(
       code,
     )?.[0];
-    const humanGrant =
-      /\n\s+and exists \(\n\s+select 1\n\s+from policy_lab\.capability_grants g[\s\S]*?g\.valid_until > now\(\)\n\s+\)/;
+    const delegator =
+      /\n\s+and exists \(\n\s+select 1\n\s+from policy_lab\.principals hp[\s\S]*?g\.valid_until > now\(\)\n\s+\)/;
     expect(
-      functions[0]
-        ?.replace(humanGrant, '')
-        .replace('create or replace function', 'create function'),
+      functions[0]?.replace(delegator, '').replace('create or replace function', 'create function'),
     ).toBe(original);
     expect(followUp).not.toMatch(/to\s+anon\b/i);
   });

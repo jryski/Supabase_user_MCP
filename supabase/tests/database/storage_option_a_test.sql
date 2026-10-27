@@ -2,7 +2,7 @@
 -- Synthetic fixtures only; everything rolls back.
 BEGIN;
 CREATE EXTENSION IF NOT EXISTS pgtap WITH SCHEMA extensions;
-SELECT extensions.plan(78);
+SELECT extensions.plan(93);
 
 -- Fixtures (two users, two delegated agents, one denied user, one service agent).
 INSERT INTO policy_lab.principals (principal_id, principal_kind, identity_eligibility) VALUES
@@ -291,6 +291,63 @@ SELECT extensions.ok(
 SELECT extensions.ok(
   EXISTS (SELECT 1 FROM storage.objects WHERE name = 'aaaaaaaa-0000-4000-8000-000000000001/notes/a.txt'),
   'user_a: no UPDATE policy, so rename had no effect');
+
+-- The delegating human's current authority: agent_a's delegation and user_a's grants stay
+-- active while user_a's membership or identity eligibility changes. Each takes effect on the
+-- next statement, through the session functions and through direct storage.objects RLS.
+SELECT extensions.is(
+  (SELECT count(*) FROM pg_policy p JOIN pg_class c ON c.oid = p.polrelid
+   JOIN pg_namespace n ON n.oid = c.relnamespace
+   WHERE n.nspname = 'policy_lab' AND p.polname LIKE 'storage_delegator%'
+     AND (p.polcmd <> 'r' OR p.polroles <> array[(SELECT oid FROM pg_roles WHERE rolname = 'authenticated')])),
+  0::bigint, 'delegator visibility policies are SELECT-only for authenticated');
+UPDATE policy_lab.memberships SET state = 'revoked'
+  WHERE principal_id = 'aaaaaaaa-0000-4000-8000-000000000001' AND client_id = 's4-client-a';
+SET LOCAL ROLE authenticated;
+SELECT set_config('request.jwt.claims', '{"sub":"aaaaaaaa-0000-4000-8000-0000000000a1","role":"authenticated","app_metadata":{"client_id":"s4-client-a"}}', true);
+SELECT extensions.is(policy_lab.storage_session_capabilities(), '[]'::jsonb, 'revoked human membership: agent_a has no capabilities');
+SELECT extensions.ok(policy_lab.storage_principal() IS NULL, 'revoked human membership: agent_a has no principal');
+SELECT extensions.is_empty($$SELECT 1 FROM storage.objects$$, 'revoked human membership: agent_a sees nothing (direct RLS)');
+SELECT extensions.throws_ok(
+  $$INSERT INTO storage.objects (bucket_id, name) VALUES ('mcp-user-storage', 'aaaaaaaa-0000-4000-8000-000000000001/suspended.txt')$$,
+  '42501', NULL, 'revoked human membership: agent_a put denied (direct RLS)');
+RESET ROLE;
+UPDATE policy_lab.memberships SET state = 'active'
+  WHERE principal_id = 'aaaaaaaa-0000-4000-8000-000000000001' AND client_id = 's4-client-a';
+UPDATE policy_lab.principals SET identity_eligibility = 'denied' WHERE principal_id = 'aaaaaaaa-0000-4000-8000-000000000001';
+SET LOCAL ROLE authenticated;
+SELECT set_config('request.jwt.claims', '{"sub":"aaaaaaaa-0000-4000-8000-0000000000a1","role":"authenticated","app_metadata":{"client_id":"s4-client-a"}}', true);
+SELECT extensions.is(policy_lab.storage_session_capabilities(), '[]'::jsonb, 'denied human eligibility: agent_a has no capabilities');
+SELECT extensions.ok(policy_lab.storage_principal() IS NULL, 'denied human eligibility: agent_a has no principal');
+SELECT extensions.is_empty($$SELECT 1 FROM storage.objects$$, 'denied human eligibility: agent_a sees nothing (direct RLS)');
+SELECT extensions.throws_ok(
+  $$INSERT INTO storage.objects (bucket_id, name) VALUES ('mcp-user-storage', 'aaaaaaaa-0000-4000-8000-000000000001/suspended.txt')$$,
+  '42501', NULL, 'denied human eligibility: agent_a put denied (direct RLS)');
+RESET ROLE;
+UPDATE policy_lab.principals SET identity_eligibility = 'verified' WHERE principal_id = 'aaaaaaaa-0000-4000-8000-000000000001';
+UPDATE policy_lab.memberships SET valid_until = '2020-01-01'
+  WHERE principal_id = 'aaaaaaaa-0000-4000-8000-000000000001' AND client_id = 's4-client-a';
+SET LOCAL ROLE authenticated;
+SELECT set_config('request.jwt.claims', '{"sub":"aaaaaaaa-0000-4000-8000-0000000000a1","role":"authenticated","app_metadata":{"client_id":"s4-client-a"}}', true);
+SELECT extensions.is(policy_lab.storage_session_capabilities(), '[]'::jsonb, 'expired human membership: agent_a has no capabilities');
+SELECT extensions.ok(policy_lab.storage_principal() IS NULL, 'expired human membership: agent_a has no principal');
+SELECT extensions.is_empty($$SELECT 1 FROM storage.objects$$, 'expired human membership: agent_a sees nothing (direct RLS)');
+RESET ROLE;
+UPDATE policy_lab.memberships SET valid_until = '2099-01-01'
+  WHERE principal_id = 'aaaaaaaa-0000-4000-8000-000000000001' AND client_id = 's4-client-a';
+SET LOCAL ROLE authenticated;
+SELECT set_config('request.jwt.claims', '{"sub":"aaaaaaaa-0000-4000-8000-0000000000a1","role":"authenticated","app_metadata":{"client_id":"s4-client-a"}}', true);
+SELECT extensions.is(policy_lab.storage_principal(), 'aaaaaaaa-0000-4000-8000-000000000001'::uuid, 'restored human authority: agent_a principal is user_a again');
+SELECT extensions.results_eq(
+  $$SELECT principal_id::text FROM policy_lab.principals ORDER BY 1$$,
+  $$VALUES ('aaaaaaaa-0000-4000-8000-000000000001'::text), ('aaaaaaaa-0000-4000-8000-0000000000a1')$$,
+  'agent_a: sees only its own and its delegating human principal rows');
+SELECT extensions.results_eq(
+  $$SELECT principal_id::text, client_id FROM policy_lab.memberships ORDER BY 1, 2$$,
+  $$VALUES ('aaaaaaaa-0000-4000-8000-000000000001'::text, 's4-client-a'::text),
+           ('aaaaaaaa-0000-4000-8000-0000000000a1', 's4-client-a')$$,
+  'agent_a: sees only the delegating human memberships through this client');
+RESET ROLE;
 
 -- Revocation takes effect on the next statement.
 UPDATE policy_lab.storage_delegations SET state = 'revoked'
