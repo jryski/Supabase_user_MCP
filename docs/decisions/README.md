@@ -12,6 +12,7 @@ be rediscovered or silently reversed.
 | [0003](0003-local-credential-and-protocol-policy.md) | Local credential and protocol policy | Accepted |
 | [0004](0004-narrow-upstream-mcp-reuse.md) | Narrow upstream Supabase MCP reuse | Accepted |
 | [0005](0005-dual-resource-data-api-binding.md) | Dual resource and Data API binding | Proposed — Option A rejected; opt-in grant-B read composition (Option D) for TEST and pilot use; default remote profile fail-closed |
+| [0008](0008-oauth-client-id-claim-binding.md) | OAuth client id claim for the policy grant check | Proposed — awaiting Primary Users |
 
 ## Process
 
