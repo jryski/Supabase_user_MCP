@@ -161,8 +161,9 @@ read-only stdio server; `npm run start:compatibility` retains the no-data M0 pro
 post-merge Build, M2, Markdown, and Links checks passed. This is an experimental local-development
 profile, not a production or hosted deployment claim.
 
-An experimental local remote HTTP + OAuth 2.1 profile (`npm run start:remote`) validates JWKS
-verification, dual resource binding, PKCE, and access-token revocation with synthetic tests. The inbound MCP bearer is not forwarded
+An experimental local remote HTTP + OAuth 2.1 profile (`npm run start:remote`,
+`npm run test:remote-oauth`) validates JWKS verification, dual resource binding, PKCE, and live
+access-token revocation inside the disposable loopback lab. The inbound MCP bearer is not forwarded
 to the Data API, and this profile's Data API dispatch is fail-closed. A separate opt-in native read
 composition dispatches the fixed read tools with a distinct, user-approved grant B held in memory
 only. Durable downstream-credential custody and hosted live OAuth remain unmet. This is not completion of issue #62.

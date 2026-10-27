@@ -20,12 +20,17 @@
   access-token fingerprint revocation distinct from grant revoke.
 - RFC 9728 protected-resource metadata and `WWW-Authenticate` `resource_metadata` on 401.
 - Process-global principal-scoped rate-limit counters surviving executor rebuilds (stdio path).
+- SQL `policy_lab.verified_client_id()` using top-level `client_id` else
+  `app_metadata.client_id`, never `user_metadata`.
 - Local CLI `[auth.oauth_server]` with DCR disabled. Live GoTrue tokens are ES256 and verified
   via JWKS, not HMAC `JWT_SECRET`.
 - HTTP ingress rejects oversized chunked bodies (including 4MiB without Content-Length),
   exact-ceiling overflow, deadline expiry, disconnect, forbidden methods such as TRACE, and
   malformed Host values before handler execution. Request-construction failures settle through
   the same reader cleanup path and return a bounded 4xx instead of an uncaught callback exception.
+- Real local GoTrue PKCE/consent (GET authorization details then POST consent `redirect_url`).
+  This fixture obtains a token and posts it to the in-process handler. It does **not** prove a
+  supported MCP client performing discovery/PKCE/consent UI itself.
 
 ## What this evidence does not cover
 
@@ -45,22 +50,23 @@
 | Verifier / synthetic AS | `packages/server/src/remote-token-verifier.test.ts`, `synthetic-oauth-lab.test.ts` |
 | HTTP profile | `packages/server/src/remote-http-profile.test.ts` |
 | Ingress | `packages/server/src/remote-http-startup.test.ts` |
-| Local Auth PKCE | Not in this change. The live local PKCE lab depends on an OAuth client-binding migration that awaits a separate Primary Users decision. |
+| SQL | `supabase/tests/database/oauth_client_claim_test.sql` |
+| Local Auth PKCE | `test/remote-oauth/local-oauth-pkce.e2e.test.ts` via `npm run test:remote-oauth` |
 
 ## Reproduction
 
 ```shell
 npm ci
 npm run check
+npm run test:remote-oauth
 ```
 
-`npm run check` runs the synthetic suites only. The live local PKCE lab
-(`npm run test:remote-oauth`) is not part of this change; see the client-binding
-decision note that accompanies it.
+`npm run check` skips the live PKCE e2e unless `M4_*` env is present.
+`test:remote-oauth` requires a clean worktree, Docker loopback-only networking, and the
+pinned local Supabase CLI. It registers temporary OAuth clients and synthetic users inside
+the disposable lab only.
 
 ## Token trace (local lab)
-
-This trace describes the live local PKCE lab, which is not part of this change.
 
 1. Pre-register a public client (`token_endpoint_auth_method=none`, exact redirect).
 2. Authorization code + PKCE S256 + `resource=https://mcp.loopback.invalid/mcp`.
