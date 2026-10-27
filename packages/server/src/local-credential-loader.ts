@@ -86,7 +86,6 @@ function parseTokenExpiry(token: string): number {
     if (
       typeof payload !== 'object' ||
       payload === null ||
-      Array.isArray(payload) ||
       !('exp' in payload) ||
       typeof payload.exp !== 'number' ||
       !Number.isSafeInteger(payload.exp) ||
