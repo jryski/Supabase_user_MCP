@@ -162,6 +162,10 @@ describe('user-scoped storage client', () => {
     expect(requests[0]?.apikey).toBe(PUBLISHABLE);
   });
 
+  it('exposes the decoded user token subject', () => {
+    expect(construct(PUBLISHABLE).tokenSubject).toBe(PRINCIPAL);
+  });
+
   it.each([
     ['service_role', syntheticToken({ sub: PRINCIPAL, role: 'service_role' })],
     ['anon', syntheticToken({ sub: PRINCIPAL, role: 'anon' })],

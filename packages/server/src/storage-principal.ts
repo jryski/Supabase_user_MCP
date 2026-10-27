@@ -59,12 +59,27 @@ const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3
  * `fetchStoragePrincipal` must call the DB `storage_principal()` function with
  * the caller's user JWT. For a human it equals `auth.uid()`; for a delegated
  * agent it is the delegating human, resolved by the database, not by this code.
+ *
+ * `credentialSubject` is the `sub` of the user token `fetchStoragePrincipal`
+ * sends. The verified caller identity must equal it, so the principal is
+ * always resolved for the caller that the server verified.
  */
 export function createPathPrefixStoragePrincipalResolver(
   fetchStoragePrincipal: (signal: AbortSignal) => Promise<string>,
+  credentialSubject: string,
 ): StoragePrincipalResolver {
   return Object.freeze({
-    async resolve(_identity: VerifiedUserIdentity, signal: AbortSignal): Promise<StorageKeyScope> {
+    async resolve(identity: VerifiedUserIdentity, signal: AbortSignal): Promise<StorageKeyScope> {
+      // The principal lookup runs with the client's user token, so that token
+      // must belong to the verified caller. Anything else fails closed before
+      // the database is asked.
+      if (
+        typeof identity?.principalId !== 'string' ||
+        !UUID_PATTERN.test(identity.principalId) ||
+        identity.principalId !== credentialSubject
+      ) {
+        throw new StoragePrincipalError();
+      }
       const principal = await fetchStoragePrincipal(signal);
       if (typeof principal !== 'string' || !UUID_PATTERN.test(principal)) {
         throw new StoragePrincipalError();

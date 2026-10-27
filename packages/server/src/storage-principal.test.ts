@@ -11,7 +11,7 @@ const AGENT = '3c3c3c3c-0000-4000-8000-000000000003';
 const signal = new AbortController().signal;
 
 async function scopeFor(principal: string) {
-  return createPathPrefixStoragePrincipalResolver(async () => principal).resolve(
+  return createPathPrefixStoragePrincipalResolver(async () => principal, AGENT).resolve(
     { principalId: AGENT },
     signal,
   );
@@ -71,10 +71,34 @@ describe('storage principal seam (option A path prefix)', () => {
 
   it('rejects a non-string principal', async () => {
     await expect(
-      createPathPrefixStoragePrincipalResolver(async () => 42 as unknown as string).resolve(
+      createPathPrefixStoragePrincipalResolver(async () => 42 as unknown as string, HUMAN).resolve(
         { principalId: HUMAN },
         signal,
       ),
+    ).rejects.toBeInstanceOf(StoragePrincipalError);
+  });
+
+  it.each([
+    ['another user', OTHER],
+    ['an upper-case copy of the subject', AGENT.toUpperCase()],
+    ['a padded copy of the subject', ` ${AGENT}`],
+    ['a non-uuid identity', 'not-a-uuid'],
+  ])('refuses %s as the verified identity without asking the database', async (_label, id) => {
+    let fetched = 0;
+    const resolver = createPathPrefixStoragePrincipalResolver(async () => {
+      fetched += 1;
+      return HUMAN;
+    }, AGENT);
+    await expect(resolver.resolve({ principalId: id }, signal)).rejects.toBeInstanceOf(
+      StoragePrincipalError,
+    );
+    expect(fetched).toBe(0);
+  });
+
+  it('refuses a missing identity', async () => {
+    const resolver = createPathPrefixStoragePrincipalResolver(async () => HUMAN, AGENT);
+    await expect(
+      resolver.resolve(undefined as unknown as { principalId: string }, signal),
     ).rejects.toBeInstanceOf(StoragePrincipalError);
   });
 });

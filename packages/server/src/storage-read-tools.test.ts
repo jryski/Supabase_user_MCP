@@ -19,13 +19,15 @@ import {
 import {
   createStorageReadTools,
   encodeStorageListCursor,
+  guardStorageToolRun,
   prepareStorageMcpRegistration,
 } from './storage-read-tools.js';
-import type {
-  StorageListEntry,
-  StorageListPage,
-  StorageObjectInfo,
-  UserScopedStorageClient,
+import {
+  StorageClientError,
+  type StorageListEntry,
+  type StorageListPage,
+  type StorageObjectInfo,
+  type UserScopedStorageClient,
 } from './user-scoped-storage-client.js';
 
 /** Synthetic principals only: two humans and one delegated agent per human. */
@@ -91,6 +93,7 @@ export class SyntheticStorage {
   sessionClient(uid: string, options: { bypassPolicy?: boolean } = {}): UserScopedStorageClient {
     const visible = (key: string) => options.bypassPolicy === true || this.visible(uid, key);
     return {
+      tokenSubject: uid,
       fetchStorageGrants: async () => {
         this.calls.push('grants');
         return [...(this.grants.get(uid) ?? [])];
@@ -203,7 +206,8 @@ async function tools(
 ) {
   const client = storage.sessionClient(uid, { bypassPolicy: options.bypassPolicy ?? false });
   const resolver =
-    options.resolver ?? createPathPrefixStoragePrincipalResolver(client.fetchStoragePrincipal);
+    options.resolver ??
+    createPathPrefixStoragePrincipalResolver(client.fetchStoragePrincipal, client.tokenSubject);
   const scope = await resolver.resolve({ principalId: uid }, new AbortController().signal);
   const built = createStorageReadTools({
     client,
@@ -294,6 +298,7 @@ describe('storage read tools: synthetic 2 users + 2 agents matrix (RLS option A)
   it('a wrong-scope resolver is still denied by the policy layer', async () => {
     const hostile: StoragePrincipalResolver = createPathPrefixStoragePrincipalResolver(
       async () => USER_2,
+      USER_1,
     );
     const session = await tools(storage, USER_1, { resolver: hostile });
     expect(errorCode(await session.get({ key: 'data.json' }))).toBe('RESOURCE_UNAVAILABLE');
@@ -323,10 +328,10 @@ describe('storage read tools: synthetic 2 users + 2 agents matrix (RLS option A)
         updatedAt: UPDATED_AT,
       }),
     };
-    const scope = await createPathPrefixStoragePrincipalResolver(async () => USER_1).resolve(
-      { principalId: USER_1 },
-      new AbortController().signal,
-    );
+    const scope = await createPathPrefixStoragePrincipalResolver(
+      async () => USER_1,
+      USER_1,
+    ).resolve({ principalId: USER_1 }, new AbortController().signal);
     const built = createStorageReadTools({
       client: leaking,
       scope,
@@ -471,6 +476,7 @@ describe('storage read tools: bounds', () => {
     const client = storage.sessionClient(USER_1);
     const scope = await createPathPrefixStoragePrincipalResolver(
       client.fetchStoragePrincipal,
+      client.tokenSubject,
     ).resolve({ principalId: USER_1 }, new AbortController().signal);
     for (const url of [
       `https://storage.example.test/storage/v1/object/sign/user-files/${USER_2}/big.pdf?token=t`,
@@ -633,5 +639,229 @@ describe('storage tool registration is grant-gated', () => {
     });
     expect(result.content?.[0]?.text).toMatch(/^SECURITY BOUNDARY:/);
     expect(JSON.stringify(result)).not.toContain(USER_1);
+  });
+});
+
+describe('storage principal is bound to the verified caller', () => {
+  it('registers nothing when the client token subject differs from the verified identity', async () => {
+    const storage = new SyntheticStorage();
+    seed(storage);
+    const prepared = await prepareStorageMcpRegistration(
+      { client: storage.sessionClient(USER_2) },
+      { principalId: USER_1 },
+    );
+    expect(prepared).toMatchObject({ status: 'unavailable', toolNames: [] });
+    expect(storage.calls).toEqual([]);
+  });
+
+  it('a custom resolver cannot bypass the subject binding', async () => {
+    const storage = new SyntheticStorage();
+    seed(storage);
+    let resolved = 0;
+    const resolver: StoragePrincipalResolver = {
+      resolve: async () => {
+        resolved += 1;
+        throw new Error('must not be reached');
+      },
+    };
+    const prepared = await prepareStorageMcpRegistration(
+      { client: storage.sessionClient(USER_2), principalResolver: resolver },
+      { principalId: USER_1 },
+    );
+    expect(prepared.status).toBe('unavailable');
+    expect(resolved).toBe(0);
+    expect(storage.calls).toEqual([]);
+  });
+
+  it('a server verified as one user gets no storage tools from another user token', async () => {
+    const storage = new SyntheticStorage();
+    seed(storage);
+    let names: string[] = [];
+    await withClient(
+      createReadOnlyServer({
+        client: memoryClient(USER_1),
+        storageRegistration: { client: storage.sessionClient(USER_2) },
+      }),
+      async (mcp) => {
+        names = (await mcp.listTools()).tools.map((tool) => tool.name).toSorted();
+      },
+    );
+    expect(names).toEqual(MEMORY_TOOLS);
+    expect(storage.calls).toEqual([]);
+  });
+
+  it('refuses a client without a string token subject', async () => {
+    const storage = new SyntheticStorage();
+    seed(storage);
+    const client = {
+      ...storage.sessionClient(USER_1),
+      tokenSubject: undefined,
+    } as unknown as UserScopedStorageClient;
+    const prepared = await prepareStorageMcpRegistration({ client }, { principalId: USER_1 });
+    expect(prepared.status).toBe('unavailable');
+    expect(storage.calls).toEqual([]);
+  });
+
+  it('a delegated agent whose token matches its verified identity still resolves to its human', async () => {
+    const storage = new SyntheticStorage();
+    seed(storage);
+    const prepared = await prepareStorageMcpRegistration(
+      { client: storage.sessionClient(AGENT_1) },
+      { principalId: AGENT_1 },
+    );
+    expect(prepared.status).toBe('registered');
+    expect(storage.calls).toEqual(['grants', 'principal']);
+  });
+});
+
+describe('storage grant matching is exact', () => {
+  it.each([
+    ['upper case', 'STORAGE:READ'],
+    ['mixed case', 'Storage:Read'],
+    ['longer suffix', 'storage:read2'],
+    ['read-write superset', 'storage:readwrite'],
+    ['bare namespace', 'storage:'],
+    ['namespace only', 'storage'],
+    ['truncated', 'storage:rea'],
+    ['leading space', ' storage:read'],
+    ['trailing space', 'storage:read '],
+    ['trailing newline', 'storage:read\n'],
+    ['trailing NUL', 'storage:read\u0000'],
+    ['other namespace', 'memory:read'],
+  ])('a %s grant registers no storage tools', async (_label, grant) => {
+    const storage = new SyntheticStorage();
+    storage.grant(USER_1, grant);
+    const prepared = await prepareStorageMcpRegistration(
+      { client: storage.sessionClient(USER_1) },
+      { principalId: USER_1 },
+    );
+    expect(prepared.status).toBe('not_granted');
+    expect(prepared.capabilities).toEqual([]);
+    expect(prepared.toolNames).toEqual([]);
+    expect(storage.calls).toEqual(['grants']);
+  });
+
+  it('a near-miss next to a write grant reports only the write capability', async () => {
+    const storage = new SyntheticStorage();
+    storage.grant(USER_1, 'STORAGE:READ', 'storage:read2', 'storage:write');
+    const prepared = await prepareStorageMcpRegistration(
+      { client: storage.sessionClient(USER_1) },
+      { principalId: USER_1 },
+    );
+    expect(prepared).toMatchObject({ status: 'not_granted', capabilities: ['storage:write'] });
+  });
+
+  it.each([
+    ['a string', 'storage:read'],
+    ['an object', { 0: 'storage:read' }],
+  ])('grants returned as %s register no storage tools', async (_label, value) => {
+    const storage = new SyntheticStorage();
+    const client: UserScopedStorageClient = {
+      ...storage.sessionClient(USER_1),
+      fetchStorageGrants: async () => value as unknown as ReadonlyArray<string>,
+    };
+    const prepared = await prepareStorageMcpRegistration({ client }, { principalId: USER_1 });
+    expect(prepared.status).not.toBe('registered');
+    expect(prepared.toolNames).toEqual([]);
+  });
+});
+
+describe('guardStorageToolRun and the governor', () => {
+  const live = () => new AbortController().signal;
+
+  it('returns, never throws, a typed error for ordinary failures', async () => {
+    await expect(
+      guardStorageToolRun(live(), async () => {
+        throw new Error('synthetic failure');
+      }),
+    ).resolves.toEqual({ ok: false, error: expect.objectContaining({ code: 'INTERNAL_ERROR' }) });
+    await expect(
+      guardStorageToolRun(live(), async () => {
+        throw new StorageClientError('STORAGE_CLIENT_RESPONSE_TOO_LARGE');
+      }),
+    ).resolves.toEqual({
+      ok: false,
+      error: expect.objectContaining({ code: 'RESPONSE_LIMIT_EXCEEDED' }),
+    });
+    await expect(
+      guardStorageToolRun(live(), async () => {
+        throw new StorageClientError('STORAGE_CLIENT_UPSTREAM_ERROR');
+      }),
+    ).resolves.toEqual({ ok: false, error: expect.objectContaining({ code: 'INTERNAL_ERROR' }) });
+  });
+
+  it('rethrows the original error once the signal is aborted', async () => {
+    const controller = new AbortController();
+    controller.abort();
+    const original = new Error('synthetic abort');
+    await expect(
+      guardStorageToolRun(controller.signal, async () => {
+        throw original;
+      }),
+    ).rejects.toBe(original);
+  });
+
+  it('a rethrow reaches the governor as a deadline, not a masked internal error', async () => {
+    const storage = new SyntheticStorage();
+    seed(storage);
+    const caller = new AbortController();
+    const events: Array<{ outcome: string; denialClass?: string }> = [];
+    const client: UserScopedStorageClient = {
+      ...storage.sessionClient(USER_1),
+      getObjectInfo: async () => {
+        caller.abort();
+        throw new Error('synthetic abort');
+      },
+    };
+    const built = createStorageReadTools({
+      client,
+      scope: await createPathPrefixStoragePrincipalResolver(async () => USER_1, USER_1).resolve(
+        { principalId: USER_1 },
+        live(),
+      ),
+      capabilities: ['storage:read'],
+      toolNames: STORAGE_TOOLS,
+    });
+    const output = await built.get(
+      { key: 'data.json' },
+      {
+        ...freshIdentity(),
+        signal: caller.signal,
+        emitOperationalEvent: (event) => events.push(event),
+      },
+    );
+    expect(errorCode(output)).toBe('DEADLINE_EXCEEDED');
+    expect(events).toEqual([
+      expect.objectContaining({ outcome: 'blocked', denialClass: 'DEADLINE_EXCEEDED' }),
+    ]);
+  });
+
+  it('an ordinary failure is returned by the guard and reported, not swallowed', async () => {
+    const storage = new SyntheticStorage();
+    seed(storage);
+    const events: Array<{ outcome: string; denialClass?: string }> = [];
+    const client: UserScopedStorageClient = {
+      ...storage.sessionClient(USER_1),
+      getObjectInfo: async () => {
+        throw new Error('synthetic failure');
+      },
+    };
+    const built = createStorageReadTools({
+      client,
+      scope: await createPathPrefixStoragePrincipalResolver(async () => USER_1, USER_1).resolve(
+        { principalId: USER_1 },
+        live(),
+      ),
+      capabilities: ['storage:read'],
+      toolNames: STORAGE_TOOLS,
+    });
+    const output = await built.get(
+      { key: 'data.json' },
+      { ...freshIdentity(), emitOperationalEvent: (event) => events.push(event) },
+    );
+    expect(errorCode(output)).toBe('INTERNAL_ERROR');
+    expect(events).toEqual([
+      expect.objectContaining({ outcome: 'blocked', denialClass: 'INTERNAL_ERROR' }),
+    ]);
   });
 });
