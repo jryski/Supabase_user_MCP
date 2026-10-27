@@ -5,6 +5,7 @@ import {
   DOWNSTREAM_B_GRANT_PROFILE,
   DOWNSTREAM_B_SCOPE,
   type DownstreamHandshakePrincipal,
+  DownstreamOAuthGrantError,
   DownstreamOAuthGrantStore,
 } from './downstream-oauth-grant.js';
 
@@ -361,4 +362,43 @@ describe('downstream OAuth grant binding', () => {
       ]);
     }
   });
+});
+
+describe('downstream OAuth redirect host', () => {
+  async function construct(redirectUri: string): Promise<DownstreamOAuthGrantStore> {
+    const material = await keys();
+    return new DownstreamOAuthGrantStore({
+      issuer: ISSUER,
+      authOrigin: ORIGIN,
+      expectedBClientId: B_CLIENT,
+      expectedAgentId: AGENT,
+      redirectUri,
+      jwks: material.jwks,
+      fetch: (async () => new Response(null, { status: 500 })) as typeof fetch,
+    });
+  }
+
+  it.each([
+    'http://127.0.0.1:8788/oauth/downstream/callback',
+    'http://[::1]:8788/oauth/downstream/callback',
+    'http://localhost:8788/oauth/downstream/callback',
+    'https://app.example/oauth/downstream/callback',
+  ])('accepts an exact loopback or https redirect: %s', async (redirectUri) => {
+    await expect(construct(redirectUri)).resolves.toBeInstanceOf(DownstreamOAuthGrantStore);
+  });
+
+  it.each([
+    'http://127.0.0.1.evil.example:8788/oauth/downstream/callback',
+    'http://127.evil.example:8788/oauth/downstream/callback',
+    'http://1270.0.0.1:8788/oauth/downstream/callback',
+    'http://127.0.0.1x.example/oauth/downstream/callback',
+    'http://localhost.evil.example/oauth/downstream/callback',
+    'http://[::2]:8788/oauth/downstream/callback',
+    'http://app.example/oauth/downstream/callback',
+  ])(
+    'rejects a lookalike or non-loopback http redirect in the constructor: %s',
+    async (redirectUri) => {
+      await expect(construct(redirectUri)).rejects.toThrow(DownstreamOAuthGrantError);
+    },
+  );
 });

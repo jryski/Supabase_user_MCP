@@ -13,6 +13,7 @@ import {
   exchangeLocalAuthorizationCode,
   generateS256PkceChallenge,
 } from './local-oauth-pkce-client.js';
+import { isLoopbackHttpUrl } from './loopback-host.js';
 import { MCP_INGRESS_ROLE } from './native-user-mcp.js';
 
 /** TEST-only public PKCE. Not a confidential client and not a durable store. */
@@ -179,10 +180,8 @@ export class DownstreamOAuthGrantStore {
       reject();
     }
     const loopback =
-      redirect.protocol === 'http:' &&
-      (redirect.hostname === 'localhost' ||
-        redirect.hostname === '::1' ||
-        redirect.hostname.startsWith('127.'));
+      isLoopbackHttpUrl(redirect) ||
+      (redirect.protocol === 'http:' && redirect.hostname === '[::1]');
     if (redirect.protocol !== 'https:' && !loopback) reject();
     const ttl = config.handshakeTtlMs ?? DEFAULT_HANDSHAKE_TTL_MS;
     if (!Number.isSafeInteger(ttl) || ttl < 1_000 || ttl > MAX_HANDSHAKE_TTL_MS) reject();
