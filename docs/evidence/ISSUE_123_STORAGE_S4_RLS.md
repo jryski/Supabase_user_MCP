@@ -68,6 +68,13 @@
   storage client from the downstream grant B and the publishable key, the same credential as the
   Data API client. The ingress Token A is never used. A test calls `storage_list` through the
   handler and checks every outbound storage request.
+- `packages/server/src/native-user-mcp-remote-pilot.ts`: the remote pilot entry sets
+  `storageBucket` from the optional `SUPABASE_USER_MCP_STORAGE_BUCKET` (unset by default) and
+  always registers storage read-only. Tests in `native-user-mcp-remote-pilot.test.ts` build the
+  pilot from its environment: with a bucket and `storage:read` the read tools are listed and
+  `storage_list` runs with B; with no grant, only `storage:write`, an unset or empty setting, no
+  storage tool is listed and direct calls are refused; `storage:write` never adds put or delete;
+  an invalid bucket name fails startup.
 
 ## Hosted delete guard
 

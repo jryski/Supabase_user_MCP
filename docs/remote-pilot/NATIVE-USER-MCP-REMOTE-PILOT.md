@@ -74,6 +74,7 @@ These are inputs, not facts established by this change:
 | `SUPABASE_USER_MCP_B_REDIRECT_URI` | `https://<host>/oauth/downstream/callback` |
 | `SUPABASE_USER_MCP_AGENT_ID` | agent id stamped on A and B |
 | `SUPABASE_USER_MCP_LISTEN_PORT` | loopback port |
+| `SUPABASE_USER_MCP_STORAGE_BUCKET` | optional; a Storage bucket name only, for example `<bucket>`; unset or empty keeps storage off |
 
 Startup fails closed on any missing or insecure value, on a redirect off the
 resource host, on a JWKS off the project origin, on any argv, and if a
@@ -81,6 +82,15 @@ service-role, secret-key, credential-file, or user-bearer variable is set.
 The key slot accepts only an `sb_publishable_` key. A secret key (`sb_secret_`
 in any letter case), a legacy JWT-shaped anon key, or any other shape fails
 startup with a fixed error that never contains the key.
+
+Storage is off by default. With `SUPABASE_USER_MCP_STORAGE_BUCKET` set to a
+valid bucket name, a session whose grant B holds `storage:read` also lists
+`storage_capabilities`, `storage_list` and `storage_get`. The pilot stays
+read-only: a `storage:write` grant adds no `storage_put` or `storage_delete`.
+A session without `storage:read`, or a pilot without the setting, lists no
+storage tools and refuses a direct storage call. Storage requests carry grant
+B and the publishable key; token A is never sent. An invalid bucket name fails
+startup with a fixed error that does not contain the value.
 
 Run after build: `node packages/server/dist/native-user-mcp-remote-pilot-cli.js`.
 The listener binds `127.0.0.1` only.

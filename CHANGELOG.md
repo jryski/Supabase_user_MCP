@@ -18,6 +18,10 @@ the first public package is released.
   ([`sql/liveness/source_session_live_v1.sql`](sql/liveness/source_session_live_v1.sql),
   not a migration), and runs the fixed read tools with B. This does not complete issue #62 and does not add an MCP issuer. See
   [G2 evidence](docs/evidence/G2_NATIVE_USER_MCP.md).
+- The remote pilot reads an optional `SUPABASE_USER_MCP_STORAGE_BUCKET` (a bucket name
+  only, unset by default). When set, a session whose grant B holds `storage:read` lists the
+  storage read tools. The pilot never registers `storage_put` or `storage_delete`, even
+  with `storage:write`. See the [remote pilot guide](docs/remote-pilot/NATIVE-USER-MCP-REMOTE-PILOT.md).
 - Opt-in candidate contracts for `memory_retrieve` and `session_capabilities_get`,
   reusing the existing read parser, result renderer and governance checks.
 - Synthetic regressions for contradictory results and six fresh-process MCP
@@ -46,7 +50,11 @@ the first public package is released.
   65,536), addressing GHSA-46jr-4wx8-v453.
 - The downstream OAuth redirect accepts plain `http` only for an exact loopback host
   (`localhost`, a canonical `127.0.0.0/8` address, or `[::1]`). Look-alike hosts such as
-  `127.0.0.1.evil.example` were accepted before and are now refused.
+  `127.0.0.1.evil.example` were accepted before and are now refused. The grant store and
+  the read handler share one rule for this check, so a `[::1]` redirect is accepted at
+  startup and at the callback alike.
+- The storage client's key check reuses the shared publishable-key allowlist instead of a
+  local copy. Accepted and refused keys are unchanged.
 
 ### Fixed
 
