@@ -276,4 +276,78 @@ describe('user-scoped storage client', () => {
       StorageClientError,
     );
   });
+
+  it('uploads without upsert under the given key with the user token and publishable key', async () => {
+    const { client, requests } = harness(() =>
+      json({ Key: `user-files/${PRINCIPAL}/a.txt`, Id: 'x' }),
+    );
+    expect(
+      await client.uploadObject(
+        `${PRINCIPAL}/a.txt`,
+        new TextEncoder().encode('hi'),
+        'text/plain',
+        signal,
+      ),
+    ).toBe(true);
+    expect(requests[0]).toMatchObject({
+      url: `${ORIGIN}/storage/v1/object/user-files/${PRINCIPAL}/a.txt`,
+      method: 'POST',
+      redirect: 'error',
+    });
+    expect(requests[0]?.headers).toMatchObject({
+      Authorization: `Bearer ${USER_TOKEN}`,
+      apikey: PUBLISHABLE,
+      'Content-Type': 'text/plain',
+      'x-upsert': 'false',
+    });
+  });
+
+  it.each([400, 401, 403, 404, 409])('maps upload status %i to a refusal', async (status) => {
+    const { client } = harness(() => json({ error: 'denied' }, status));
+    expect(
+      await client.uploadObject(`${PRINCIPAL}/a.txt`, new Uint8Array(1), 'text/plain', signal),
+    ).toBe(false);
+  });
+
+  it('refuses oversized uploads before sending and checks the echoed key', async () => {
+    const { client, requests } = harness(() => json({ Key: 'user-files/other/a.txt' }));
+    await expect(
+      client.uploadObject(
+        `${PRINCIPAL}/a.txt`,
+        new Uint8Array(16 * 1024 + 1),
+        'text/plain',
+        signal,
+      ),
+    ).rejects.toMatchObject({ code: 'STORAGE_CLIENT_INVALID_CONFIG' });
+    expect(requests).toHaveLength(0);
+    await expect(
+      client.uploadObject(`${PRINCIPAL}/a.txt`, new Uint8Array(1), 'text/plain', signal),
+    ).rejects.toMatchObject({ code: 'STORAGE_CLIENT_MALFORMED_RESPONSE' });
+    const failing = harness(() => new Response('{}', { status: 500 }));
+    await expect(
+      failing.client.uploadObject(`${PRINCIPAL}/a.txt`, new Uint8Array(1), 'text/plain', signal),
+    ).rejects.toMatchObject({ code: 'STORAGE_CLIENT_UPSTREAM_ERROR' });
+  });
+
+  it('deletes exactly one named object through the Storage API', async () => {
+    const { client, requests } = harness(() => json([{ name: `${PRINCIPAL}/a.txt` }]));
+    expect(await client.deleteObject(`${PRINCIPAL}/a.txt`, signal)).toBe(true);
+    expect(requests[0]).toMatchObject({
+      url: `${ORIGIN}/storage/v1/object/user-files`,
+      method: 'DELETE',
+    });
+    expect(JSON.parse(requests[0]?.body ?? '{}')).toEqual({ prefixes: [`${PRINCIPAL}/a.txt`] });
+    expect(await harness(() => json([])).client.deleteObject(`${PRINCIPAL}/a.txt`, signal)).toBe(
+      false,
+    );
+    expect(
+      await harness(() => json({}, 403)).client.deleteObject(`${PRINCIPAL}/a.txt`, signal),
+    ).toBe(false);
+    await expect(
+      harness(() => json([{ name: 'other' }])).client.deleteObject(`${PRINCIPAL}/a.txt`, signal),
+    ).rejects.toMatchObject({ code: 'STORAGE_CLIENT_MALFORMED_RESPONSE' });
+    await expect(
+      harness(() => json([{ name: 'a' }, { name: 'b' }])).client.deleteObject('a', signal),
+    ).rejects.toMatchObject({ code: 'STORAGE_CLIENT_MALFORMED_RESPONSE' });
+  });
 });

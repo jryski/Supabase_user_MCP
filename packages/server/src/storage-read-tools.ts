@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 
 import type { McpServer } from '@modelcontextprotocol/server';
 import {
+  checkStorageInlineBase64,
   checkStorageMimeType,
   createReadToolError,
   createReadToolMcpResult,
@@ -10,16 +11,20 @@ import {
   STORAGE_ALLOWED_MIME_TYPES,
   STORAGE_CAPABILITIES,
   STORAGE_CAPABILITIES_TOOL,
+  STORAGE_DELETE_TOOL,
   STORAGE_GET_TOOL,
   STORAGE_LIST_TOOL,
   STORAGE_MAX_INLINE_BYTES,
   STORAGE_MAX_LIST_ITEMS,
   STORAGE_MAX_OBJECT_BYTES,
+  STORAGE_PUT_TOOL,
   STORAGE_SIGNED_URL_TTL_SECONDS,
   type StorageCapability,
+  type StorageDeleteInput,
   type StorageGetInput,
   type StorageListInput,
   type StorageListItem,
+  type StoragePutInput,
 } from '@supabase-user-mcp/contracts';
 
 import type { VerifiedUserIdentity } from './fixed-supabase-client.js';
@@ -59,6 +64,30 @@ const STORAGE_TOOL_METADATA = Object.freeze({
     description:
       "Returns one of the caller's own storage objects inline (small) or as a short-lived signed URL.",
   }),
+  [STORAGE_PUT_TOOL.name]: Object.freeze({
+    title: 'Create storage object',
+    description:
+      "Creates one new small object under the caller's own storage. Never overwrites an existing key.",
+  }),
+  [STORAGE_DELETE_TOOL.name]: Object.freeze({
+    title: 'Delete storage object',
+    description:
+      "Deletes one of the caller's own storage objects. Signed URLs already issued stay valid until they expire.",
+  }),
+});
+
+const STORAGE_PUT_ANNOTATIONS = Object.freeze({
+  readOnlyHint: false,
+  destructiveHint: false,
+  idempotentHint: false,
+  openWorldHint: false,
+});
+
+const STORAGE_DELETE_ANNOTATIONS = Object.freeze({
+  readOnlyHint: false,
+  destructiveHint: true,
+  idempotentHint: false,
+  openWorldHint: false,
 });
 
 class StorageToolFailure extends Error {
@@ -261,7 +290,49 @@ export function createStorageReadTools(dependencies: StorageReadToolDependencies
     governance,
   );
 
-  return Object.freeze({ capabilities, list, get });
+  // Writes go through the same scope seam as reads: the object key is always
+  // `<storage principal>/<relative key>`, where the database names the
+  // principal. For a delegated agent that is the human's prefix.
+  const put = createReadToolExecutor(
+    STORAGE_PUT_TOOL,
+    (input: StoragePutInput, signal) =>
+      guardStorageToolRun(signal, async () => {
+        if (!dependencies.capabilities.includes('storage:write')) fail('RESOURCE_UNAVAILABLE');
+        const parsed = parseStorageRelativeKey(input.key);
+        if (!parsed.ok) fail('INVALID_REQUEST');
+        if (!checkStorageMimeType(parsed.value, input.mimeType).ok) fail('INVALID_REQUEST');
+        const size = checkStorageInlineBase64(input.contentBase64);
+        if (!size.ok) fail('INVALID_REQUEST');
+        const bytes = new Uint8Array(Buffer.from(input.contentBase64, 'base64'));
+        if (bytes.byteLength !== size.value) fail('INVALID_REQUEST');
+        const objectKey = scope.toObjectKey(parsed.value.key);
+        // Not permitted, already exists and revoked are deliberately the same answer.
+        if (!(await client.uploadObject(objectKey, bytes, input.mimeType, signal))) {
+          fail('RESOURCE_UNAVAILABLE');
+        }
+        return {
+          ok: true as const,
+          record: { key: parsed.value.key, size: bytes.byteLength, mimeType: input.mimeType },
+        };
+      }),
+    governance,
+  );
+
+  const remove = createReadToolExecutor(
+    STORAGE_DELETE_TOOL,
+    (input: StorageDeleteInput, signal) =>
+      guardStorageToolRun(signal, async () => {
+        if (!dependencies.capabilities.includes('storage:write')) fail('RESOURCE_UNAVAILABLE');
+        const parsed = parseStorageRelativeKey(input.key);
+        if (!parsed.ok) fail('INVALID_REQUEST');
+        const objectKey = scope.toObjectKey(parsed.value.key);
+        if (!(await client.deleteObject(objectKey, signal))) fail('RESOURCE_UNAVAILABLE');
+        return { ok: true as const, deleted: { key: parsed.value.key } };
+      }),
+    governance,
+  );
+
+  return Object.freeze({ capabilities, list, get, put, delete: remove });
 }
 
 export interface StorageRegistrationConfig {
@@ -336,10 +407,12 @@ export async function prepareStorageMcpRegistration(
     return unregistered('unavailable', capabilities);
   }
 
+  const writable = capabilities.includes('storage:write');
   const toolNames = Object.freeze([
     STORAGE_CAPABILITIES_TOOL.name,
     STORAGE_LIST_TOOL.name,
     STORAGE_GET_TOOL.name,
+    ...(writable ? [STORAGE_PUT_TOOL.name, STORAGE_DELETE_TOOL.name] : []),
   ]);
   const tools = createStorageReadTools({
     client: config.client,
@@ -398,6 +471,33 @@ export async function prepareStorageMcpRegistration(
         async (input, context) =>
           createReadToolMcpResult(
             await tools.get(input, executionContext(context.mcpReq.id, context.mcpReq.signal)),
+          ),
+      );
+      if (!writable) return;
+      server.registerTool(
+        STORAGE_PUT_TOOL.name,
+        {
+          ...STORAGE_TOOL_METADATA[STORAGE_PUT_TOOL.name],
+          inputSchema: STORAGE_PUT_TOOL.inputSchema,
+          outputSchema: STORAGE_PUT_TOOL.outputSchema,
+          annotations: STORAGE_PUT_ANNOTATIONS,
+        },
+        async (input, context) =>
+          createReadToolMcpResult(
+            await tools.put(input, executionContext(context.mcpReq.id, context.mcpReq.signal)),
+          ),
+      );
+      server.registerTool(
+        STORAGE_DELETE_TOOL.name,
+        {
+          ...STORAGE_TOOL_METADATA[STORAGE_DELETE_TOOL.name],
+          inputSchema: STORAGE_DELETE_TOOL.inputSchema,
+          outputSchema: STORAGE_DELETE_TOOL.outputSchema,
+          annotations: STORAGE_DELETE_ANNOTATIONS,
+        },
+        async (input, context) =>
+          createReadToolMcpResult(
+            await tools.delete(input, executionContext(context.mcpReq.id, context.mcpReq.signal)),
           ),
       );
     },

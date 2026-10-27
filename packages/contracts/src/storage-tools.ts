@@ -36,6 +36,9 @@ export const STORAGE_READ_TOOL_NAMES = Object.freeze([
   'storage_get',
 ] as const);
 
+/** Write tools; registered only when the session also holds `storage:write`. */
+export const STORAGE_WRITE_TOOL_NAMES = Object.freeze(['storage_put', 'storage_delete'] as const);
+
 const StorageCursorSchema = z
   .string()
   .min(20)
@@ -173,6 +176,56 @@ export const StorageGetOutputSchema = z
   .refine(withinWireLimit, `Wire response must not exceed ${MAX_RESPONSE_BYTES} UTF-8 bytes.`);
 export type StorageGetOutput = z.infer<typeof StorageGetOutputSchema>;
 
+// storage_put ----------------------------------------------------------------
+
+/**
+ * Creates one new object from inline content. There is no overwrite and no
+ * move: the database has no UPDATE policy and the upload never upserts.
+ */
+export const StoragePutInputSchema = z
+  .object({
+    key: StorageRelativeKeySchema,
+    mimeType: StorageMimeTypeSchema,
+    contentBase64: z.base64().max(Math.ceil(STORAGE_MAX_INLINE_BYTES / 3) * 4),
+  })
+  .strict();
+export type StoragePutInput = z.infer<typeof StoragePutInputSchema>;
+
+const StoragePutSuccessSchema = z
+  .object({
+    ok: z.literal(true),
+    record: z
+      .object({
+        key: StorageRelativeKeySchema,
+        size: z.number().int().min(0).max(STORAGE_MAX_INLINE_BYTES),
+        mimeType: StorageMimeTypeSchema,
+      })
+      .strict(),
+  })
+  .strict();
+
+export const StoragePutOutputSchema = z
+  .union([StoragePutSuccessSchema, ReadToolErrorOutputSchema])
+  .refine(withinWireLimit, `Wire response must not exceed ${MAX_RESPONSE_BYTES} UTF-8 bytes.`);
+export type StoragePutOutput = z.infer<typeof StoragePutOutputSchema>;
+
+// storage_delete -------------------------------------------------------------
+
+export const StorageDeleteInputSchema = z.object({ key: StorageRelativeKeySchema }).strict();
+export type StorageDeleteInput = z.infer<typeof StorageDeleteInputSchema>;
+
+const StorageDeleteSuccessSchema = z
+  .object({
+    ok: z.literal(true),
+    deleted: z.object({ key: StorageRelativeKeySchema }).strict(),
+  })
+  .strict();
+
+export const StorageDeleteOutputSchema = z
+  .union([StorageDeleteSuccessSchema, ReadToolErrorOutputSchema])
+  .refine(withinWireLimit, `Wire response must not exceed ${MAX_RESPONSE_BYTES} UTF-8 bytes.`);
+export type StorageDeleteOutput = z.infer<typeof StorageDeleteOutputSchema>;
+
 // descriptors ----------------------------------------------------------------
 
 const STORAGE_SHARED_LIMITS = Object.freeze({
@@ -231,3 +284,34 @@ export const STORAGE_READ_TOOLS = Object.freeze([
   STORAGE_LIST_TOOL,
   STORAGE_GET_TOOL,
 ] as const);
+
+const STORAGE_WRITE_BEHAVIOR = Object.freeze({
+  retry: Object.freeze({ maxAttempts: 1, policy: 'none' as const }),
+  idempotency: 'not_idempotent' as const,
+  concurrency: 'parallel_safe' as const,
+  approval: 'not_required' as const,
+  audit: 'write_access' as const,
+  errorMapping: STORAGE_READ_BEHAVIOR.errorMapping,
+});
+
+export const STORAGE_PUT_TOOL = Object.freeze({
+  name: 'storage_put' as const,
+  capability: 'storage:write' as const,
+  operation: 'storage_put_v1',
+  inputSchema: StoragePutInputSchema,
+  outputSchema: StoragePutOutputSchema,
+  ...STORAGE_WRITE_BEHAVIOR,
+  limits: Object.freeze({ maxRows: 1, ...STORAGE_SHARED_LIMITS }),
+});
+
+export const STORAGE_DELETE_TOOL = Object.freeze({
+  name: 'storage_delete' as const,
+  capability: 'storage:write' as const,
+  operation: 'storage_delete_v1',
+  inputSchema: StorageDeleteInputSchema,
+  outputSchema: StorageDeleteOutputSchema,
+  ...STORAGE_WRITE_BEHAVIOR,
+  limits: Object.freeze({ maxRows: 1, ...STORAGE_SHARED_LIMITS }),
+});
+
+export const STORAGE_WRITE_TOOLS = Object.freeze([STORAGE_PUT_TOOL, STORAGE_DELETE_TOOL] as const);

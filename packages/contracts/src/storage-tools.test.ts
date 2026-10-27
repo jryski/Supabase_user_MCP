@@ -6,15 +6,23 @@ import { STORAGE_MAX_INLINE_BYTES, STORAGE_SIGNED_URL_TTL_SECONDS } from './stor
 import {
   STORAGE_CAPABILITIES,
   STORAGE_CAPABILITIES_TOOL,
+  STORAGE_DELETE_TOOL,
   STORAGE_GET_TOOL,
   STORAGE_LIST_TOOL,
+  STORAGE_PUT_TOOL,
   STORAGE_READ_TOOL_NAMES,
   STORAGE_READ_TOOLS,
+  STORAGE_WRITE_TOOL_NAMES,
+  STORAGE_WRITE_TOOLS,
   StorageCapabilitiesInputSchema,
+  StorageDeleteInputSchema,
+  StorageDeleteOutputSchema,
   StorageGetInputSchema,
   StorageGetOutputSchema,
   StorageListInputSchema,
   StorageListOutputSchema,
+  StoragePutInputSchema,
+  StoragePutOutputSchema,
 } from './storage-tools.js';
 
 const KEY = 'notes/today.md';
@@ -161,5 +169,76 @@ describe('storage tool output schemas', () => {
     ]) {
       expect(StorageListOutputSchema.safeParse({ ok: true, items: [bad] }).success).toBe(false);
     }
+  });
+});
+
+describe('storage write tool contracts', () => {
+  it('require storage:write, are not idempotent, and share the read budgets', () => {
+    expect(STORAGE_WRITE_TOOLS.map((tool) => tool.name)).toEqual([...STORAGE_WRITE_TOOL_NAMES]);
+    for (const tool of STORAGE_WRITE_TOOLS) {
+      expect(tool.capability).toBe('storage:write');
+      expect(tool.idempotency).toBe('not_idempotent');
+      expect(tool.limits).toEqual({ ...STORAGE_GET_TOOL.limits });
+      expect(Object.isFrozen(tool)).toBe(true);
+    }
+    expect(STORAGE_PUT_TOOL.operation).toBe('storage_put_v1');
+    expect(STORAGE_DELETE_TOOL.operation).toBe('storage_delete_v1');
+  });
+
+  it('accept only relative keys, an allowlisted type, and bounded base64', () => {
+    const put = { key: 'notes/a.md', mimeType: 'text/markdown', contentBase64: 'YQ==' };
+    expect(StoragePutInputSchema.parse(put)).toEqual(put);
+    expect(StorageDeleteInputSchema.parse({ key: 'notes/a.md' })).toEqual({ key: 'notes/a.md' });
+    for (const extra of ['bucket', 'principal', 'principalId', 'token', 'url', 'owner', 'upsert']) {
+      expect(StoragePutInputSchema.safeParse({ ...put, [extra]: 'x' }).success).toBe(false);
+      expect(StorageDeleteInputSchema.safeParse({ key: 'a.txt', [extra]: 'x' }).success).toBe(
+        false,
+      );
+    }
+    expect(StoragePutInputSchema.safeParse({ ...put, key: '/abs.md' }).success).toBe(false);
+    expect(StoragePutInputSchema.safeParse({ ...put, mimeType: 'text/html' }).success).toBe(false);
+    const max = Buffer.alloc(STORAGE_MAX_INLINE_BYTES).toString('base64');
+    expect(StoragePutInputSchema.safeParse({ ...put, contentBase64: max }).success).toBe(true);
+    expect(StoragePutInputSchema.safeParse({ ...put, contentBase64: `${max}AAAA` }).success).toBe(
+      false,
+    );
+  });
+
+  it('the largest put request fits the shared request budget', () => {
+    const request = {
+      jsonrpc: '2.0',
+      id: 1,
+      method: 'tools/call',
+      params: {
+        name: 'storage_put',
+        arguments: {
+          key: `${'a'.repeat(100)}/${'b'.repeat(100)}.txt`,
+          mimeType: 'text/plain',
+          contentBase64: Buffer.alloc(STORAGE_MAX_INLINE_BYTES).toString('base64'),
+        },
+      },
+    };
+    expect(Buffer.byteLength(JSON.stringify(request))).toBeLessThan(MAX_RESPONSE_BYTES);
+  });
+
+  it('outputs are strict', () => {
+    expect(
+      StoragePutOutputSchema.safeParse({
+        ok: true,
+        record: { key: 'a.txt', size: 1, mimeType: 'text/plain' },
+      }).success,
+    ).toBe(true);
+    expect(
+      StoragePutOutputSchema.safeParse({
+        ok: true,
+        record: { key: 'a.txt', size: 1, mimeType: 'text/plain', signedUrl: 'https://x' },
+      }).success,
+    ).toBe(false);
+    expect(
+      StorageDeleteOutputSchema.safeParse({ ok: true, deleted: { key: 'a.txt' } }).success,
+    ).toBe(true);
+    expect(
+      StorageDeleteOutputSchema.safeParse({ ok: true, deleted: { key: '../a.txt' } }).success,
+    ).toBe(false);
   });
 });

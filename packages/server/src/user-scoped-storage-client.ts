@@ -68,6 +68,18 @@ export interface UserScopedStorageClient {
     expiresInSeconds: number,
     signal: AbortSignal,
   ) => Promise<string | null>;
+  /**
+   * Creates a new object; never overwrites (`x-upsert: false`). Returns
+   * `false` when Storage refuses it: not permitted, or the key already exists.
+   */
+  readonly uploadObject: (
+    objectKey: string,
+    content: Uint8Array,
+    mimeType: string,
+    signal: AbortSignal,
+  ) => Promise<boolean>;
+  /** Deletes one object. Returns `false` when nothing was deleted (missing or not permitted). */
+  readonly deleteObject: (objectKey: string, signal: AbortSignal) => Promise<boolean>;
 }
 
 export interface UserScopedStorageClientConfig {
@@ -81,6 +93,8 @@ export interface UserScopedStorageClientConfig {
 export const STORAGE_RPC_SCHEMA = 'policy_lab';
 const MAX_JSON_BYTES = 256 * 1024;
 const MAX_SIGNED_URL_BYTES = 2048;
+/** Largest body this client will upload; the tool contract caps inline content lower. */
+const MAX_UPLOAD_BYTES = 16 * 1024;
 
 /** Only publishable project keys are accepted; every other key shape is refused. */
 const PUBLISHABLE_KEY_PATTERN = /^sb_publishable_[A-Za-z0-9_-]+$/;
@@ -371,6 +385,63 @@ export function createUserScopedStorageClient(
       if (!isRecord(value) || typeof value.signedURL !== 'string') malformed();
       if (value.signedURL.length > MAX_SIGNED_URL_BYTES) malformed();
       return `${origin.origin}/storage/v1${value.signedURL.startsWith('/') ? '' : '/'}${value.signedURL}`;
+    },
+
+    async uploadObject(objectKey, content, mimeType, signal) {
+      if (!(content instanceof Uint8Array) || content.byteLength > MAX_UPLOAD_BYTES) {
+        invalidConfig();
+      }
+      const response = await request(
+        `/storage/v1/object/${encodeURIComponent(bucket)}/${encodeObjectPath(objectKey)}`,
+        {
+          method: 'POST',
+          headers: {
+            Accept: 'application/json',
+            'Content-Type': mimeType,
+            'x-upsert': 'false',
+          },
+          body: content,
+        },
+        signal,
+      );
+      // Not permitted and already-exists are the same answer to the caller.
+      if (isDenied(response.status) || response.status === 409) {
+        await response.body?.cancel();
+        return false;
+      }
+      if (!response.ok) {
+        await response.body?.cancel();
+        throw new StorageClientError('STORAGE_CLIENT_UPSTREAM_ERROR');
+      }
+      const value = await readJson(response);
+      if (!isRecord(value) || value.Key !== `${bucket}/${objectKey}`) malformed();
+      return true;
+    },
+
+    async deleteObject(objectKey, signal) {
+      const response = await request(
+        `/storage/v1/object/${encodeURIComponent(bucket)}`,
+        {
+          method: 'DELETE',
+          headers: { Accept: 'application/json', 'Content-Type': 'application/json' },
+          body: JSON.stringify({ prefixes: [objectKey] }),
+        },
+        signal,
+      );
+      if (isDenied(response.status)) {
+        await response.body?.cancel();
+        return false;
+      }
+      if (!response.ok) {
+        await response.body?.cancel();
+        throw new StorageClientError('STORAGE_CLIENT_UPSTREAM_ERROR');
+      }
+      const value = await readJson(response);
+      if (!Array.isArray(value) || value.length > 1) malformed();
+      if (value.length === 0) return false;
+      const [row] = value;
+      if (!isRecord(row) || row.name !== objectKey) malformed();
+      return true;
     },
   };
   return Object.freeze(client);

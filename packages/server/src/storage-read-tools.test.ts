@@ -80,6 +80,13 @@ export class SyntheticStorage {
     );
   }
 
+  private writable(uid: string, objectKey: string): boolean {
+    return (
+      this.grants.get(uid)?.has('storage:write') === true &&
+      objectKey.startsWith(`${this.storagePrincipal(uid)}/`)
+    );
+  }
+
   private info(objectKey: string, object: StoredObject): StorageObjectInfo {
     return {
       objectKey,
@@ -137,6 +144,19 @@ export class SyntheticStorage {
         const object = this.objects.get(objectKey);
         if (object === undefined || !visible(objectKey)) return null;
         return `https://storage.example.test/storage/v1/object/sign/user-files/${objectKey}?token=synthetic`;
+      },
+      uploadObject: async (objectKey, content, mimeType) => {
+        this.calls.push(`upload:${objectKey}:${content.byteLength}:${mimeType}`);
+        // Mirrors option A: INSERT needs storage:write under the principal prefix; no upsert.
+        if (!options.bypassPolicy && !this.writable(uid, objectKey)) return false;
+        if (this.objects.has(objectKey)) return false;
+        this.objects.set(objectKey, { bytes: content, mimeType });
+        return true;
+      },
+      deleteObject: async (objectKey) => {
+        this.calls.push(`delete:${objectKey}`);
+        if (!options.bypassPolicy && !this.writable(uid, objectKey)) return false;
+        return this.objects.delete(objectKey);
       },
     };
   }
@@ -863,5 +883,194 @@ describe('guardStorageToolRun and the governor', () => {
     expect(events).toEqual([
       expect.objectContaining({ outcome: 'blocked', denialClass: 'INTERNAL_ERROR' }),
     ]);
+  });
+});
+
+describe('storage write tools: create and delete behind the same scope seam', () => {
+  const WRITE_TOOLS = ['storage_delete', 'storage_put'];
+  let storage: SyntheticStorage;
+  beforeEach(() => {
+    storage = new SyntheticStorage();
+    for (const uid of [USER_1, USER_2, AGENT_1])
+      storage.grant(uid, 'storage:read', 'storage:write');
+    storage.grant(AGENT_2, 'storage:read');
+    storage.put(`${USER_2}/keep.txt`, 'user two', 'text/plain');
+  });
+
+  async function writer(uid: string, capabilities: Array<'storage:read' | 'storage:write'>) {
+    const client = storage.sessionClient(uid);
+    const scope = await createPathPrefixStoragePrincipalResolver(
+      client.fetchStoragePrincipal,
+      client.tokenSubject,
+    ).resolve({ principalId: uid }, new AbortController().signal);
+    const built = createStorageReadTools({
+      client,
+      scope,
+      capabilities,
+      toolNames: [...STORAGE_TOOLS, ...WRITE_TOOLS],
+      now: () => NOW,
+    });
+    const context = { ...freshIdentity(), now: () => NOW };
+    return {
+      put: (input: unknown) => built.put(input, context),
+      remove: (input: unknown) => built.delete(input, context),
+      get: (input: unknown) => built.get(input, context),
+    };
+  }
+
+  const text = (value: string) => Buffer.from(value).toString('base64');
+
+  it('a human creates, reads back, and deletes its own object', async () => {
+    const session = await writer(USER_1, ['storage:read', 'storage:write']);
+    expect(
+      await session.put({
+        key: 'notes/new.md',
+        mimeType: 'text/markdown',
+        contentBase64: text('# hi'),
+      }),
+    ).toEqual({ ok: true, record: { key: 'notes/new.md', size: 4, mimeType: 'text/markdown' } });
+    expect(storage.objects.has(`${USER_1}/notes/new.md`)).toBe(true);
+    const read = (await session.get({ key: 'notes/new.md' })) as { ok: true };
+    expect(read.ok).toBe(true);
+    expect(await session.remove({ key: 'notes/new.md' })).toEqual({
+      ok: true,
+      deleted: { key: 'notes/new.md' },
+    });
+    expect(storage.objects.has(`${USER_1}/notes/new.md`)).toBe(false);
+    expect(errorCode(await session.remove({ key: 'notes/new.md' }))).toBe('RESOURCE_UNAVAILABLE');
+  });
+
+  it("a delegated agent's upload lands under its human's prefix, never its own", async () => {
+    const session = await writer(AGENT_1, ['storage:read', 'storage:write']);
+    const output = await session.put({
+      key: 'from-agent.txt',
+      mimeType: 'text/plain',
+      contentBase64: text('agent'),
+    });
+    expect((output as { ok: boolean }).ok).toBe(true);
+    expect(storage.calls).toContain(`upload:${USER_1}/from-agent.txt:5:text/plain`);
+    expect(storage.objects.has(`${USER_1}/from-agent.txt`)).toBe(true);
+    expect([...storage.objects.keys()].some((key) => key.startsWith(`${AGENT_1}/`))).toBe(false);
+  });
+
+  it('never overwrites: a second put on the same key is refused and the content is unchanged', async () => {
+    const session = await writer(USER_1, ['storage:read', 'storage:write']);
+    await session.put({ key: 'a.txt', mimeType: 'text/plain', contentBase64: text('first') });
+    expect(
+      errorCode(
+        await session.put({ key: 'a.txt', mimeType: 'text/plain', contentBase64: text('second') }),
+      ),
+    ).toBe('RESOURCE_UNAVAILABLE');
+    expect(Buffer.from(storage.objects.get(`${USER_1}/a.txt`)?.bytes ?? []).toString()).toBe(
+      'first',
+    );
+  });
+
+  it('cannot write or delete across principals', async () => {
+    const session = await writer(USER_1, ['storage:read', 'storage:write']);
+    expect(errorCode(await session.remove({ key: `${USER_2}/keep.txt` }))).toBe(
+      'RESOURCE_UNAVAILABLE',
+    );
+    expect(storage.calls).toContain(`delete:${USER_1}/${USER_2}/keep.txt`);
+    expect(storage.objects.has(`${USER_2}/keep.txt`)).toBe(true);
+    await session.put({ key: `${USER_2}/x.txt`, mimeType: 'text/plain', contentBase64: text('x') });
+    expect(storage.objects.has(`${USER_2}/x.txt`)).toBe(false);
+    expect(storage.objects.has(`${USER_1}/${USER_2}/x.txt`)).toBe(true);
+  });
+
+  it('a read-only session cannot write even if the upstream would allow it', async () => {
+    const session = await writer(AGENT_2, ['storage:read']);
+    expect(
+      errorCode(
+        await session.put({ key: 'a.txt', mimeType: 'text/plain', contentBase64: text('a') }),
+      ),
+    ).toBe('RESOURCE_UNAVAILABLE');
+    expect(errorCode(await session.remove({ key: 'keep.txt' }))).toBe('RESOURCE_UNAVAILABLE');
+    expect(storage.calls.some((call) => /^(upload|delete):/.test(call))).toBe(false);
+    expect(storage.objects.has(`${USER_2}/keep.txt`)).toBe(true);
+  });
+
+  it('a revoked write grant denies the open session at the policy layer', async () => {
+    const session = await writer(USER_1, ['storage:read', 'storage:write']);
+    storage.grant(USER_1, 'storage:read');
+    expect(
+      errorCode(
+        await session.put({ key: 'late.txt', mimeType: 'text/plain', contentBase64: text('l') }),
+      ),
+    ).toBe('RESOURCE_UNAVAILABLE');
+    expect(storage.objects.has(`${USER_1}/late.txt`)).toBe(false);
+  });
+
+  it.each([
+    [{ key: '../escape.txt', mimeType: 'text/plain', contentBase64: 'YQ==' }, 'INVALID_REQUEST'],
+    [{ key: 'page.html', mimeType: 'text/html', contentBase64: 'YQ==' }, 'INVALID_REQUEST'],
+    [{ key: 'a.txt', mimeType: 'application/json', contentBase64: 'YQ==' }, 'INVALID_REQUEST'],
+    [{ key: 'a.txt', mimeType: 'text/plain', contentBase64: 'YQ' }, 'INVALID_REQUEST'],
+    [
+      { key: 'a.txt', mimeType: 'text/plain', contentBase64: 'YQ==', bucket: 'x' },
+      'INVALID_REQUEST',
+    ],
+    [
+      {
+        key: 'big.txt',
+        mimeType: 'text/plain',
+        contentBase64: Buffer.alloc(STORAGE_MAX_INLINE_BYTES + 1).toString('base64'),
+      },
+      'INVALID_REQUEST',
+    ],
+  ])('rejects out-of-bounds put input %#', async (input, code) => {
+    const session = await writer(USER_1, ['storage:read', 'storage:write']);
+    expect(errorCode(await session.put(input))).toBe(code);
+    expect(storage.calls.some((call) => call.startsWith('upload:'))).toBe(false);
+  });
+
+  it('accepts the largest inline put', async () => {
+    const session = await writer(USER_1, ['storage:read', 'storage:write']);
+    const output = await session.put({
+      key: 'max.txt',
+      mimeType: 'text/plain',
+      contentBase64: Buffer.alloc(STORAGE_MAX_INLINE_BYTES, 0x61).toString('base64'),
+    });
+    expect(output).toMatchObject({ ok: true, record: { size: STORAGE_MAX_INLINE_BYTES } });
+  });
+
+  it('registers put and delete only with storage:write, with honest annotations', async () => {
+    const listed = async (uid: string) => {
+      let tools: Awaited<ReturnType<Client['listTools']>>['tools'] = [];
+      let instructions = '';
+      await withClient(
+        createReadOnlyServer({
+          client: memoryClient(uid),
+          storageRegistration: { client: storage.sessionClient(uid) },
+        }),
+        async (mcp) => {
+          tools = (await mcp.listTools()).tools;
+          instructions = mcp.getInstructions() ?? '';
+        },
+      );
+      return { tools, instructions };
+    };
+    const human = await listed(USER_1);
+    expect(human.tools.map((tool) => tool.name).toSorted()).toEqual(
+      [...MEMORY_TOOLS, ...STORAGE_TOOLS, ...WRITE_TOOLS].toSorted(),
+    );
+    expect(human.instructions).toMatch(/including create and delete/);
+    expect(human.tools.find((tool) => tool.name === 'storage_put')?.annotations).toMatchObject({
+      readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: false,
+    });
+    expect(human.tools.find((tool) => tool.name === 'storage_delete')?.annotations).toMatchObject({
+      readOnlyHint: false,
+      destructiveHint: true,
+    });
+    for (const tool of human.tools.filter((entry) => entry.name.startsWith('storage_'))) {
+      expect(JSON.stringify(tool.inputSchema)).not.toMatch(/bucket|principal|token|owner/i);
+    }
+    const readOnlyAgent = await listed(AGENT_2);
+    expect(readOnlyAgent.tools.map((tool) => tool.name).toSorted()).toEqual(
+      [...MEMORY_TOOLS, ...STORAGE_TOOLS].toSorted(),
+    );
+    expect(readOnlyAgent.instructions).toMatch(/Read-only storage tools/);
   });
 });
