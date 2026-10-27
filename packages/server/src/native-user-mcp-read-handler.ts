@@ -1,5 +1,6 @@
 import { createMcpHandler } from '@modelcontextprotocol/server';
 import {
+  checkStorageBucketId,
   DOWNSTREAM_CREDENTIAL_UNRESOLVED,
   RemoteOAuthClientIdSchema,
 } from '@supabase-user-mcp/contracts';
@@ -25,6 +26,7 @@ import {
 } from './native-user-mcp.js';
 import { createAuthorizationPendingServer, createReadOnlyServer } from './server.js';
 import { classifySourceSessionLiveness } from './source-session-liveness.js';
+import { createUserScopedStorageClient } from './user-scoped-storage-client.js';
 
 export { DOWNSTREAM_AUTHORIZATION_REQUIRED, DOWNSTREAM_B_GRANT_PROFILE };
 
@@ -79,6 +81,12 @@ export interface NativeUserMcpReadHandlerConfig {
    * can show it to the user. Off by default: the 403 handshake body is kept.
    */
   readonly downstreamAuthorizationViaToolResult?: boolean;
+  /**
+   * Opt-in storage tools (#123). The fixed Storage bucket. Storage requests
+   * carry the downstream grant B and the publishable key, exactly like the
+   * Data API client; Token A is never used. Off by default.
+   */
+  readonly storageBucket?: string;
 }
 
 export interface ReadCompositionObservation {
@@ -218,7 +226,11 @@ export function createNativeUserMcpReadHandler(
   } catch {
     invalidConfig();
   }
+  // Storage is reached at the project origin, never a path below it.
+  const storageOrigin = new URL(authOrigin).origin;
   const fetchImpl = config.fetch;
+  const storageBucket = config.storageBucket;
+  if (storageBucket !== undefined && !checkStorageBucketId(storageBucket).ok) invalidConfig();
   const store = new DownstreamOAuthGrantStore({
     issuer,
     authOrigin,
@@ -271,8 +283,23 @@ export function createNativeUserMcpReadHandler(
           },
           ...(fetchImpl === undefined ? {} : { fetch: fetchImpl }),
         });
+        const storageRegistration =
+          storageBucket === undefined
+            ? undefined
+            : {
+                client: createUserScopedStorageClient({
+                  origin: storageOrigin,
+                  bucket: storageBucket,
+                  credentials: {
+                    projectPublishableKey: config.publishableKey,
+                    userAccessToken: accessToken,
+                  },
+                  ...(fetchImpl === undefined ? {} : { fetch: fetchImpl }),
+                }),
+              };
         return createReadOnlyServer({
           client,
+          ...(storageRegistration === undefined ? {} : { storageRegistration }),
           ...(enableMarker
             ? {
                 testMarker: {

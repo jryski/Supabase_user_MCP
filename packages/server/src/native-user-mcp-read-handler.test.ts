@@ -3,7 +3,7 @@ import { exportJWK, generateKeyPair, type JWK, SignJWT } from 'jose';
 import { describe, expect, it } from 'vitest';
 
 import { DOWNSTREAM_AUTHORIZATION_REQUIRED } from './downstream-oauth-grant.js';
-import { MCP_INGRESS_ROLE } from './native-user-mcp.js';
+import { MCP_INGRESS_ROLE, NativeUserMcpConfigError } from './native-user-mcp.js';
 import { createNativeUserMcpReadHandler } from './native-user-mcp-read-handler.js';
 
 const RESOURCE = 'https://mcp.loopback.invalid/mcp';
@@ -342,6 +342,132 @@ describe('ADR-0005 dual-resource binding', () => {
     }
     for (const call of calls) {
       expect(JSON.stringify(call)).not.toContain(tokenA);
+    }
+  });
+});
+
+describe('storage tools through the read handler', () => {
+  it('sends every Storage and storage RPC request with B and the publishable key, never A', async () => {
+    const material = await keys();
+    const tokenA = await signA(material.privateKey);
+    const tokenB = await signB(material.privateKey);
+    const calls: Array<{ url: string; headers: Record<string, string>; body: string }> = [];
+    const json = (value: unknown) =>
+      new Response(JSON.stringify(value), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+    const fetchImpl: typeof fetch = async (input, init) => {
+      const url = String(input);
+      const headers = Object.fromEntries(new Headers(init?.headers).entries());
+      const body = typeof init?.body === 'string' ? init.body : '';
+      calls.push({ url, headers, body });
+      if (url.endsWith('/auth/v1/oauth/token')) {
+        return json({ access_token: tokenB, refresh_token: REFRESH });
+      }
+      if (url.endsWith('/rpc/source_session_live_v1')) return new Response('true', { status: 200 });
+      if (url.endsWith('/auth/v1/user')) return json({ id: SUB, aud: 'authenticated' });
+      // Answer storage only for B, so forwarding A would also break the tool call.
+      if (headers.authorization !== `Bearer ${tokenB}`) return new Response('{}', { status: 401 });
+      if (url.endsWith('/rest/v1/rpc/mcp_storage_session_capabilities_v1')) {
+        return json(['storage:read']);
+      }
+      if (url.endsWith('/rest/v1/rpc/mcp_storage_principal_v1')) return json(SUB);
+      if (url.endsWith('/storage/v1/object/list/mcp-user-storage')) {
+        return json([
+          {
+            name: 'note.txt',
+            id: '55555555-5555-4555-8555-555555555555',
+            updated_at: '2026-10-27T16:00:00.000Z',
+            metadata: { size: 5, mimetype: 'text/plain' },
+          },
+        ]);
+      }
+      return new Response('unexpected', { status: 500 });
+    };
+    const handler = createNativeUserMcpReadHandler({
+      resourceServer: RESOURCE,
+      supabaseUrl: SUPABASE_URL,
+      expectedClientId: A_CLIENT,
+      expectedAgentId: AGENT,
+      ingressRole: MCP_INGRESS_ROLE,
+      publishableKey: PUBLISHABLE,
+      jwks: material.jwks,
+      downstreamClientId: B_CLIENT,
+      downstreamRedirectUri: REDIRECT,
+      fetch: fetchImpl,
+      storageBucket: 'mcp-user-storage',
+    });
+
+    const first = await handler(mcpPost(tokenA));
+    const { handshake_id: handshakeId } = (await first.json()) as { handshake_id: string };
+    const bound = await handler(
+      new Request(`${REDIRECT}?code=once&state=${handshakeId}`, {
+        headers: { host: '127.0.0.1:8788' },
+      }),
+    );
+    expect(bound.status).toBe(200);
+
+    const response = await handler(
+      new Request(RESOURCE, {
+        method: 'POST',
+        headers: {
+          accept: 'application/json, text/event-stream',
+          authorization: `Bearer ${tokenA}`,
+          'content-type': 'application/json',
+          'mcp-protocol-version': '2025-06-18',
+        },
+        body: JSON.stringify({
+          jsonrpc: '2.0',
+          id: 3,
+          method: 'tools/call',
+          params: { name: 'storage_list', arguments: {} },
+        }),
+      }),
+    );
+    expect(response.status).toBe(200);
+    const text = await response.text();
+    expect(text).toContain('note.txt');
+    expect(text).not.toContain('"isError":true');
+
+    const storage = calls.filter(
+      (call) => call.url.includes('/storage/v1/') || call.url.includes('/rpc/mcp_storage_'),
+    );
+    expect(storage.map((call) => new URL(call.url).pathname)).toEqual([
+      '/rest/v1/rpc/mcp_storage_session_capabilities_v1',
+      '/rest/v1/rpc/mcp_storage_principal_v1',
+      '/storage/v1/object/list/mcp-user-storage',
+    ]);
+    for (const call of storage) {
+      expect(call.url.startsWith(`${SUPABASE_URL}/`)).toBe(true);
+      expect(call.headers.authorization).toBe(`Bearer ${tokenB}`);
+      expect(call.headers.apikey).toBe(PUBLISHABLE);
+    }
+    for (const call of calls) {
+      expect(JSON.stringify(call)).not.toContain(tokenA);
+    }
+  });
+
+  it('accepts a valid storage bucket and refuses an invalid one', async () => {
+    const material = await keys();
+    const base = {
+      resourceServer: RESOURCE,
+      supabaseUrl: SUPABASE_URL,
+      expectedClientId: A_CLIENT,
+      expectedAgentId: AGENT,
+      ingressRole: MCP_INGRESS_ROLE,
+      publishableKey: PUBLISHABLE,
+      jwks: material.jwks,
+      downstreamClientId: B_CLIENT,
+      downstreamRedirectUri: REDIRECT,
+    };
+    expect(() =>
+      createNativeUserMcpReadHandler({ ...base, storageBucket: 'mcp-user-storage' }),
+    ).not.toThrow();
+    for (const storageBucket of ['../b', '', 'a/b']) {
+      expect(() => createNativeUserMcpReadHandler({ ...base, storageBucket })).toThrow(
+        NativeUserMcpConfigError,
+      );
     }
   });
 });
