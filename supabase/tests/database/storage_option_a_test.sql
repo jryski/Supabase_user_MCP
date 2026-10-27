@@ -2,7 +2,7 @@
 -- Synthetic fixtures only; everything rolls back.
 BEGIN;
 CREATE EXTENSION IF NOT EXISTS pgtap WITH SCHEMA extensions;
-SELECT extensions.plan(69);
+SELECT extensions.plan(73);
 
 -- Fixtures (two users, two delegated agents, one denied user, one service agent).
 INSERT INTO policy_lab.principals (principal_id, principal_kind, identity_eligibility) VALUES
@@ -172,8 +172,36 @@ SELECT extensions.throws_ok(
 SELECT extensions.throws_ok(
   $$INSERT INTO storage.objects (bucket_id, name) VALUES ('s4-other-bucket', 'aaaaaaaa-0000-4000-8000-000000000001/y.txt')$$,
   '42501', NULL, 'user_a: other bucket denied');
-DELETE FROM storage.objects WHERE name = 'bbbbbbbb-0000-4000-8000-000000000002/b.txt';
-DELETE FROM storage.objects WHERE name = 'aaaaaaaa-0000-4000-8000-000000000001/delete-me.txt';
+-- Hosted Storage refuses direct SQL deletes on storage.objects (protect_delete
+-- trigger, ERRCODE 42501) unless storage.allow_delete_query is 'true', which the
+-- Storage API sets for its own deletes. Without the flag the delete must fail;
+-- with it, RLS alone decides which rows go. Skipped where the trigger is absent.
+SELECT CASE WHEN EXISTS (
+    SELECT 1 FROM pg_trigger t JOIN pg_class c ON c.oid = t.tgrelid
+    JOIN pg_namespace n ON n.oid = c.relnamespace
+    WHERE n.nspname = 'storage' AND c.relname = 'objects' AND t.tgname = 'protect_objects_delete')
+  THEN extensions.throws_ok(
+    $$DELETE FROM storage.objects WHERE name = 'aaaaaaaa-0000-4000-8000-000000000001/delete-me.txt'$$,
+    '42501', 'Direct deletion from storage tables is not allowed. Use the Storage API instead.',
+    'user_a: direct delete without the Storage API flag is refused')
+  ELSE extensions.skip('storage protect_delete trigger not installed', 1) END;
+SELECT set_config('storage.allow_delete_query', 'true', true);
+WITH d AS (
+  DELETE FROM storage.objects WHERE name = 'bbbbbbbb-0000-4000-8000-000000000002/b.txt' RETURNING 1)
+SELECT extensions.is(count(*)::int, 0, 'user_a: delete of user_b object removes no rows (RLS)') FROM d;
+WITH d AS (
+  DELETE FROM storage.objects WHERE name = 'aaaaaaaa-0000-4000-8000-000000000001/delete-me.txt' RETURNING 1)
+SELECT extensions.is(count(*)::int, 1, 'user_a: delete of own object removes exactly one row') FROM d;
+SELECT set_config('storage.allow_delete_query', 'false', true);
+SELECT CASE WHEN EXISTS (
+    SELECT 1 FROM pg_trigger t JOIN pg_class c ON c.oid = t.tgrelid
+    JOIN pg_namespace n ON n.oid = c.relnamespace
+    WHERE n.nspname = 'storage' AND c.relname = 'objects' AND t.tgname = 'protect_objects_delete')
+  THEN extensions.throws_ok(
+    $$DELETE FROM storage.objects WHERE name = 'aaaaaaaa-0000-4000-8000-000000000001/notes/a.txt'$$,
+    '42501', 'Direct deletion from storage tables is not allowed. Use the Storage API instead.',
+    'user_a: direct delete is refused again once the flag is cleared')
+  ELSE extensions.skip('storage protect_delete trigger not installed', 1) END;
 UPDATE storage.objects SET name = 'aaaaaaaa-0000-4000-8000-000000000001/renamed.txt'
   WHERE name = 'aaaaaaaa-0000-4000-8000-000000000001/notes/a.txt';
 
