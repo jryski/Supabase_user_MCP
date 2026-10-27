@@ -102,8 +102,9 @@ accepted until the Primary Users record the RLS layout decision.
 
 ## Validation
 
-`supabase/tests/database/storage_option_a_test.sql` (78 assertions) and
-`test/policy-lab/storage-option-a-contract.test.ts`. See
+`supabase/tests/database/storage_option_a_test.sql` (78 assertions),
+`test/policy-lab/storage-option-a-contract.test.ts`, and the PGlite end-to-end run
+`test/storage-option-a-e2e.test.ts`. See
 [ISSUE_123_STORAGE_S4_RLS](../evidence/ISSUE_123_STORAGE_S4_RLS.md).
 
 ## Revisit when

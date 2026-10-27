@@ -32,6 +32,12 @@
   one, scoped by RLS.
 - `test/policy-lab/storage-option-a-contract.test.ts`: static checks, including byte pins for the
   grant-check invariant migrations.
+- `test/storage-option-a-e2e.test.ts`: end-to-end run in PGlite. The real storage tools and the
+  real user-scoped client talk to a small in-process stand-in for the Storage API and the Data
+  API, which runs each request as `authenticated` with the caller's claims, so RLS decides. It
+  covers 2 humans on 2 clients and 1 delegated agent: allow, cross-principal and overwrite
+  denials, the agent capped by its human's grant, revocation, expiry, signed URLs that stay
+  valid after revocation until they expire, and cleanup through the delete guard.
 
 ## Hosted delete guard
 
@@ -81,6 +87,9 @@ choice is kept in one function, `policy_lab.storage_object_prefix()`.
 - The pgTAP file was run in PGlite with the repository stub, after all repository migrations:
   78 of 78 passed with the delete guard installed. Without the guard, 76 passed and the 2 guard
   assertions were skipped. Without the follow-up migration, the 5 human-grant assertions failed.
+- `npx vitest run test/storage-option-a-e2e.test.ts`: 7 of 7 passed. Without the follow-up
+  migration, the human-grant scenario failed.
+- The stand-in is not the hosted Storage API. It models only the routes the client calls.
 - `supabase test db` was not run: it needs Docker and a local Supabase stack.
 
 ## Review items
