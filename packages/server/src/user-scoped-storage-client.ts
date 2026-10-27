@@ -41,6 +41,11 @@ export interface StorageListPage {
 }
 
 export interface UserScopedStorageClient {
+  /**
+   * `sub` claim of the user access token this client sends (decoded, not
+   * verified). Registration requires it to equal the verified caller identity.
+   */
+  readonly tokenSubject: string;
   /** Active storage capabilities for this session, as reported by the database. */
   readonly fetchStorageGrants: (signal: AbortSignal) => Promise<ReadonlyArray<string>>;
   /** Result of the DB `storage_principal()` function for the calling user. */
@@ -202,7 +207,7 @@ export function createUserScopedStorageClient(
   if (!PUBLISHABLE_KEY_PATTERN.test(key)) invalidConfig();
   if (key.split('.').length === 3) invalidConfig();
   // The user token must be a JWT whose (unverified) role is `authenticated`.
-  userTokenSubject(token);
+  const tokenSubject = userTokenSubject(token);
   const fetchImplementation = config.fetch ?? globalThis.fetch;
   const bucket = config.bucket;
   const baseHeaders = Object.freeze({ Authorization: `Bearer ${token}`, apikey: key });
@@ -238,6 +243,7 @@ export function createUserScopedStorageClient(
   };
 
   const client: UserScopedStorageClient = {
+    tokenSubject,
     async fetchStorageGrants(signal: AbortSignal) {
       const value = await rpc('storage_session_capabilities', signal);
       if (!Array.isArray(value) || value.length > 8) malformed();

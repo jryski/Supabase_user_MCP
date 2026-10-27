@@ -71,7 +71,15 @@ function fail(code: ReadToolErrorCode): never {
   throw new StorageToolFailure(code);
 }
 
-async function guarded(signal: AbortSignal, run: () => Promise<unknown>): Promise<unknown> {
+/**
+ * Maps storage tool failures to typed read-tool errors. Exported for tests.
+ * Only a caller or deadline abort is rethrown, so the governor reports it as
+ * a deadline; every other failure is returned here, never thrown.
+ */
+export async function guardStorageToolRun(
+  signal: AbortSignal,
+  run: () => Promise<unknown>,
+): Promise<unknown> {
   try {
     return await run();
   } catch (error) {
@@ -154,7 +162,7 @@ export function createStorageReadTools(dependencies: StorageReadToolDependencies
   const list = createReadToolExecutor(
     STORAGE_LIST_TOOL,
     (input: StorageListInput, signal) =>
-      guarded(signal, async () => {
+      guardStorageToolRun(signal, async () => {
         const offset = decodeStorageListCursor(input.prefix, input.cursor);
         const page = await client.listObjects(
           { folder: scope.toListPrefix(input.prefix), limit: input.limit, offset },
@@ -199,7 +207,7 @@ export function createStorageReadTools(dependencies: StorageReadToolDependencies
   const get = createReadToolExecutor(
     STORAGE_GET_TOOL,
     (input: StorageGetInput, signal) =>
-      guarded(signal, async () => {
+      guardStorageToolRun(signal, async () => {
         const parsed = parseStorageRelativeKey(input.key);
         if (!parsed.ok) fail('INVALID_REQUEST');
         const objectKey = scope.toObjectKey(parsed.value.key);
@@ -298,6 +306,13 @@ export async function prepareStorageMcpRegistration(
   config: StorageRegistrationConfig,
   identity: VerifiedUserIdentity,
 ): Promise<PreparedStorageRegistration> {
+  // The storage client's user token must belong to the verified caller.
+  if (
+    typeof config.client.tokenSubject !== 'string' ||
+    config.client.tokenSubject !== identity.principalId
+  ) {
+    return unregistered('unavailable');
+  }
   const signal = AbortSignal.timeout(SETUP_TIMEOUT_MS);
   let capabilities: StorageCapability[];
   try {
@@ -310,7 +325,10 @@ export async function prepareStorageMcpRegistration(
 
   const resolver =
     config.principalResolver ??
-    createPathPrefixStoragePrincipalResolver(config.client.fetchStoragePrincipal);
+    createPathPrefixStoragePrincipalResolver(
+      config.client.fetchStoragePrincipal,
+      config.client.tokenSubject,
+    );
   let scope: StorageKeyScope;
   try {
     scope = await resolver.resolve(identity, signal);
