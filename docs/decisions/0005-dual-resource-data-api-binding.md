@@ -1,6 +1,7 @@
 # ADR-0005: Dual resource binding does not authorize MCP bearer passthrough
 
-- **Status:** Unresolved — Option A rejected as a downstream-credential mechanism
+- **Status:** Proposed — Option A rejected; Option D (separate user-approved grant B) implemented
+  for opt-in TEST and pilot use only
 - **Date:** 2026-09-06
 - **Owners:** Maintainers
 - **Milestone:** M4 implementation
@@ -13,7 +14,7 @@ downstream credential chain. MCP `2026-07-28` requires intended-resource/audienc
 **and** [forbids forwarding the inbound MCP access token to an upstream API](https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization/security-considerations#access-token-privilege-restriction).
 A multi-audience JWT is not that separate credential.
 
-The reviewing agent recorded this on issue #62 (comment 5562283720) and on PR #64 (comments 5562394217
+A reviewer recorded this on issue #62 (comment 5562283720) and on PR #64 (comments 5562394217
 and 5562411647). Independent 4MiB ingress reproduction of unbounded pre-auth buffering was
 also recorded at comment 5562411647.
 
@@ -57,6 +58,20 @@ sign-in path, not a downstream Data API mint. Not proven.
 
 Rejected. Ambient `service_role` or issuer HMAC signing authority in the user path is forbidden.
 
+### Option D — Separate user-approved downstream grant (B)
+
+Implemented for opt-in TEST and pilot use. `createNativeUserMcpReadHandler` verifies the
+inbound MCP bearer (Token A) and never sends it to the Data API. It then obtains a distinct
+Data API grant (Token B) for the same user through a second registered public OAuth client:
+a one-time PKCE S256 handshake bound to the verified subject, source session, A client, and
+agent. Refresh tokens are discarded at exchange and B lives in process memory only. Before
+every dispatch, source-session liveness is checked with B
+([`sql/liveness/source_session_live_v1.sql`](../../sql/liveness/source_session_live_v1.sql)).
+Only the fixed read tools then run, with B as the Data API bearer.
+
+This is a separate credential, not token exchange and not privileged minting. It is not
+production custody: grants do not survive a restart, and the user approves B again.
+
 ## Decision
 
 Keep useful remote scaffolding and **fail-close data dispatch** until a supported separate
@@ -68,14 +83,15 @@ database authority can be demonstrated:
 2. MCP verifies signature via JWKS (not HMAC), issuer, `role=authenticated`, subject,
    configured `client_id`, dual audience/resource, and live revocation.
 3. `user_metadata` is never an authorization source.
-4. After a valid MCP bearer, the remote handler returns
-   `downstream_credential_unresolved` and must not create a Data API client with that bearer.
+4. After a valid MCP bearer, the default remote HTTP profile and the bare native adapter
+   return `downstream_credential_unresolved` and must not create a Data API client with that
+   bearer. Only the opt-in native read composition (Option D) dispatches, and only with B.
 5. Normal remote CLI rejects HMAC/JWT signing secrets and privileged project keys. Synthetic
    HMAC remains confined to the in-process authorization-server fixture.
 6. HTTP ingress enforces the 65,536-byte frame ceiling and 2,000 ms deadline with cancellation
    before unbounded buffering.
-7. Hosted/live OAuth, public listeners, tunnels, external MCP-client OAuth UI, and the
-   downstream credential remain unmet. This is **not** completion of issue #62.
+7. Hosted/live OAuth, public listeners, tunnels, external MCP-client OAuth UI, and durable
+   custody of the downstream credential remain unmet. This is **not** completion of issue #62.
 
 ## Remaining gate
 
@@ -85,7 +101,9 @@ A supported separate short-lived downstream credential that:
 - retains the same verified user and client restrictions;
 - does not use privileged minting or invented token exchange.
 
-Until that gate is proven, remote tool execution against the Data API stays disabled.
+Option D meets these for opt-in TEST and pilot use with memory-only custody. The default
+remote HTTP profile keeps Data API dispatch disabled until Primary Users accept Option D for
+wider use.
 
 ## Consequences
 
@@ -97,7 +115,8 @@ Until that gate is proven, remote tool execution against the Data API stays disa
 
 ### Negative
 
-- Remote `memory_*` tools do not execute over HTTP.
+- In the default remote HTTP profile, `memory_*` tools do not execute. They execute only
+  through the opt-in native read composition, with grant B.
 - Issue #62 remains incomplete.
 
 ## Revisit when

@@ -164,8 +164,9 @@ profile, not a production or hosted deployment claim.
 An experimental local remote HTTP + OAuth 2.1 profile (`npm run start:remote`,
 `npm run test:remote-oauth`) validates JWKS verification, dual resource binding, PKCE, and live
 access-token revocation inside the disposable loopback lab. The inbound MCP bearer is not forwarded
-to the Data API; dispatch is fail-closed until a supported separate downstream credential exists.
-Downstream credential and hosted live OAuth remain unmet. This is not completion of issue #62.
+to the Data API, and this profile's Data API dispatch is fail-closed. A separate opt-in native read
+composition dispatches the fixed read tools with a distinct, user-approved grant B held in memory
+only. Durable downstream-credential custody and hosted live OAuth remain unmet. This is not completion of issue #62.
 
 The intended local path is:
 

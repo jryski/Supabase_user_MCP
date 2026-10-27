@@ -29,9 +29,11 @@ import { isLoopbackHttpUrl } from './loopback-host.js';
  * builds an unused same-bearer user client and an unused admin client before
  * the handler runs. This adapter never calls either client.
  *
- * Token B, a distinct Data API credential, is unresolved on this adapter.
- * A verified Token A with no `onVerified` dispatch fails closed with
- * `downstream_credential_unresolved`.
+ * This adapter does not hold Token B, the distinct Data API credential. A
+ * verified Token A with no `onVerified` dispatch fails closed with
+ * `downstream_credential_unresolved`. The opt-in read composition
+ * (`createNativeUserMcpReadHandler`) binds a separate grant B and dispatches
+ * the fixed read tools with it.
  *
  * MCP-side check: `aud` must be one value, and that value must canonicalize
  * to the MCP resource. Jose matches any array entry, so extra audiences are
@@ -55,7 +57,7 @@ const LIBRARY_ADMIN_CONSTRUCTION_PLACEHOLDER = 'g2-unused-admin-client-not-a-cre
 
 export const NATIVE_USER_MCP_CREDENTIAL_SPLIT = Object.freeze({
   tokenA: 'upstream-supabase-auth-jwt' as const,
-  tokenB: 'unresolved' as const,
+  tokenB: 'separate-grant-via-read-composition' as const,
   dataApi: DOWNSTREAM_CREDENTIAL_UNRESOLVED,
   sameBearerPassthrough: false as const,
   liveRevocation: 'not-implemented' as const,

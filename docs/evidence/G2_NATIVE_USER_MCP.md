@@ -1,7 +1,7 @@
 # G2 native-user MCP adapter
 
-- **Status:** Draft scaffold. Not merged. Not issue #62 completion.
-- **Base:** `ariadne/remote-oauth-rebased-20260919` @ `fcbaca121d0717ee8ff98df90b2f12475b05bb78`
+- **Status:** Draft. Not merged. Not issue #62 completion.
+- **Base:** `main`
 - **Package pin:** `@supabase/server@1.7.2` (MIT) and peer `@supabase/supabase-js@2.117.2` (MIT)
 
 ## What this is
@@ -26,7 +26,7 @@ routes, or a lab dual-grant broker.
 | Credential | Role on this branch |
 | --- | --- |
 | Token A | Inbound `Authorization: Bearer` JWT. `withSupabase({ auth: 'user' })` verifies signature, `kid`, expiry, configured issuer (`{supabaseUrl}/auth/v1`), and MCP resource audience against the supplied asymmetric JWKS or JWKS URL. The handler then requires configured `role=mcp_ingress` and rejects `role=authenticated`, plus server-controlled `client_id`, a UUID `sub`, and a `session_id` that is a non-nil UUID (empty and nil are rejected), and a resource-only `aud`: exactly one value, as a string or a true singleton array, that canonicalizes to the MCP resource. Any other `aud` length or value, or any other role, is `401` `{ "error": "invalid_token" }`. The handler rejects `user_metadata` authority fields. Configuring an ingress role other than `mcp_ingress` is a config error. |
-| Token B | Unresolved. No second Data API client is created. A resource-only Token A returns `403` `{ "error": "downstream_credential_unresolved" }`. |
+| Token B | Not held by the bare adapter: without `onVerified`, a resource-only Token A returns `403` `{ "error": "downstream_credential_unresolved" }`. The opt-in read composition (`createNativeUserMcpReadHandler`) binds a distinct grant B through a one-time PKCE handshake for the same verified principal, checks source-session liveness with B before every dispatch, and runs the fixed read tools with B only. See [ADR-0005](../decisions/0005-dual-resource-data-api-binding.md) Option D. |
 
 ## Fixed in this slice: MCP-side intended-recipient check
 
@@ -51,28 +51,27 @@ Postgres role, install the Auth hook, or prove upstream Data API denial.
 
 ## Not shipped
 
-`docs/evidence/ari-test-probe/sql/03-mcp-ingress-role.sql` is controller SQL
-for the designated disposable TEST project only. This branch does not apply it.
-`sql/04-hook-v2-for-ariadne.sql` is the uninstalled hook v2 packet: absent
-`client_id` stays unchanged, expected `openid` returns structured error
-`403` `openid_scope_refused`, a present unmapped `client_id` returns that
-same structured `403` with message `unmapped_client_id`, a not-live source
-session returns structured `401` `source_session_not_live`, unexpected faults
-still raise, and the mapped client rewrites `aud`, `role`, and `session_id`.
-Primary Users leave the hook disabled until an independent reviewer approves the exact head.
-The original-session liveness check runs on each hook call
-(token issuance or refresh) only. It does not run on each MCP call. The
-adapter has no liveness check. That check is not a revocation receipt.
-`sql/02` must not be applied.
-The live probe was not run. Token B is not wired into the MCP tool path.
-This is not acceptance.
+This repository does not contain or apply the `mcp_ingress` Postgres role or
+the Auth hook that mints Token A with a resource-only `aud`, `role=mcp_ingress`,
+`agent_id`, and `source_session_id`. Those are operator inputs for a disposable
+TEST project, and Primary Users leave any such hook disabled until an
+independent reviewer approves the exact head.
+
+The only database object the read composition calls is
+`public.source_session_live_v1`, defined in
+[`sql/liveness/source_session_live_v1.sql`](../../sql/liveness/source_session_live_v1.sql).
+It is not a migration and nothing here applies it. The read composition calls
+it with Token B before every dispatch; anything other than JSON `true` fails
+closed. The bare adapter has no liveness check. The check is not a revocation
+receipt. No live probe was run for this change.
 
 ## Still open
 
 - Upstream authority denial. This check does not make PostgREST, Storage, GraphQL,
   or Realtime reject a bearer. Data API capability of a presented credential is
   not closed.
-- Token B. No distinct Data API credential exists. Dispatch stays fail-closed.
+- Token B custody. The read composition holds grant B in process memory only;
+  there is no durable custody, and the bare adapter stays fail-closed.
 - Live OAuth issuance and a real MCP client are not in this slice.
 
 This is not acceptance and not direct-API separation.
@@ -86,21 +85,23 @@ not with `SUPABASE_SECRET_KEY` or a service-role JWT. Explicit `env` is passed s
 environment secrets are not read.
 
 Same-bearer passthrough is not the finished design. The MCP-side audience check
-above does not close upstream Data API denial or Token B.
+above does not close upstream Data API denial. Token B comes from a separate
+grant, not from this check.
 
 ## Preserved
 
 Stdio startup, the fixed read-only tools, governors, verified-principal propagation on the
 existing stdio client, bounds (`65,536` byte ingress, `2,000` ms body deadline), and
-secret-free fail-closed receipts stay in place. This HTTP adapter does not replace them and
-does not attach tool execution.
+secret-free fail-closed receipts stay in place. The bare HTTP adapter does not replace them
+and does not attach tool execution; only the opt-in read composition does, with grant B.
 
 ## Residual gaps (G3)
 
-- Token B still does not exist. Do not point Data API calls at the library user client.
+- Do not point Data API calls at the library user client. Data API calls use grant B
+  from the read composition only.
 - Live access-token revocation is not performed. An unexpired revoked JWT reaches the
   fail-closed `403` instead of a revocation denial.
-- The existing read-only `McpServer` is not mounted on this fetch handler. Tool dispatch
-  waits on a distinct downstream credential.
+- The bare fetch handler does not mount the read-only `McpServer`. The read composition
+  mounts it per request with grant B.
 - Hosted OAuth, consent, dynamic client registration, Pages, and DNS are out of scope.
   Issue #62 remains incomplete.

@@ -119,7 +119,7 @@ describe('native user MCP adapter', () => {
     expect(packageJson.dependencies['@supabase/supabase-js']).toBe(SUPABASE_JS_PIN);
     expect(NATIVE_USER_MCP_CREDENTIAL_SPLIT).toEqual({
       tokenA: 'upstream-supabase-auth-jwt',
-      tokenB: 'unresolved',
+      tokenB: 'separate-grant-via-read-composition',
       dataApi: DOWNSTREAM_CREDENTIAL_UNRESOLVED,
       sameBearerPassthrough: false,
       liveRevocation: 'not-implemented',

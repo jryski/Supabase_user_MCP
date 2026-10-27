@@ -12,8 +12,11 @@ the first public package is released.
 
 - Draft G2 native-user fetch adapter. Pins `@supabase/server@1.7.2` and verifies Token A
   with the stable nested `withOAuthProtectedResource(withSupabase({ auth: 'user' }))` form.
-  Token B is unresolved, so Data API dispatch stays `downstream_credential_unresolved`.
-  This does not complete issue #62 and does not add an MCP issuer. See
+  The bare adapter does not hold Token B, so its Data API dispatch stays
+  `downstream_credential_unresolved`. An opt-in read composition binds a separate grant B
+  (PKCE, memory-only custody), checks source-session liveness with B before every dispatch
+  ([`sql/liveness/source_session_live_v1.sql`](sql/liveness/source_session_live_v1.sql),
+  not a migration), and runs the fixed read tools with B. This does not complete issue #62 and does not add an MCP issuer. See
   [G2 evidence](docs/evidence/G2_NATIVE_USER_MCP.md).
 - Opt-in candidate contracts for `memory_retrieve` and `session_capabilities_get`,
   reusing the existing read parser, result renderer and governance checks.
@@ -23,18 +26,16 @@ the first public package is released.
   separating synthetic validation from live authorization and deployment.
 - Experimental local remote HTTP + OAuth 2.1 scaffolding: JWKS verification, PKCE S256, exact
   redirects, live access-token revocation, bounded ingress (including TRACE/malformed-Host
-  Request-construction failures), and fail-closed Data API dispatch.
-  Dual audience does not authorize MCP bearer passthrough. Downstream credential unresolved; hosted
-  live OAuth unmet. See [ADR-0005](docs/decisions/0005-dual-resource-data-api-binding.md)
+  Request-construction failures), and fail-closed Data API dispatch in the default remote profile.
+  Dual audience does not authorize MCP bearer passthrough. Durable downstream-credential custody and
+  hosted live OAuth are unmet. See [ADR-0005](docs/decisions/0005-dual-resource-data-api-binding.md)
   and [issue 62 evidence](docs/evidence/ISSUE_62_REMOTE_OAUTH_HTTP.md).
 
 ### Fixed
 
 - Native-user Token A must use configured `role=mcp_ingress`. `role=authenticated`
-  is rejected. A nil or empty `session_id` is rejected. Controller SQL for an
-  isolated `mcp_ingress` role and an uninstalled hook v2 packet are kept in private
-  TEST evidence. Neither SQL file is applied by this change. The live probe
-  and Token B remain open.
+  is rejected. A nil or empty `session_id` is rejected. This change does not create the
+  `mcp_ingress` role or install an Auth hook. No live probe was run.
 - Read-only stdio factory returns the SDK server required for modern negotiation,
   while preserving bounded transport checks. The former connect/close-only wrapper
   prevented discovery before tool calls. This correction is unreleased.
