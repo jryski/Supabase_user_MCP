@@ -266,3 +266,82 @@ describe('native user MCP read composition', () => {
     }
   });
 });
+
+describe('ADR-0005 dual-resource binding', () => {
+  it('never forwards the inbound Authorization header to the Data API', async () => {
+    const material = await keys();
+    const tokenA = await signA(material.privateKey);
+    const tokenB = await signB(material.privateKey);
+    const calls: Array<{ url: string; headers: Record<string, string>; body: string }> = [];
+    const fetchImpl: typeof fetch = async (input, init) => {
+      const url = String(input);
+      const headers = Object.fromEntries(new Headers(init?.headers).entries());
+      const body = typeof init?.body === 'string' ? init.body : '';
+      calls.push({ url, headers, body });
+      if (url.endsWith('/auth/v1/oauth/token')) {
+        return new Response(JSON.stringify({ access_token: tokenB, refresh_token: REFRESH }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        });
+      }
+      if (url.endsWith('/rpc/source_session_live_v1')) return new Response('true', { status: 200 });
+      if (url.endsWith('/auth/v1/user')) {
+        return new Response(JSON.stringify({ id: SUB, aud: 'authenticated' }), { status: 200 });
+      }
+      if (url.includes('/rest/v1/rpc/authorized_memory_search_v1')) {
+        return new Response('[]', { status: 200, headers: { 'content-type': 'application/json' } });
+      }
+      return new Response('unexpected', { status: 500 });
+    };
+    const handler = createNativeUserMcpReadHandler({
+      resourceServer: RESOURCE,
+      supabaseUrl: SUPABASE_URL,
+      expectedClientId: A_CLIENT,
+      expectedAgentId: AGENT,
+      ingressRole: MCP_INGRESS_ROLE,
+      publishableKey: PUBLISHABLE,
+      jwks: material.jwks,
+      downstreamClientId: B_CLIENT,
+      downstreamRedirectUri: REDIRECT,
+      fetch: fetchImpl,
+    });
+
+    const first = await handler(mcpPost(tokenA));
+    const { handshake_id: handshakeId } = (await first.json()) as { handshake_id: string };
+    const bound = await handler(
+      new Request(`${REDIRECT}?code=once&state=${handshakeId}`, {
+        headers: { host: '127.0.0.1:8788' },
+      }),
+    );
+    expect(bound.status).toBe(200);
+
+    const toolCall = new Request(RESOURCE, {
+      method: 'POST',
+      headers: {
+        accept: 'application/json, text/event-stream',
+        authorization: `Bearer ${tokenA}`,
+        'content-type': 'application/json',
+        'mcp-protocol-version': '2025-06-18',
+      },
+      body: JSON.stringify({
+        jsonrpc: '2.0',
+        id: 2,
+        method: 'tools/call',
+        params: { name: 'memory_search', arguments: { query: 'synthetic lunch note' } },
+      }),
+    });
+    const response = await handler(toolCall);
+    expect(response.status).toBe(200);
+    await response.text();
+
+    const dataApi = calls.filter((call) => call.url.includes('/rest/v1/'));
+    expect(dataApi.some((call) => call.url.includes('authorized_memory_search_v1'))).toBe(true);
+    for (const call of dataApi) {
+      expect(call.headers.authorization).toBe(`Bearer ${tokenB}`);
+      expect(call.headers.apikey).toBe(PUBLISHABLE);
+    }
+    for (const call of calls) {
+      expect(JSON.stringify(call)).not.toContain(tokenA);
+    }
+  });
+});
