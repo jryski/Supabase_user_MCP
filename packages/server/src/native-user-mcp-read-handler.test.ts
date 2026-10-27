@@ -471,3 +471,143 @@ describe('storage tools through the read handler', () => {
     }
   });
 });
+
+describe('storage tools are exposed and callable through the read handler only when authorized', () => {
+  const STORAGE_TOOL_NAMES = ['storage_capabilities', 'storage_get', 'storage_list'];
+  const json = (value: unknown) =>
+    new Response(JSON.stringify(value), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    });
+
+  async function boundHandler(options: {
+    readonly capabilities: ReadonlyArray<string>;
+    readonly storageBucket?: string;
+  }) {
+    const material = await keys();
+    const tokenA = await signA(material.privateKey);
+    const tokenB = await signB(material.privateKey);
+    const calls: string[] = [];
+    const fetchImpl: typeof fetch = async (input) => {
+      const url = String(input);
+      calls.push(url);
+      if (url.endsWith('/auth/v1/oauth/token')) {
+        return json({ access_token: tokenB, refresh_token: REFRESH });
+      }
+      if (url.endsWith('/rpc/source_session_live_v1')) return new Response('true', { status: 200 });
+      if (url.endsWith('/auth/v1/user')) return json({ id: SUB, aud: 'authenticated' });
+      if (url.endsWith('/rest/v1/rpc/mcp_storage_session_capabilities_v1')) {
+        return json(options.capabilities);
+      }
+      if (url.endsWith('/rest/v1/rpc/mcp_storage_principal_v1')) return json(SUB);
+      if (url.endsWith('/storage/v1/object/list/mcp-user-storage')) {
+        return json([
+          {
+            name: 'note.txt',
+            id: '55555555-5555-4555-8555-555555555555',
+            updated_at: '2026-10-27T16:00:00.000Z',
+            metadata: { size: 5, mimetype: 'text/plain' },
+          },
+        ]);
+      }
+      return new Response('unexpected', { status: 500 });
+    };
+    const handler = createNativeUserMcpReadHandler({
+      resourceServer: RESOURCE,
+      supabaseUrl: SUPABASE_URL,
+      expectedClientId: A_CLIENT,
+      expectedAgentId: AGENT,
+      ingressRole: MCP_INGRESS_ROLE,
+      publishableKey: PUBLISHABLE,
+      jwks: material.jwks,
+      downstreamClientId: B_CLIENT,
+      downstreamRedirectUri: REDIRECT,
+      fetch: fetchImpl,
+      ...(options.storageBucket === undefined ? {} : { storageBucket: options.storageBucket }),
+    });
+    const first = await handler(mcpPost(tokenA));
+    const { handshake_id: handshakeId } = (await first.json()) as { handshake_id: string };
+    const bound = await handler(
+      new Request(`${REDIRECT}?code=once&state=${handshakeId}`, {
+        headers: { host: '127.0.0.1:8788' },
+      }),
+    );
+    expect(bound.status).toBe(200);
+    calls.length = 0;
+
+    const rpc = async (id: number, method: string, params: unknown) => {
+      const response = await handler(
+        new Request(RESOURCE, {
+          method: 'POST',
+          headers: {
+            accept: 'application/json, text/event-stream',
+            authorization: `Bearer ${tokenA}`,
+            'content-type': 'application/json',
+            'mcp-protocol-version': '2025-06-18',
+          },
+          body: JSON.stringify({ jsonrpc: '2.0', id, method, params }),
+        }),
+      );
+      expect(response.status).toBe(200);
+      const text = await response.text();
+      const data = text
+        .split('\n')
+        .filter((line) => line.startsWith('data: '))
+        .map((line) => line.slice('data: '.length));
+      return JSON.parse(data.length > 0 ? (data.at(-1) ?? '') : text) as {
+        result?: { tools?: Array<{ name: string }>; isError?: boolean; content?: unknown };
+        error?: { code: number; message: string };
+      };
+    };
+    const listNames = async () =>
+      ((await rpc(10, 'tools/list', {})).result?.tools ?? []).map((tool) => tool.name);
+    const callStorage = (name: string, args: Record<string, unknown> = {}) =>
+      rpc(11, 'tools/call', { name, arguments: args });
+    const storageRequests = () => calls.filter((url) => url.includes('/storage/v1/'));
+    return { listNames, callStorage, storageRequests, calls };
+  }
+
+  const refused = (
+    reply: Awaited<ReturnType<Awaited<ReturnType<typeof boundHandler>>['callStorage']>>,
+  ) => reply.error !== undefined || reply.result?.isError === true;
+
+  it('with storage:read and a bucket, tools/list includes the storage tools and a call succeeds', async () => {
+    const session = await boundHandler({
+      capabilities: ['storage:read'],
+      storageBucket: 'mcp-user-storage',
+    });
+    expect(await session.listNames()).toEqual(expect.arrayContaining(STORAGE_TOOL_NAMES));
+    const reply = await session.callStorage('storage_list');
+    expect(refused(reply)).toBe(false);
+    expect(JSON.stringify(reply.result)).toContain('note.txt');
+    expect(session.storageRequests()).toEqual([
+      `${SUPABASE_URL}/storage/v1/object/list/mcp-user-storage`,
+    ]);
+  });
+
+  for (const [label, options] of [
+    ['a bucket but no storage grant', { capabilities: [], storageBucket: 'mcp-user-storage' }],
+    [
+      'a bucket and only storage:write',
+      { capabilities: ['storage:write'], storageBucket: 'mcp-user-storage' },
+    ],
+    ['no storage registration', { capabilities: ['storage:read'] }],
+  ] as const) {
+    it(`with ${label}, tools/list omits storage tools and a direct call is refused offline`, async () => {
+      const session = await boundHandler(options);
+      const names = await session.listNames();
+      expect(names.length).toBeGreaterThan(0);
+      expect(names.filter((name) => name.startsWith('storage_'))).toEqual([]);
+      for (const name of [...STORAGE_TOOL_NAMES, 'storage_put', 'storage_delete']) {
+        const reply = await session.callStorage(name, { key: 'note.txt' });
+        expect(refused(reply)).toBe(true);
+        expect(reply.error?.code).toBe(-32602);
+        expect(JSON.stringify(reply)).not.toContain('note.txt"');
+      }
+      expect(session.storageRequests()).toEqual([]);
+      if (options.storageBucket === undefined) {
+        expect(session.calls.filter((url) => url.includes('/rpc/mcp_storage_'))).toEqual([]);
+      }
+    });
+  }
+});
