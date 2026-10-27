@@ -7,9 +7,17 @@ import {
 } from './user-scoped-storage-client.js';
 
 const ORIGIN = 'https://storage.example.test';
-const USER_TOKEN = 'synthetic-header.synthetic-payload.synthetic-signature';
 const PUBLISHABLE = 'sb_publishable_synthetic_key';
 const PRINCIPAL = '1a1a1a1a-0000-4000-8000-000000000001';
+
+/** Synthetic, unsigned JWT-shaped token; the client decodes but never verifies it. */
+function syntheticToken(payload: unknown): string {
+  const segment = (value: unknown) =>
+    Buffer.from(typeof value === 'string' ? value : JSON.stringify(value)).toString('base64url');
+  return `${segment({ alg: 'none', typ: 'JWT' })}.${segment(payload)}.synthetic-signature`;
+}
+
+const USER_TOKEN = syntheticToken({ sub: PRINCIPAL, role: 'authenticated' });
 const signal = new AbortController().signal;
 
 interface Captured {
@@ -87,6 +95,7 @@ describe('user-scoped storage client', () => {
     ['origin with path', { origin: 'https://storage.example.test/x' }],
     ['bad bucket', { bucket: '../b' }],
     ['jwt in the key slot', { key: 'a.b.c' }],
+    ['publishable-prefixed jwt in the key slot', { key: 'sb_publishable_a.b.c' }],
     ['non-jwt user token', { token: 'opaque' }],
     ['same key and token', { key: USER_TOKEN, token: USER_TOKEN }],
   ])('refuses construction with %s', (_label, override) => {
@@ -101,6 +110,84 @@ describe('user-scoped storage client', () => {
         },
       }),
     ).toThrow(StorageClientError);
+  });
+
+  const construct = (key: string, token: string = USER_TOKEN) =>
+    createUserScopedStorageClient({
+      origin: ORIGIN,
+      bucket: 'user-files',
+      credentials: { projectPublishableKey: key, userAccessToken: token },
+    });
+
+  it.each([
+    ['sb_secret_', 'sb_secret_synthetic_value'],
+    ['SB_SECRET_', 'SB_SECRET_synthetic_value'],
+    ['mixed-case secret', 'Sb_Secret_synthetic_value'],
+    ['padded secret', '  sb_secret_synthetic_value \n'],
+    ['tab-padded upper-case secret', '\tSB_SECRET_synthetic_value\t'],
+    ['bare secret prefix', 'sb_secret_'],
+    ['upper-case publishable prefix', 'SB_PUBLISHABLE_synthetic_key'],
+    ['bare publishable prefix', 'sb_publishable_'],
+    ['publishable key with inner whitespace', 'sb_publishable_synthetic key'],
+    ['unknown key shape', 'synthetic_project_key'],
+    ['whitespace only', '   '],
+  ])('refuses a %s key in the key slot and sends nothing', (_label, key) => {
+    let calls = 0;
+    expect(() =>
+      createUserScopedStorageClient({
+        origin: ORIGIN,
+        bucket: 'user-files',
+        credentials: { projectPublishableKey: key, userAccessToken: USER_TOKEN },
+        fetch: (async () => {
+          calls += 1;
+          return new Response('{}');
+        }) as unknown as typeof globalThis.fetch,
+      }),
+    ).toThrow(expect.objectContaining({ code: 'STORAGE_CLIENT_INVALID_CONFIG' }));
+    expect(calls).toBe(0);
+  });
+
+  it('accepts a padded publishable key and sends it trimmed', async () => {
+    const requests: Array<Record<string, string>> = [];
+    const client = createUserScopedStorageClient({
+      origin: ORIGIN,
+      bucket: 'user-files',
+      credentials: { projectPublishableKey: `  ${PUBLISHABLE}\n`, userAccessToken: USER_TOKEN },
+      fetch: (async (_url: string, init: RequestInit) => {
+        requests.push(init.headers as Record<string, string>);
+        return json(PRINCIPAL);
+      }) as unknown as typeof globalThis.fetch,
+    });
+    await client.fetchStoragePrincipal(signal);
+    expect(requests[0]?.apikey).toBe(PUBLISHABLE);
+  });
+
+  it.each([
+    ['service_role', syntheticToken({ sub: PRINCIPAL, role: 'service_role' })],
+    ['anon', syntheticToken({ sub: PRINCIPAL, role: 'anon' })],
+    ['upper-case role', syntheticToken({ sub: PRINCIPAL, role: 'AUTHENTICATED' })],
+    ['padded role', syntheticToken({ sub: PRINCIPAL, role: ' authenticated' })],
+    ['missing role', syntheticToken({ sub: PRINCIPAL })],
+    ['non-string role', syntheticToken({ sub: PRINCIPAL, role: ['authenticated'] })],
+    ['missing sub', syntheticToken({ role: 'authenticated' })],
+    ['non-uuid sub', syntheticToken({ sub: 'someone', role: 'authenticated' })],
+    ['upper-case sub', syntheticToken({ sub: PRINCIPAL.toUpperCase(), role: 'authenticated' })],
+    ['array payload', syntheticToken([PRINCIPAL])],
+    ['null payload', syntheticToken(null)],
+    ['non-json payload', syntheticToken('not json')],
+    ['invalid utf-8 payload', `e30.${Buffer.from([0xff, 0xfe]).toString('base64url')}.sig`],
+    ['empty payload segment', 'e30..sig'],
+    ['non-base64url payload', 'e30.pay+load.sig'],
+    ['four segments', `${USER_TOKEN}.extra`],
+  ])('refuses a user token with %s', (_label, token) => {
+    expect(() => construct(PUBLISHABLE, token)).toThrow(
+      expect.objectContaining({ code: 'STORAGE_CLIENT_INVALID_CONFIG' }),
+    );
+  });
+
+  it('refuses a service_role token even when padded', () => {
+    const token = `  ${syntheticToken({ sub: PRINCIPAL, role: 'service_role' })}\n`;
+    expect(() => construct(PUBLISHABLE, token)).toThrow(StorageClientError);
   });
 
   it('maps list rows to scoped keys and detects more pages', async () => {
