@@ -124,6 +124,20 @@ export {
   type VerifiedNativeUserPrincipal,
 } from './native-user-mcp.js';
 export {
+  createOAuthConsentBlock,
+  OAUTH_CONSENT_CONFIG_ERROR,
+  type OAuthConsentApi,
+  type OAuthConsentBinding,
+  type OAuthConsentBlock,
+  OAuthConsentConfigError,
+  type OAuthConsentDecision,
+  type OAuthConsentOutcome,
+  type OAuthConsentRefusal,
+  type OAuthConsentView,
+  SUPABASE_OAUTH_SCOPES,
+  type SupabaseOAuthScope,
+} from './oauth-consent.js';
+export {
   createNativeUserMcpReadHandler,
   type NativeUserMcpReadHandlerConfig,
 } from './native-user-mcp-read-handler.js';
