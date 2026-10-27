@@ -1,4 +1,4 @@
-# ADR-0005: Finite, reviewed database capability registration
+# ADR-0007: Finite, reviewed database capability registration
 
 - **Status:** Proposed (design and contract only; not implemented or wired)
 - **Date:** 2026-10-21 (revision 3 after independent re-check)

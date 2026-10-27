@@ -44,7 +44,7 @@ function body(overrides: Partial<CapabilityDescriptorBody> = {}): CapabilityDesc
   };
 }
 
-function linked(b: CapabilityDescriptorBody, adr = 'ADR-0005') {
+function linked(b: CapabilityDescriptorBody, adr = 'ADR-0007') {
   return { body: b, approval: { adr, bodySha256: capabilityBodySha256(b) } };
 }
 
@@ -60,7 +60,7 @@ function policy(
     approvals: {
       allowlistVersion: CAPABILITY_APPROVAL_ALLOWLIST_VERSION,
       approvals: approvedBodies.map((b) => ({
-        adr: 'ADR-0005',
+        adr: 'ADR-0007',
         bodySha256: capabilityBodySha256(b),
       })),
     },
@@ -201,7 +201,7 @@ describe('M1: approval lives outside the descriptor file', () => {
   it('parses the release allowlist strictly and freezes it', () => {
     const ok = parseCapabilityApprovalAllowlist({
       allowlistVersion: CAPABILITY_APPROVAL_ALLOWLIST_VERSION,
-      approvals: [{ adr: 'ADR-0005', bodySha256: capabilityBodySha256(body()) }],
+      approvals: [{ adr: 'ADR-0007', bodySha256: capabilityBodySha256(body()) }],
     });
     expect(ok.ok).toBe(true);
     if (ok.ok) expect(Object.isFrozen(ok.allowlist.approvals)).toBe(true);
@@ -369,8 +369,8 @@ describe('M4 and minors: descriptor bounds', () => {
     const encoded = JSON.stringify(b);
     for (const text of [
       `{"registryVersion":"${CAPABILITY_REGISTRY_VERSION}","descriptors":[],"__proto__":{"x":1}}`,
-      `{"registryVersion":"${CAPABILITY_REGISTRY_VERSION}","descriptors":[{"body":${encoded.replace('{', '{"__proto__":{},')},"approval":{"adr":"ADR-0005","bodySha256":"${sha}"}}]}`,
-      `{"registryVersion":"${CAPABILITY_REGISTRY_VERSION}","descriptors":[{"body":${encoded.replace('"properties":{', '"properties":{"__proto__":{"type":"boolean"},')},"approval":{"adr":"ADR-0005","bodySha256":"${sha}"}}]}`,
+      `{"registryVersion":"${CAPABILITY_REGISTRY_VERSION}","descriptors":[{"body":${encoded.replace('{', '{"__proto__":{},')},"approval":{"adr":"ADR-0007","bodySha256":"${sha}"}}]}`,
+      `{"registryVersion":"${CAPABILITY_REGISTRY_VERSION}","descriptors":[{"body":${encoded.replace('"properties":{', '"properties":{"__proto__":{"type":"boolean"},')},"approval":{"adr":"ADR-0007","bodySha256":"${sha}"}}]}`,
     ]) {
       expect(validateCapabilityRegistry(JSON.parse(text), allow)).toEqual({
         ok: false,
@@ -442,7 +442,7 @@ describe('M4 and minors: descriptor bounds', () => {
       { ...b, descriptorVersion: 'supabase-user-mcp.capability-descriptor.v2' },
     ];
     for (const v of variants) {
-      const raw = { body: v, approval: { adr: 'ADR-0005', bodySha256: '0'.repeat(64) } };
+      const raw = { body: v, approval: { adr: 'ADR-0007', bodySha256: '0'.repeat(64) } };
       expect(validateCapabilityRegistry(file([raw]), policy('application', []))).toMatchObject({
         ok: false,
         code: 'descriptor_invalid',

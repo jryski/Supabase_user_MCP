@@ -4,11 +4,11 @@ import { z } from 'zod';
 import { MAX_RESPONSE_BYTES, MAX_TOOL_EXECUTION_MS } from './read-tools.js';
 
 /**
- * PROPOSED contract for issue #122 (ADR-0005). Types, schemas and pure validators
+ * PROPOSED contract for issue #122 (ADR-0007). Types, schemas and pure validators
  * only. Nothing here is imported by the server, exported from the package index,
  * or wired into runtime tool registration. An empty registry is the default.
  *
- * Authority split (ADR-0005):
+ * Authority split (ADR-0007):
  * - The adopter's descriptor file proposes capabilities. It cannot choose its own
  *   composition, approve itself, or name a schema the server did not allow.
  * - The server supplies a CapabilityServerPolicy: the composition, the adopter
@@ -219,7 +219,7 @@ const boundedText = (max: number) =>
     .max(max)
     .refine((value) => value.length > max || isReviewableText(value, max), 'unreviewable text');
 
-/** v1 strings: bounded length and optional enum. No regex `pattern` (ADR-0005, M4). */
+/** v1 strings: bounded length and optional enum. No regex `pattern` (ADR-0007, M4). */
 const StringArgumentSchema = z
   .strictObject({
     type: z.literal('string'),
@@ -335,7 +335,7 @@ export const CapabilityRegistryInputSchema = z.strictObject({
 });
 
 /**
- * Release-shipped approval allowlist (ADR-0005 option 1). It is installed with
+ * Release-shipped approval allowlist (ADR-0007 option 1). It is installed with
  * the server release in a location the running agent cannot write, and is
  * loaded by server code, never from the adopter's descriptor file.
  */
