@@ -471,3 +471,102 @@ describe('createFixedSupabaseClient', () => {
     vi.useRealTimers();
   });
 });
+
+describe('createFixedSupabaseClient project key allowlist', () => {
+  // Legacy anon keys were JWTs. Assembled at runtime from a synthetic payload so
+  // no JWT-looking literal sits in the source; it is never a real credential.
+  const legacyJwtKey = [
+    Buffer.from(JSON.stringify({ alg: 'HS256', typ: 'JWT' })).toString('base64url'),
+    Buffer.from(JSON.stringify({ role: 'anon', iss: 'synthetic' })).toString('base64url'),
+    'synthetic-signature',
+  ].join('.');
+
+  function refusal(projectPublishableKey: string): FixedSupabaseClientError {
+    const fetch = vi.fn<typeof globalThis.fetch>();
+    let caught: unknown;
+    try {
+      createFixedSupabaseClient({
+        origin,
+        credentials: { projectPublishableKey, userAccessToken: token },
+        fetch,
+      });
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).toBeInstanceOf(FixedSupabaseClientError);
+    expect(fetch).not.toHaveBeenCalled();
+    const trimmed = projectPublishableKey.trim();
+    if (trimmed.length > 0) {
+      expect(String(caught)).not.toContain(trimmed);
+      expect(JSON.stringify(caught)).not.toContain(trimmed);
+    }
+    return caught as FixedSupabaseClientError;
+  }
+
+  it.each([
+    ['publishable key', 'sb_publishable_synthetic', 'sb_publishable_synthetic'],
+    ['space-padded publishable key', '  sb_publishable_synthetic  ', 'sb_publishable_synthetic'],
+    [
+      'tab- and newline-padded publishable key',
+      '\tsb_publishable_synthetic\n',
+      'sb_publishable_synthetic',
+    ],
+    ['publishable key with dashes and underscores', 'sb_publishable_a-B_9', 'sb_publishable_a-B_9'],
+    [
+      'key that only contains the secret marker',
+      'sb_publishable_sb_secret_x',
+      'sb_publishable_sb_secret_x',
+    ],
+  ])('accepts a %s and sends it trimmed', async (_name, key, expected) => {
+    const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(response('[]'));
+    const client = createFixedSupabaseClient({
+      origin,
+      credentials: { projectPublishableKey: key, userAccessToken: token },
+      fetch,
+    });
+    await expect(client.listMemoryRows()).resolves.toEqual([]);
+    const [, init] = fetch.mock.calls[0] as [string, RequestInit];
+    expect((init.headers as Record<string, string>).apikey).toBe(expected);
+  });
+
+  it.each([
+    ['lower-case secret key', 'sb_secret_synthetic'],
+    ['upper-case secret key', 'SB_SECRET_synthetic'],
+    ['mixed-case secret key', 'Sb_SeCrEt_synthetic'],
+    ['space-padded secret key', '  sb_secret_synthetic  '],
+    ['tab- and newline-padded secret key', '\tSB_SECRET_synthetic\n'],
+    ['bare secret prefix', 'sb_secret_'],
+    ['JWT-shaped secret key', 'sb_secret_a.b.c'],
+  ])('refuses a %s with the secret-key code', (_name, key) => {
+    expect(refusal(key).code).toBe('FIXED_CLIENT_SECRET_KEY');
+  });
+
+  it.each([
+    ['empty key', ''],
+    ['whitespace-only key', ' \t\n '],
+    ['legacy JWT-looking anon key', legacyJwtKey],
+    ['space-padded legacy JWT-looking anon key', `  ${legacyJwtKey}  `],
+    ['publishable-prefixed JWT-shaped key', 'sb_publishable_a.b.c'],
+  ])('refuses a %s as an invalid credential', (_name, key) => {
+    expect(refusal(key).code).toBe('FIXED_CLIENT_INVALID_CREDENTIAL');
+  });
+
+  it.each([
+    ['generic key', 'key'],
+    ['bare word publishable', 'publishable'],
+    ['unprefixed publishable-looking key', 'synthetic-publishable-key'],
+    ['access-token prefix', 'sbp_synthetic'],
+    ['upper-case publishable prefix', 'SB_PUBLISHABLE_synthetic'],
+    ['bare publishable prefix', 'sb_publishable_'],
+    ['hyphenated secret prefix', 'sb-secret-synthetic'],
+    ['zero-width space before the secret prefix', '\u200bsb_secret_synthetic'],
+    ['zero-width space before the publishable prefix', '\u200bsb_publishable_synthetic'],
+    ['zero-width space inside a publishable key', 'sb_publishable_syn\u200bthetic'],
+    ['Cyrillic look-alike publishable prefix', 'sb_publi\u0455hable_synthetic'],
+    ['fullwidth publishable prefix', '\uff53\uff42\uff3fpublishable_synthetic'],
+    ['inner whitespace', 'sb_publishable_syn thetic'],
+    ['dotted publishable key', 'sb_publishable_synthetic.extra'],
+  ])('refuses a %s as not publishable', (_name, key) => {
+    expect(refusal(key).code).toBe('FIXED_CLIENT_KEY_NOT_PUBLISHABLE');
+  });
+});
