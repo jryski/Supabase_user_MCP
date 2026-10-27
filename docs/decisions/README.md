@@ -11,6 +11,7 @@ be rediscovered or silently reversed.
 | [0002](0002-remote-identity-chain.md) | Remote identity and downstream token chain | Proposed / blocking |
 | [0003](0003-local-credential-and-protocol-policy.md) | Local credential and protocol policy | Accepted |
 | [0004](0004-narrow-upstream-mcp-reuse.md) | Narrow upstream Supabase MCP reuse | Accepted |
+| [0009](0009-storage-rls-option-a.md) | Storage RLS layout, option A (assumes option A; pending RLS layout decision) | Proposed |
 
 ## Process
 
