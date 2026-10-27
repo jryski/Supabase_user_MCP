@@ -106,6 +106,21 @@ describe('storage relative key bounds', () => {
     expect(reason(parseStorageRelativeKey(`b${longKey}`))).toBe('too_long');
   });
 
+  it('accepts a multi-segment key of exactly the total byte limit and rejects one byte more', () => {
+    const directory = 'a'.repeat(STORAGE_MAX_SEGMENT_BYTES - 1);
+    const leaf = `${'b'.repeat(STORAGE_MAX_SEGMENT_BYTES - 4)}.txt`;
+    const exact = [directory, directory, directory, leaf].join('/');
+    expect(new TextEncoder().encode(exact).byteLength).toBe(STORAGE_MAX_RELATIVE_KEY_BYTES);
+    const parsed = parseStorageRelativeKey(exact);
+    expect(parsed.ok).toBe(true);
+    expect(parsed.ok && parsed.value.segments).toHaveLength(4);
+    expect(StorageRelativeKeySchema.safeParse(exact).success).toBe(true);
+
+    const over = [`${directory}a`, directory, directory, leaf].join('/');
+    expect(new TextEncoder().encode(over).byteLength).toBe(STORAGE_MAX_RELATIVE_KEY_BYTES + 1);
+    expect(reason(parseStorageRelativeKey(over))).toBe('too_long');
+  });
+
   it('exposes the same rules as a zod schema', () => {
     expect(StorageRelativeKeySchema.safeParse('ok/file.json').success).toBe(true);
     expect(StorageRelativeKeySchema.safeParse('../file.json').success).toBe(false);
@@ -172,6 +187,13 @@ describe('storage size bounds', () => {
     expect(reason(checkStorageSize(STORAGE_MAX_OBJECT_BYTES + 1, 'signed'))).toBe('size_exceeded');
   });
 
+  it('fails closed on an unknown or missing mode', () => {
+    for (const mode of [undefined, null, '', 'Inline', 'signed_url', 'auto', 0, {}]) {
+      expect(reason(checkStorageSize(0, mode as never))).toBe('invalid_mode');
+      expect(reason(checkStorageSize(1, mode as never))).toBe('invalid_mode');
+    }
+  });
+
   it('fails closed on non-finite, fractional, negative and unsafe sizes', () => {
     for (const value of [
       Number.NaN,
@@ -193,7 +215,38 @@ describe('storage size bounds', () => {
 
   it('keeps inline objects inside the shared response budget', () => {
     expect(STORAGE_INLINE_ENVELOPE_HEADROOM_BYTES).toBeGreaterThanOrEqual(16 * 1024);
-    expect(Math.ceil(STORAGE_MAX_INLINE_BYTES / 3) * 4).toBeLessThan(MAX_RESPONSE_BYTES);
+    expect(2 * Math.ceil(STORAGE_MAX_INLINE_BYTES / 3) * 4).toBeLessThan(MAX_RESPONSE_BYTES);
+  });
+});
+
+describe('storage inline cap at exactly 16 KiB', () => {
+  const SIXTEEN_KIB = 16_384;
+
+  it('pins the inline cap to 16 KiB', () => {
+    expect(STORAGE_MAX_INLINE_BYTES).toBe(SIXTEEN_KIB);
+  });
+
+  it('accepts exactly 16384 bytes and rejects 16385 by size', () => {
+    expect(checkStorageSize(SIXTEEN_KIB, 'inline')).toEqual({ ok: true, value: SIXTEEN_KIB });
+    expect(reason(checkStorageSize(SIXTEEN_KIB + 1, 'inline'))).toBe('size_exceeded');
+  });
+
+  it('accepts base64 decoding to exactly 16384 bytes and rejects 16385', () => {
+    const exact = Buffer.alloc(SIXTEEN_KIB, 0xa5).toString('base64');
+    expect(Buffer.from(exact, 'base64').byteLength).toBe(SIXTEEN_KIB);
+    expect(checkStorageInlineBase64(exact)).toEqual({ ok: true, value: SIXTEEN_KIB });
+
+    const over = Buffer.alloc(SIXTEEN_KIB + 1, 0xa5).toString('base64');
+    expect(Buffer.from(over, 'base64').byteLength).toBe(SIXTEEN_KIB + 1);
+    expect(reason(checkStorageInlineBase64(over))).toBe('size_exceeded');
+  });
+
+  it('fits the doubled 16 KiB payload under the 64 KiB wire cap', () => {
+    expect(MAX_RESPONSE_BYTES).toBe(64 * 1024);
+    const encoded = Buffer.alloc(SIXTEEN_KIB, 0xa5).toString('base64').length;
+    expect(2 * encoded + STORAGE_INLINE_ENVELOPE_HEADROOM_BYTES).toBeLessThanOrEqual(
+      MAX_RESPONSE_BYTES,
+    );
   });
 });
 
