@@ -12,6 +12,7 @@ import {
   MEMORY_SEARCH_TOOL,
   SESSION_CAPABILITIES_GET_TOOL,
 } from '@supabase-user-mcp/contracts';
+import { MCP_MAX_TOOL_INPUT_ELEMENTS } from './mcp-limits.js';
 import { type TestMarkerSeam, registerTestMarkerTool } from './test-marker.js';
 import {
   type ArtifactMcpRegistrationConfig,
@@ -153,6 +154,7 @@ export function createServer(): McpServer {
       version: SERVER_VERSION,
     },
     {
+      maxToolInputElements: MCP_MAX_TOOL_INPUT_ELEMENTS,
       instructions:
         'M0 compatibility probe only. This server has no Supabase, network, read, or write access.',
     },
@@ -216,6 +218,7 @@ export async function createReadOnlyServer(
   const server = new McpServer(
     { name: SERVER_NAME, version: SERVER_VERSION },
     {
+      maxToolInputElements: MCP_MAX_TOOL_INPUT_ELEMENTS,
       instructions:
         artifactRegistration === undefined
           ? registerDraftTwoTools
@@ -377,6 +380,7 @@ export function createAuthorizationPendingServer(
   const server = new McpServer(
     { name: SERVER_NAME, version: SERVER_VERSION },
     {
+      maxToolInputElements: MCP_MAX_TOOL_INPUT_ELEMENTS,
       instructions:
         'Read-only user-context server. Data access is not connected yet: a tool call returns a link the user must open to approve read access, then retry.',
     },

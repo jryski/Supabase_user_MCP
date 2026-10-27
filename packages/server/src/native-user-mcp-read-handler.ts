@@ -4,6 +4,7 @@ import {
   RemoteOAuthClientIdSchema,
 } from '@supabase-user-mcp/contracts';
 
+import { MCP_MAX_REQUEST_BODY_BYTES } from './mcp-limits.js';
 import { readTestMarker } from './test-marker.js';
 import {
   DOWNSTREAM_AUTHORIZATION_REQUIRED,
@@ -238,17 +239,19 @@ export function createNativeUserMcpReadHandler(
     request: Request,
     binding: DownstreamHandshakePrincipal,
   ): Promise<Response> => {
-    const mcp = createMcpHandler(async () =>
-      createAuthorizationPendingServer({
-        beginAuthorization: () => {
-          const handshake = store.pendingOrBeginHandshake(binding);
-          return {
-            authorizationUrl: handshake.authorizationUrl,
-            expiresAtMs: handshake.expiresAtMs,
-          };
-        },
-        ...(config.now === undefined ? {} : { now: config.now }),
-      }),
+    const mcp = createMcpHandler(
+      async () =>
+        createAuthorizationPendingServer({
+          beginAuthorization: () => {
+            const handshake = store.pendingOrBeginHandshake(binding);
+            return {
+              authorizationUrl: handshake.authorizationUrl,
+              expiresAtMs: handshake.expiresAtMs,
+            };
+          },
+          ...(config.now === undefined ? {} : { now: config.now }),
+        }),
+      { maxRequestBodySize: MCP_MAX_REQUEST_BODY_BYTES },
     );
     try {
       return await mcp.fetch(request);
@@ -258,35 +261,38 @@ export function createNativeUserMcpReadHandler(
   };
 
   const dispatchWithTokenB = async (request: Request, accessToken: string): Promise<Response> => {
-    const mcp = createMcpHandler(async () => {
-      const client = createFixedSupabaseClient({
-        origin: authOrigin,
-        credentials: {
-          projectPublishableKey: config.publishableKey,
-          userAccessToken: accessToken,
-        },
-        ...(fetchImpl === undefined ? {} : { fetch: fetchImpl }),
-      });
-      return createReadOnlyServer({
-        client,
-        ...(enableMarker
-          ? {
-              testMarker: {
-                readMarker: (signal) => {
-                  if (config.observation !== undefined) config.observation.markerReads += 1;
-                  return readTestMarker({
-                    origin: authOrigin,
-                    accessToken,
-                    publishableKey: config.publishableKey,
-                    signal,
-                    ...(fetchImpl === undefined ? {} : { fetch: fetchImpl }),
-                  });
+    const mcp = createMcpHandler(
+      async () => {
+        const client = createFixedSupabaseClient({
+          origin: authOrigin,
+          credentials: {
+            projectPublishableKey: config.publishableKey,
+            userAccessToken: accessToken,
+          },
+          ...(fetchImpl === undefined ? {} : { fetch: fetchImpl }),
+        });
+        return createReadOnlyServer({
+          client,
+          ...(enableMarker
+            ? {
+                testMarker: {
+                  readMarker: (signal) => {
+                    if (config.observation !== undefined) config.observation.markerReads += 1;
+                    return readTestMarker({
+                      origin: authOrigin,
+                      accessToken,
+                      publishableKey: config.publishableKey,
+                      signal,
+                      ...(fetchImpl === undefined ? {} : { fetch: fetchImpl }),
+                    });
+                  },
                 },
-              },
-            }
-          : {}),
-      });
-    });
+              }
+            : {}),
+        });
+      },
+      { maxRequestBodySize: MCP_MAX_REQUEST_BODY_BYTES },
+    );
     try {
       return await mcp.fetch(request);
     } finally {

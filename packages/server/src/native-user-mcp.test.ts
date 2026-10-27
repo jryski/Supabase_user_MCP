@@ -6,6 +6,7 @@ import {
   MAX_RESPONSE_BYTES,
 } from '@supabase-user-mcp/contracts';
 import { exportJWK, generateKeyPair, type JWK, SignJWT } from 'jose';
+import { withSupabase } from '@supabase/server';
 import { describe, expect, it } from 'vitest';
 
 import {
@@ -133,12 +134,12 @@ function mcpPost(
 }
 
 describe('native user MCP adapter', () => {
-  it('pins @supabase/server 1.7.2 and does not dispatch the inbound bearer', async () => {
+  it('pins @supabase/server 1.9.2 and does not dispatch the inbound bearer', async () => {
     const packageJson = JSON.parse(
       await readFile(new URL('../package.json', import.meta.url), 'utf8'),
     ) as { dependencies: Record<string, string> };
     expect(packageJson.dependencies['@supabase/server']).toBe(SUPABASE_SERVER_PIN);
-    expect(packageJson.dependencies['@supabase/server']).toBe('1.7.2');
+    expect(packageJson.dependencies['@supabase/server']).toBe('1.9.2');
     expect(packageJson.dependencies['@supabase/supabase-js']).toBe(SUPABASE_JS_PIN);
     expect(NATIVE_USER_MCP_CREDENTIAL_SPLIT).toEqual({
       tokenA: 'upstream-supabase-auth-jwt',
@@ -155,6 +156,8 @@ describe('native user MCP adapter', () => {
     expect(source).not.toMatch(/ctx\.supabaseAdmin\b/);
     expect(source).not.toContain('createFixedSupabaseClient');
     expect(source).not.toContain('service_role');
+    expect(source).toContain('secretKeys: {},');
+    expect(source).not.toMatch(/secretKeys: \{ *default/u);
     expect(source).not.toContain('urn:ietf:params:oauth:grant-type:token-exchange');
     expect(source).toContain(DOWNSTREAM_CREDENTIAL_UNRESOLVED);
   });
@@ -212,6 +215,92 @@ describe('native user MCP adapter', () => {
       else process.env.SUPABASE_SECRET_KEY = previousSecret;
       if (previousUrl === undefined) delete process.env.SUPABASE_URL;
       else process.env.SUPABASE_URL = previousUrl;
+    }
+  });
+
+  it('needs no secret key: the library builds its admin client only on first access', async () => {
+    const previousSecret = process.env.SUPABASE_SECRET_KEY;
+    const previousSecrets = process.env.SUPABASE_SECRET_KEYS;
+    process.env.SUPABASE_SECRET_KEY = ENV_SECRET_SENTINEL;
+    delete process.env.SUPABASE_SECRET_KEYS;
+    try {
+      const { privateKey, jwks } = await es256Jwks();
+      const token = await signToken(privateKey);
+
+      // Library contract the adapter relies on. With an explicit empty secret
+      // key set, a verified request reaches the handler, and only reading the
+      // admin client fails. The process secret is never picked up.
+      let adminFailure: unknown;
+      let handlerRan = false;
+      const probe = withSupabase(
+        {
+          auth: 'user',
+          cors: 'disabled',
+          audience: RESOURCE,
+          issuer: ISSUER,
+          env: {
+            url: SUPABASE_URL,
+            publishableKeys: { default: PUBLISHABLE_KEY },
+            secretKeys: {},
+            jwks,
+          },
+          errors: { detailed: false },
+        },
+        async (_request, ctx) => {
+          handlerRan = true;
+          try {
+            void ctx.supabaseAdmin.from;
+          } catch (error) {
+            adminFailure = error;
+          }
+          return new Response('ok', { status: 200 });
+        },
+      );
+      const probed = await probe(mcpPost(token));
+      expect(probed.status).toBe(200);
+      expect(handlerRan).toBe(true);
+      expect(adminFailure).toBeInstanceOf(Error);
+      expect(String(adminFailure)).not.toContain(ENV_SECRET_SENTINEL);
+
+      // The adapter itself verifies Token A and dispatches with no secret key.
+      const agent = 'agent-no-secret';
+      const source = '33333333-3333-4333-9333-333333333333';
+      const paired = await new SignJWT({
+        role: MCP_INGRESS_ROLE,
+        client_id: CLIENT,
+        session_id: SESSION,
+        source_session_id: source,
+        agent_id: agent,
+      })
+        .setProtectedHeader({ alg: 'ES256', kid: 'g2-test', typ: 'JWT' })
+        .setSubject(PRINCIPAL)
+        .setIssuer(ISSUER)
+        .setAudience(RESOURCE)
+        .setIssuedAt()
+        .setExpirationTime('2m')
+        .sign(privateKey);
+      let dispatchedTo = '';
+      const handler = createNativeUserMcpHandler({
+        resourceServer: RESOURCE,
+        supabaseUrl: SUPABASE_URL,
+        expectedClientId: CLIENT,
+        ingressRole: MCP_INGRESS_ROLE,
+        publishableKey: PUBLISHABLE_KEY,
+        jwks,
+        expectedAgentId: agent,
+        onVerified: (principal) => {
+          dispatchedTo = principal.sourceSessionId;
+          return new Response('{}', { status: 200 });
+        },
+      });
+      const response = await handler(mcpPost(paired));
+      expect(response.status).toBe(200);
+      expect(dispatchedTo).toBe(source);
+      expect(await response.text()).not.toContain(ENV_SECRET_SENTINEL);
+    } finally {
+      if (previousSecret === undefined) delete process.env.SUPABASE_SECRET_KEY;
+      else process.env.SUPABASE_SECRET_KEY = previousSecret;
+      if (previousSecrets !== undefined) process.env.SUPABASE_SECRET_KEYS = previousSecrets;
     }
   });
 

@@ -42,7 +42,7 @@ Supabase User MCP POSIX credential-permission profile is unavailable on Windows.
 | Node.js | `22.20.0` |
 | npm | `11.19.0` |
 | Supabase CLI for synthetic M2 | `2.115.0` |
-| MCP server/client | `2.0.0` |
+| MCP server/client | `2.4.0` |
 
 Use a clean checkout and synthetic/local Supabase project only.
 

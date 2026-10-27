@@ -2,12 +2,12 @@
 
 - **Status:** Draft. Not merged. Not issue #62 completion.
 - **Base:** `main`
-- **Package pin:** `@supabase/server@1.7.2` (MIT) and peer `@supabase/supabase-js@2.117.2` (MIT)
+- **Package pin:** `@supabase/server@1.9.2` (MIT) and peer `@supabase/supabase-js@2.117.2` (MIT)
 
 ## What this is
 
 The smallest Node fetch adapter that verifies MCP-facing auth with upstream Supabase Auth
-through the stable nested middleware form documented in `@supabase/server` 1.7.2
+through the stable nested middleware form documented in `@supabase/server` 1.9.2
 `docs/mcp.md`:
 
 ```ts
@@ -77,12 +77,13 @@ receipt. No live probe was run for this change.
 This is not acceptance and not direct-API separation.
 
 G5: a stock single-grant BYO-MCP path that forwards the inbound JWT to the Data API
-is not MCP `2026-07-28` conformant. `withSupabase` still constructs that same-bearer user
-client, and an admin client, before the handler runs. G2 does not call either client. Their
-`fetch` implementation throws `downstream_credential_unresolved` if invoked. The admin client
-is built with the fixed non-credential placeholder `g2-unused-admin-client-not-a-credential`,
-not with `SUPABASE_SECRET_KEY` or a service-role JWT. Explicit `env` is passed so process
-environment secrets are not read.
+is not MCP `2026-07-28` conformant. Since `@supabase/server` 1.9.2, `withSupabase` builds
+that same-bearer user client and the admin client lazily, on first access. G2 does not
+access either client. The user client's `fetch` throws `downstream_credential_unresolved`
+if invoked. No secret key is configured: explicit `env` carries an empty `secretKeys` set,
+so the library never reads `SUPABASE_SECRET_KEY(S)` from the process environment, and
+reading the admin client would fail. The earlier non-credential admin placeholder is
+removed; a test proves verified dispatch works without it.
 
 Same-bearer passthrough is not the finished design. The MCP-side audience check
 above does not close upstream Data API denial. Token B comes from a separate

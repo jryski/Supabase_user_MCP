@@ -10,7 +10,7 @@ the first public package is released.
 
 ### Added
 
-- Draft G2 native-user fetch adapter. Pins `@supabase/server@1.7.2` and verifies Token A
+- Draft G2 native-user fetch adapter. Pins `@supabase/server@1.9.2` and verifies Token A
   with the stable nested `withOAuthProtectedResource(withSupabase({ auth: 'user' }))` form.
   The bare adapter does not hold Token B, so its Data API dispatch stays
   `downstream_credential_unresolved`. An opt-in read composition binds a separate grant B
@@ -30,6 +30,20 @@ the first public package is released.
   Dual audience does not authorize MCP bearer passthrough. Durable downstream-credential custody and
   hosted live OAuth are unmet. See [ADR-0005](docs/decisions/0005-dual-resource-data-api-binding.md)
   and [issue 62 evidence](docs/evidence/ISSUE_62_REMOTE_OAUTH_HTTP.md).
+
+### Changed
+
+- Upgraded `@supabase/server` 1.7.2 → 1.9.2 (pulls `@supabase/middleware` 1.0.0),
+  `@modelcontextprotocol/server`, `client` and `core` 2.0.0 → 2.4.0, and `zod`
+  4.4.3 → 4.6.7. `@supabase/supabase-js` stays at 2.117.2.
+- The native adapter no longer passes a placeholder admin secret. `@supabase/server`
+  1.9.2 builds its admin client lazily, and the adapter passes an empty secret key set.
+
+### Security
+
+- Every MCP server sets `maxToolInputElements` (`MCP_MAX_TOOL_INPUT_ELEMENTS`, 32) and
+  every MCP HTTP handler sets `maxRequestBodySize` (`MCP_MAX_REQUEST_BODY_BYTES`,
+  65,536), addressing GHSA-46jr-4wx8-v453.
 
 ### Fixed
 

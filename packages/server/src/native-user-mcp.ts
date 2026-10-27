@@ -24,11 +24,13 @@ import { isPublishableProjectKey, isSecretProjectKey } from './publishable-key.j
 /**
  * G2 native-user adapter.
  *
- * Token A is the inbound MCP bearer. `@supabase/server` 1.7.2 verifies it with
+ * Token A is the inbound MCP bearer. `@supabase/server` 1.9.2 verifies it with
  * the stable nested form `withOAuthProtectedResource(withSupabase({ auth: 'user' }, …))`
- * against upstream Supabase Auth (issuer, audience, JWKS). That library also
- * builds an unused same-bearer user client and an unused admin client before
- * the handler runs. This adapter never calls either client.
+ * against upstream Supabase Auth (issuer, audience, JWKS). That library builds
+ * its same-bearer user client and its admin client lazily, on first access.
+ * This adapter never reads either client, so no secret key is configured: the
+ * env carries an empty secret key set, which also stops the library from
+ * falling back to process environment keys.
  *
  * This adapter does not hold Token B, the distinct Data API credential. A
  * verified Token A with no `onVerified` dispatch fails closed with
@@ -47,14 +49,11 @@ import { isPublishableProjectKey, isSecretProjectKey } from './publishable-key.j
  * `session_id`. `onVerified` runs only after those checks. Omitting it
  * keeps the default 403.
  */
-export const SUPABASE_SERVER_PIN = '1.7.2' as const;
+export const SUPABASE_SERVER_PIN = '1.9.2' as const;
 export const MCP_INGRESS_ROLE = 'mcp_ingress' as const;
 const NIL_SESSION_ID = '00000000-0000-0000-0000-000000000000';
 export const SUPABASE_JS_PIN = '2.117.2' as const;
 export const NATIVE_USER_MCP_CONFIG_ERROR = 'NATIVE_USER_MCP_INVALID_CONFIGURATION' as const;
-
-/** Not a project secret. Satisfies library admin-client construction only. */
-const LIBRARY_ADMIN_CONSTRUCTION_PLACEHOLDER = 'g2-unused-admin-client-not-a-credential';
 
 export const NATIVE_USER_MCP_CREDENTIAL_SPLIT = Object.freeze({
   tokenA: 'upstream-supabase-auth-jwt' as const,
@@ -294,7 +293,9 @@ function resolveNativeUserMcpConfig(config: NativeUserMcpConfig): ResolvedNative
   const env: SupabaseEnv = {
     url: supabaseUrl.origin + supabaseUrl.pathname.replace(/\/$/u, ''),
     publishableKeys: { default: assertPublishableKey(config.publishableKey) },
-    secretKeys: { default: LIBRARY_ADMIN_CONSTRUCTION_PLACEHOLDER },
+    // Empty on purpose: no admin client is ever read, and an explicit empty set
+    // keeps the library from reading SUPABASE_SECRET_KEY(S) from the process.
+    secretKeys: {},
     jwks: assertJwks(config.jwks),
   };
   return {
