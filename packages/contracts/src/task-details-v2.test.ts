@@ -840,3 +840,20 @@ describe('synthetic: input schemas reject caller identity and generic controls',
     ).toBe(true);
   });
 });
+
+describe('synthetic: arrays are never task-details objects', () => {
+  it('refuses arrays carrying a representation as MALFORMED_REPRESENTATION', () => {
+    const taggedV1 = Object.assign([], { representation: 'task-details.v1' });
+    const oversizedV2 = Object.assign(new Array(MAX_TASK_DETAILS_V2_FRAME_BYTES + 1).fill(1), {
+      representation: TASK_DETAILS_V2_REPRESENTATION,
+    });
+    // The serialized array is above the frame ceiling, so only the array check yields MALFORMED.
+    expect(JSON.stringify(oversizedV2).length).toBeGreaterThan(MAX_TASK_DETAILS_V2_FRAME_BYTES);
+    for (const raw of [taggedV1, oversizedV2]) {
+      expectDecodeError(raw, 'MALFORMED_REPRESENTATION');
+      expect(decodeErrorCode(() => decodeTaskMutationReceiptV2(raw))).toBe(
+        'MALFORMED_REPRESENTATION',
+      );
+    }
+  });
+});
