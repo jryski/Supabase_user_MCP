@@ -4,7 +4,7 @@
 
 This change adds a strict `task-details.v2` read/activity contract, a fail-closed decoder, and an adapter over an injected port. The contract covers a bounded task body, an opaque version, recorded provenance, typed assignment targets and stored notes. Nothing is registered with an MCP server and nothing is exported from a package index. No migration, schema, registry or deployment file changes.
 
-The base is `main` at `181cbf9d`. The change does not depend on, import or copy any code from draft #71.
+The base is `main` at `181cbf9d`. No module from draft #71 is imported, and the change builds and tests on `main` alone. Two things mirror #71 @5ffd0974 as local declarations: the 8 task status values and the synthetic receipt fixtures described below.
 
 Files:
 
@@ -28,7 +28,7 @@ The tests pin those receipt bytes as inline constants. Each constant is labelled
   - Byte counts are UTF-8, and clipping never splits a code point.
   - The decoder refuses inconsistent coverage, such as a byte count that does not match the text, or `clipped: false` while bytes are missing.
   - Field ceilings are 8192 bytes for the body, 2048 bytes per note, 256 UTF-16 code units for the title and 512 for a citation.
-- `task.status` is a v2-owned enum: `inbox`, `backlog`, `ready`, `in_progress`, `blocked`, `review`, `done`, `cancelled`. Reconciling it with a deployed work-item status set is an integration step.
+- `task.status` is a strict enum declared locally in the v2 contract. Its 8 values mirror #71's work-item status list (`WorkItemStatusSchema` @5ffd0974) in the same order: `inbox`, `backlog`, `ready`, `in_progress`, `blocked`, `review`, `done`, `cancelled`. `main` has no status list of its own. Any other value, such as `archived` or `canceled`, fails closed as `MALFORMED_REPRESENTATION`. Reconciling it with a deployed work-item status set is an integration step.
 - `task.version` is an opaque printable-ASCII token. Callers compare it for equality only.
 - `createdBy`, `lastChangedBy` and every activity `recordedBy` are `{ actorKind: human|agent, actorId, clientId, occurredAt }`, as recorded by the database.
 - `assignmentTargets.targets[]` is `{ kind: human|agent, id, status: active|withdrawn }`. It comes from authoritative membership and carries count coverage. There are at most 50 targets.
@@ -68,8 +68,10 @@ Inputs accept only finite parameters: `taskId`, `activityLimit` (1 to 50, defaul
 | `version_conflict` | `VERSION_CONFLICT` |
 | `idempotency_conflict` | `IDEMPOTENCY_CONFLICT` |
 | `target_unknown`, `target_withdrawn` | `TARGET_UNAVAILABLE` |
-| `unavailable`, thrown port error | `UPSTREAM_UNAVAILABLE` (retryable) |
+| `unavailable`, thrown port error, throw while reading a port result | `UPSTREAM_UNAVAILABLE` (retryable) |
 | unknown or prototype-named denial | `INTERNAL_ERROR` |
+
+A throw while reading a port result, such as from a throwing `ok` getter or a Proxy trap, is caught in the port wrapper and becomes the fixed `UPSTREAM_UNAVAILABLE` refusal. A throw outside the wrapper, such as from a throwing getter on caller input, reaches a backstop that returns the same fixed refusal. Neither path passes the thrown value or its text to the caller, and tests pin the exact frozen refusal for both.
 
 Port results are decoded strictly and checked against the request:
 
@@ -87,6 +89,8 @@ Deadline and cancellation:
 ## Acceptance level
 
 **Synthetic contract tests only.** All data is synthetic, and the tests run against an in-memory port that simulates database-owned session authorization. This is not runtime acceptance against a real database, session, client or user. The adapter is unregistered, and nothing in the runtime calls it.
+
+**Leak gate.** Locally, the leak gate's gitleaks and policy passes ran over `181cbf9d..HEAD` with 0 findings. The LEAK private-pattern pass was not run locally because the private pattern secret isn't available locally; it runs only in trusted CI.
 
 ## Proposed native RPCs (proposal only, no migration)
 

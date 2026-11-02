@@ -174,6 +174,8 @@ export function createTaskDetailsAdapter(options: TaskDetailsAdapterOptions): Ta
     try {
       return await Promise.race([body(controller.signal), stop]);
     } catch (error) {
+      // Backstop for throws outside the port wrapper, such as a throwing getter on caller input.
+      // The refusal is fixed; the thrown value and its text never reach the caller.
       if (error instanceof AdapterRefusal) return createTaskDetailsRefusal(error.code);
       return createTaskDetailsRefusal('UPSTREAM_UNAVAILABLE');
     } finally {
@@ -183,13 +185,15 @@ export function createTaskDetailsAdapter(options: TaskDetailsAdapterOptions): Ta
   };
 
   const callPort = async (invoke: () => Promise<TaskPortResult>): Promise<unknown> => {
-    let result: TaskPortResult;
     try {
-      result = await invoke();
-    } catch {
+      return unwrapPortResult(await invoke());
+    } catch (error) {
+      // Typed refusals from unwrapping pass through. Any other throw, from the port call or while
+      // reading its result (a throwing getter or Proxy trap), becomes a fixed refusal; the thrown
+      // value and its text never reach the caller.
+      if (error instanceof AdapterRefusal) throw error;
       throw new AdapterRefusal('UPSTREAM_UNAVAILABLE');
     }
-    return unwrapPortResult(result);
   };
 
   const mutation = async (

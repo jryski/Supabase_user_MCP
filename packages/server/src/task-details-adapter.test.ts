@@ -5,6 +5,7 @@ import { describe, expect, it, vi } from 'vitest';
 
 import {
   clipUtf8,
+  createTaskDetailsRefusal,
   createTaskDetailsV2McpResult,
   MAX_ACTIVITY_ENTRIES,
   MAX_ACTIVITY_TEXT_BYTES,
@@ -1067,5 +1068,85 @@ describe('synthetic: port results are cross-checked against the request', () => 
       ok: false,
       refusal: { code: 'MALFORMED_REPRESENTATION' },
     });
+  });
+});
+
+describe('synthetic: throws while reading port results or caller input never leak', () => {
+  const secret = 'synthetic-secret-text-must-not-leak';
+  const upstream = {
+    ok: false,
+    refusal: {
+      code: 'UPSTREAM_UNAVAILABLE',
+      message: 'Task service is unavailable.',
+      retryable: true,
+    },
+  };
+
+  const expectFixedRefusal = (result: unknown) => {
+    expect(result).toEqual(upstream);
+    expect(result).toEqual(createTaskDetailsRefusal('UPSTREAM_UNAVAILABLE'));
+    expect(Object.isFrozen(result)).toBe(true);
+    expect(Object.isFrozen((result as { refusal: unknown }).refusal)).toBe(true);
+    expect(JSON.stringify(result)).not.toContain(secret);
+  };
+
+  /** A port result whose `ok` getter throws. */
+  const throwingGetter = (): TaskPortResult =>
+    Object.defineProperty({}, 'ok', {
+      enumerable: true,
+      get() {
+        throw new Error(secret);
+      },
+    }) as never;
+
+  /** A port result whose `has` trap throws, after `ok` reads as true. */
+  const throwingHasTrap = (): TaskPortResult =>
+    new Proxy({} as Record<string, unknown>, {
+      get: (_target, key) => (key === 'ok' ? true : undefined),
+      has: () => {
+        throw new Error(secret);
+      },
+    }) as never;
+
+  it('maps a throwing getter or Proxy has-trap on a port result to the fixed refusal', async () => {
+    for (const make of [throwingGetter, throwingHasTrap]) {
+      const adapter = createTaskDetailsAdapter({
+        port: spyPort({
+          readTaskDetails: async () => make(),
+          appendNote: async () => make(),
+          assignTask: async () => make(),
+        }),
+      });
+      expectFixedRefusal(await adapter.readTaskDetails(read()));
+      expectFixedRefusal(await adapter.appendNote(note()));
+      expectFixedRefusal(await adapter.assignTask(assignment()));
+    }
+  });
+
+  it('maps a throwing getter or Proxy trap on caller input to the fixed refusal', async () => {
+    const port = spyPort();
+    const adapter = createTaskDetailsAdapter({ port });
+    const getterInput = Object.defineProperty({}, 'representation', {
+      enumerable: true,
+      get() {
+        throw new Error(secret);
+      },
+    });
+    const proxyInput = new Proxy(
+      {},
+      {
+        get: () => {
+          throw new Error(secret);
+        },
+      },
+    );
+    for (const input of [getterInput, proxyInput]) {
+      expectFixedRefusal(await adapter.readTaskDetails(input));
+      expectFixedRefusal(await adapter.appendNote(input));
+      expectFixedRefusal(await adapter.assignTask(input));
+    }
+    expect(port.readTaskDetails).not.toHaveBeenCalled();
+    expect(port.appendNote).not.toHaveBeenCalled();
+    expect(port.assignTask).not.toHaveBeenCalled();
   });
 });

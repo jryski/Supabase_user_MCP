@@ -94,8 +94,9 @@ const TimestampSchema = z.iso.datetime({ offset: true });
 const ActorKindSchema = z.enum(['human', 'agent']);
 
 /**
- * Task status owned by this v2 contract. It is self-contained so the contract builds on main
- * without any other control-plane module; reconciling it with a deployed work-item status set is
+ * Task status for this v2 contract. Its 8 values mirror the #71 work-item status list
+ * (`WorkItemStatusSchema` @5ffd0974); they are declared locally so the contract builds on main
+ * without importing #71. Unknown values fail closed. Reconciling it with a deployed status set is
  * an integration step.
  */
 const TaskStatusV2Schema = z.enum([
