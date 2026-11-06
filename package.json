@@ -34,15 +34,19 @@
     "test:s1": "bash supabase/tests/run-s1-lab.sh",
     "typecheck": "tsc -b --pretty false && tsc -p tsconfig.test.json --noEmit --pretty false"
   },
+  "overrides": {
+    "source-map-js": "1.2.2",
+    "vite": "8.2.4"
+  },
   "devDependencies": {
     "@biomejs/biome": "2.5.8",
-    "@modelcontextprotocol/client": "2.0.0",
+    "@modelcontextprotocol/client": "2.4.0",
     "@supabase/auth-js": "2.112.4",
     "@supabase/mcp-utils": "0.7.0",
     "@types/node": "22.20.1",
     "supabase": "2.115.0",
     "tsx": "4.23.12",
     "typescript": "7.0.2",
-    "vitest": "4.1.10"
+    "vitest": "4.1.12"
   }
 }
