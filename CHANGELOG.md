@@ -10,6 +10,18 @@ the first public package is released.
 
 ### Added
 
+- Explicit native application composition for grant-gated storage create/delete
+  and finite release-approved database capabilities. Default/read-only server
+  composition clamps storage writes. The compiled capability approval list is
+  empty; no adopter RPC or production feature is enabled.
+- Hosted OAuth consent GET/POST handler with fresh host session verification,
+  atomic one-time metadata challenges, exact client/redirect/scope binding,
+  same-origin submission, bounded requests and unknown-outcome replay refusal.
+  Actual host mounting and durable native downstream custody remain required.
+- Complete synthetic native A-to-B-to-application capability tests, including
+  concurrent users and live-session revocation; native ingress now returns on
+  deadline or caller abort even if a request body never settles.
+
 - Draft G2 native-user fetch adapter. Pins `@supabase/server@1.9.2` and verifies Token A
   with the stable nested `withOAuthProtectedResource(withSupabase({ auth: 'user' }))` form.
   The bare adapter does not hold Token B, so its Data API dispatch stays

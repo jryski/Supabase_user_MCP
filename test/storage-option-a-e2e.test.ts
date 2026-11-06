@@ -29,7 +29,7 @@ import { applyRepoMigrations, applySupabaseStub } from './support/pglite-supabas
  * agent. Synthetic identifiers only; no Supabase project is involved.
  */
 
-const REPO_ROOT = new URL('..', import.meta.url).pathname;
+const REPO_ROOT = new URL('..', import.meta.url);
 const ORIGIN = 'https://storage-e2e.invalid';
 const BUCKET = 'mcp-user-storage';
 const PUBLISHABLE_KEY = 'sb_publishable_synthetic';

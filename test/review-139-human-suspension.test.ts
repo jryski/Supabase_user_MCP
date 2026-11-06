@@ -14,7 +14,7 @@ import { applyRepoMigrations, applySupabaseStub } from './support/pglite-supabas
  * session functions the server calls and through direct Storage RLS. Synthetic only.
  */
 
-const REPO_ROOT = new URL('..', import.meta.url).pathname;
+const REPO_ROOT = new URL('..', import.meta.url);
 const HUMAN = 'c3c3c3c3-0000-4000-8000-000000000003';
 const AGENT = 'c3c3c3c3-0000-4000-8000-0000000000c3';
 const OTHER_HUMAN = 'd4d4d4d4-0000-4000-8000-000000000004';

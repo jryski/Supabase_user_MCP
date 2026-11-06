@@ -45,6 +45,10 @@
     "supabase": "2.115.0",
     "tsx": "4.23.12",
     "typescript": "7.0.2",
-    "vitest": "4.1.10"
+    "vitest": "4.1.12"
+  },
+  "overrides": {
+    "source-map-js": "1.2.2",
+    "vite": "8.2.4"
   }
 }

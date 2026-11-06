@@ -1,5 +1,6 @@
 import { readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 /**
  * Minimal Supabase-shaped database surface for local PGlite runs: the API
@@ -82,8 +83,14 @@ export async function applySupabaseStub(
 }
 
 /** Applies every repo migration in file-name order and returns the names applied. */
-export async function applyRepoMigrations(db: SqlExecutor, repoRoot: string): Promise<string[]> {
-  const directory = join(repoRoot, 'supabase/migrations');
+export async function applyRepoMigrations(
+  db: SqlExecutor,
+  repoRoot: string | URL,
+): Promise<string[]> {
+  const directory = join(
+    repoRoot instanceof URL ? fileURLToPath(repoRoot) : repoRoot,
+    'supabase/migrations',
+  );
   const files = readdirSync(directory)
     .filter((file) => file.endsWith('.sql'))
     .toSorted();

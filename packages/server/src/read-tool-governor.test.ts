@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createReadToolError, MEMORY_SEARCH_TOOL } from '@supabase-user-mcp/contracts';
 import { createHash } from 'node:crypto';
 
@@ -21,6 +21,80 @@ const sampleRow = {
   createdAt: '2026-08-20T00:00:00.000Z',
   provenanceSummary: 'synthetic fixture',
 };
+
+afterEach(() => vi.useRealTimers());
+
+describe('governor cancellation and unsettled-operation leases', () => {
+  it('refuses an already cancelled caller before invoking a provider', async () => {
+    const handler = vi.fn(async () => ({ ok: true as const, items: [] }));
+    const execute = createReadToolExecutor(MEMORY_SEARCH_TOOL, handler);
+    expect(
+      await execute(validQuery, {
+        principalId: 'governor-pre-cancelled',
+        signal: AbortSignal.abort(),
+      }),
+    ).toEqual(createReadToolError('DEADLINE_EXCEEDED'));
+    expect(handler).not.toHaveBeenCalled();
+  });
+
+  it.each(['resolve', 'reject'] as const)(
+    'returns a deadline but holds concurrency until ignored provider %s',
+    async (outcome) => {
+      vi.useFakeTimers();
+      let finish: (value: unknown) => void = () => undefined;
+      let reject: (reason: unknown) => void = () => undefined;
+      const pendingProvider = new Promise((resolve, deny) => {
+        finish = resolve;
+        reject = deny;
+      });
+      const handler = vi
+        .fn(async () => ({ ok: true as const, items: [] }) as unknown)
+        .mockImplementationOnce(() => pendingProvider);
+      const tool = {
+        ...MEMORY_SEARCH_TOOL,
+        limits: { ...MEMORY_SEARCH_TOOL.limits, maxExecutionMs: 20 },
+      };
+      const events: ReadToolOperationalEvent[] = [];
+      const principalId = `governor-ignored-${outcome}`;
+      const execute = createReadToolExecutor(tool, handler, {
+        maxConcurrentExecutions: 1,
+        maxRequestsPerWindow: 100,
+      });
+      const first = execute(validQuery, {
+        principalId,
+        emitOperationalEvent: (event) => events.push(event),
+      });
+      await vi.advanceTimersByTimeAsync(21);
+      expect(await first).toEqual(createReadToolError('DEADLINE_EXCEEDED'));
+      expect(events).toHaveLength(1);
+      expect(events[0]).toMatchObject({ outcome: 'blocked', denialClass: 'DEADLINE_EXCEEDED' });
+      expect(await execute(validQuery, { principalId })).toEqual(
+        createReadToolError('RESOURCE_UNAVAILABLE'),
+      );
+      expect(handler).toHaveBeenCalledTimes(1);
+      if (outcome === 'resolve') finish({ ok: true, items: [] });
+      else reject(new Error('late private provider exception'));
+      await vi.advanceTimersByTimeAsync(0);
+      expect(await execute(validQuery, { principalId })).toEqual({ ok: true, items: [] });
+      expect(handler).toHaveBeenCalledTimes(2);
+      expect(events).toHaveLength(1);
+    },
+  );
+
+  it('refuses a late success if the provider triggers caller cancellation before returning', async () => {
+    const caller = new AbortController();
+    const execute = createReadToolExecutor(MEMORY_SEARCH_TOOL, async () => {
+      caller.abort();
+      return { ok: true as const, items: [] };
+    });
+    expect(
+      await execute(validQuery, {
+        principalId: 'governor-cancel-then-success',
+        signal: caller.signal,
+      }),
+    ).toEqual(createReadToolError('DEADLINE_EXCEEDED'));
+  });
+});
 
 describe('createReadToolExecutor', () => {
   it('validates read arguments before execution and emits a redacted denied event', async () => {

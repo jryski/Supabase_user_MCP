@@ -3,7 +3,7 @@
 import { PGlite } from '@electric-sql/pglite';
 import { pgcrypto } from '@electric-sql/pglite/contrib/pgcrypto';
 import { uuid_ossp } from '@electric-sql/pglite/contrib/uuid_ossp';
-import { beforeAll, afterAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { applyRepoMigrations, applySupabaseStub } from './support/pglite-supabase-stub.js';
 
 const HUMAN = '11111111-1111-4111-8111-111111111111';
@@ -14,7 +14,7 @@ let db: PGlite;
 beforeAll(async () => {
   db = new PGlite({ extensions: { pgcrypto, uuid_ossp } });
   await applySupabaseStub(db, { protectDelete: true });
-  await applyRepoMigrations(db, new URL('..', import.meta.url).pathname);
+  await applyRepoMigrations(db, new URL('..', import.meta.url));
   await db.exec(`
     insert into policy_lab.principals(principal_id, principal_kind, identity_eligibility) values
       ('${HUMAN}', 'human', 'verified'), ('${AGENT}', 'delegated_agent', 'verified');

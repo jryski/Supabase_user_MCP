@@ -148,8 +148,8 @@ describe('MCP SDK input limits (GHSA-46jr-4wx8-v453)', () => {
       );
     }
     for (const { text, at } of handlers) {
-      expect(text.slice(at, at + 1800)).toContain(
-        '{ maxRequestBodySize: MCP_MAX_REQUEST_BODY_BYTES }',
+      expect(text.slice(at, at + 1800)).toMatch(
+        /\{\s*maxRequestBodySize:\s*MCP_MAX_REQUEST_BODY_BYTES,?\s*\}/u,
       );
     }
   });

@@ -1,6 +1,6 @@
 import type { Dirent } from 'node:fs';
 import { readdir, readFile, stat } from 'node:fs/promises';
-import { join, relative } from 'node:path';
+import { join, relative, sep } from 'node:path';
 
 /**
  * Admin Auth endpoints and privileged keys belong to local lab support only.
@@ -97,7 +97,7 @@ export async function missingDistFiles(packagesDir: string): Promise<string[]> {
         (info) => info.isFile() && info.size > 0,
         () => false,
       );
-      if (!found) missing.push(relative(packagesDir, built));
+      if (!found) missing.push(relative(packagesDir, built).split(sep).join('/'));
     }
   }
   return missing;
@@ -107,7 +107,7 @@ export async function offenders(root: string, files: readonly string[]): Promise
   const found: string[] = [];
   for (const file of files) {
     for (const source of scanText(await readFile(file, 'utf8'))) {
-      found.push(`${relative(root, file)} ${source}`);
+      found.push(`${relative(root, file).split(sep).join('/')} ${source}`);
     }
   }
   return found;

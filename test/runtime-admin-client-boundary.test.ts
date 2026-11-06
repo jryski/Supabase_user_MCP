@@ -1,6 +1,6 @@
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { dirname, join, relative, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { afterEach, describe, expect, it } from 'vitest';
@@ -129,7 +129,11 @@ describe('runtime boundary scanner fixtures', () => {
     });
     expect(await missingDistFiles(root)).toEqual([]);
     const files = await runtimeFiles(root, 'dist');
-    expect(files.map((file) => file.slice(root.length + 1))).toEqual(['pkg/dist/index.js']);
-    expect(await offenders(root, files)).toHaveLength(1);
+    expect(files.map((file) => relative(root, file).split(sep).join('/'))).toEqual([
+      'pkg/dist/index.js',
+    ]);
+    expect(await offenders(root, files)).toEqual([
+      expect.stringMatching(/^pkg\/dist\/index\.js /u),
+    ]);
   });
 });

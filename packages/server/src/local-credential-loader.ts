@@ -1,5 +1,5 @@
-import { constants } from 'node:fs';
-import { open } from 'node:fs/promises';
+import { type BigIntStats, constants } from 'node:fs';
+import { lstat, open } from 'node:fs/promises';
 import { isPublishableProjectKey, isSecretProjectKey } from './publishable-key.js';
 
 const MAX_CREDENTIAL_BYTES = 16_384;
@@ -48,7 +48,11 @@ export type PermissionInspector = (
 ) => PermissionInspection | Promise<PermissionInspection>;
 
 export interface LocalCredentialLoaderOptions {
-  /** Trusted controller seam for deterministic ACL inspection in environments such as Windows. */
+  /**
+   * Trusted controller seam for ACL inspection in environments such as Windows.
+   * Without atomic O_NOFOLLOW, the inspector must also establish trusted
+   * directory custody; path/inode checks do not replace parent-directory ACLs.
+   */
   readonly permissionInspector?: PermissionInspector;
   readonly now?: () => number;
 }
@@ -106,10 +110,17 @@ export async function loadLocalCredentials(
   options: LocalCredentialLoaderOptions = {},
 ): Promise<LocalCredentials> {
   let handle: Awaited<ReturnType<typeof open>>;
+  let beforeOpen: BigIntStats;
   try {
+    // Windows does not implement O_NOFOLLOW for fs.open. Check the leaf
+    // explicitly on every platform, then bind the opened file by dev/ino.
+    beforeOpen = await lstat(startupPath, { bigint: true });
+    if (beforeOpen.isSymbolicLink()) fail('CREDENTIAL_SYMLINK');
+    if (!beforeOpen.isFile()) fail('CREDENTIAL_NOT_FILE');
     const noFollow = process.platform === 'win32' ? 0 : constants.O_NOFOLLOW;
     handle = await open(startupPath, constants.O_RDONLY | noFollow);
   } catch (error) {
+    if (error instanceof LocalCredentialError) throw error;
     const code = (error as NodeJS.ErrnoException).code;
     if (code === 'ENOENT') fail('CREDENTIAL_FILE_MISSING');
     if (code === 'ELOOP') fail('CREDENTIAL_SYMLINK');
@@ -118,22 +129,34 @@ export async function loadLocalCredentials(
 
   let body: string;
   try {
-    const metadata = await handle.stat();
+    const metadata = await handle.stat({ bigint: true });
     if (!metadata.isFile()) fail('CREDENTIAL_NOT_FILE');
-    if (metadata.size > MAX_CREDENTIAL_BYTES) fail('CREDENTIAL_FILE_TOO_LARGE');
+    if (metadata.ino <= 0n || metadata.dev !== beforeOpen.dev || metadata.ino !== beforeOpen.ino) {
+      fail('CREDENTIAL_READ_FAILED');
+    }
+    if (metadata.size > BigInt(MAX_CREDENTIAL_BYTES)) fail('CREDENTIAL_FILE_TOO_LARGE');
 
     let permission: PermissionInspection;
     try {
       permission = await (options.permissionInspector ?? defaultPermissionInspector)(
         startupPath,
-        metadata.mode,
-        metadata.uid,
+        Number(metadata.mode),
+        Number(metadata.uid),
       );
     } catch {
       fail('CREDENTIAL_PERMISSION_CHECK_UNSUPPORTED');
     }
     if (permission === 'unsupported') fail('CREDENTIAL_PERMISSION_CHECK_UNSUPPORTED');
     if (permission !== 'secure') fail('CREDENTIAL_INSECURE_PERMISSIONS');
+
+    // The ACL inspector can be asynchronous and path-based. Do not read if
+    // the leaf became a link or points at a different file during inspection.
+    const afterInspection = await lstat(startupPath, { bigint: true });
+    if (afterInspection.isSymbolicLink()) fail('CREDENTIAL_SYMLINK');
+    if (!afterInspection.isFile()) fail('CREDENTIAL_NOT_FILE');
+    if (afterInspection.dev !== metadata.dev || afterInspection.ino !== metadata.ino) {
+      fail('CREDENTIAL_READ_FAILED');
+    }
 
     const bytes = Buffer.allocUnsafe(MAX_CREDENTIAL_BYTES + 1);
     let length = 0;

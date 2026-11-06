@@ -11,7 +11,7 @@ import { applyRepoMigrations, applySupabaseStub } from './support/pglite-supabas
  * that hosted Storage would refuse. Synthetic data only.
  */
 
-const REPO_ROOT = new URL('..', import.meta.url).pathname;
+const REPO_ROOT = new URL('..', import.meta.url);
 const USER = 'aaaaaaaa-0000-4000-8000-000000000001';
 const OTHER = 'bbbbbbbb-0000-4000-8000-000000000002';
 const CLAIMS = JSON.stringify({

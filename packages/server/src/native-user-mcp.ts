@@ -398,6 +398,7 @@ async function respondAfterVerifiedMcpAuth(
 }
 
 async function boundIngress(request: Request): Promise<Request | Response> {
+  if (request.signal.aborted) return jsonResponse(408, 'deadline_exceeded');
   const declared = request.headers.get('content-length');
   if (declared !== null) {
     if (!/^\d+$/u.test(declared)) return jsonResponse(400, 'invalid_request');
@@ -411,24 +412,39 @@ async function boundIngress(request: Request): Promise<Request | Response> {
   const reader = request.body.getReader();
   const chunks: Uint8Array[] = [];
   let length = 0;
-  const deadline = Date.now() + MAX_TOOL_EXECUTION_MS;
+  let stopped = false;
+  let rejectStopped: () => void = () => undefined;
+  const interrupted = new Promise<never>((_resolve, reject) => {
+    rejectStopped = () => reject(new Error('ingress_interrupted'));
+  });
+  const stop = () => {
+    stopped = true;
+    rejectStopped();
+    // A hostile stream can ignore cancellation. Never let its acknowledgement
+    // extend the request lifetime or dispatch authentication after the deadline.
+    void reader.cancel().catch(() => undefined);
+  };
+  const timer = setTimeout(stop, MAX_TOOL_EXECUTION_MS);
+  request.signal.addEventListener('abort', stop, { once: true });
+  if (request.signal.aborted) stop();
   try {
     while (true) {
-      if (Date.now() > deadline) {
-        await reader.cancel();
-        return jsonResponse(408, 'deadline_exceeded');
-      }
-      const result = await reader.read();
+      const result = await Promise.race([reader.read(), interrupted]);
+      if (stopped) return jsonResponse(408, 'deadline_exceeded');
       if (result.done) break;
       length += result.value.byteLength;
       if (length > MAX_RESPONSE_BYTES) {
-        await reader.cancel();
+        void reader.cancel().catch(() => undefined);
         return jsonResponse(413, 'payload_too_large');
       }
       chunks.push(result.value);
     }
   } catch {
-    return jsonResponse(400, 'invalid_request');
+    return jsonResponse(stopped ? 408 : 400, stopped ? 'deadline_exceeded' : 'invalid_request');
+  } finally {
+    clearTimeout(timer);
+    request.signal.removeEventListener('abort', stop);
+    reader.releaseLock();
   }
 
   const body = length === 0 ? null : Buffer.concat(chunks, length);

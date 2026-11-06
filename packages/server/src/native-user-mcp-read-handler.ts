@@ -15,6 +15,7 @@ import {
   DownstreamOAuthGrantStore,
 } from './downstream-oauth-grant.js';
 import { createFixedSupabaseClient } from './fixed-supabase-client.js';
+import type { CapabilityRegistrationProfile } from './capability-mcp-registration.js';
 import { isLoopbackRedirectHostname, isLoopbackRedirectHttpUrl } from './loopback-host.js';
 import {
   createNativeUserMcpHandler,
@@ -24,7 +25,11 @@ import {
   nativeUserMcpIssuer,
   type VerifiedNativeUserPrincipal,
 } from './native-user-mcp.js';
-import { createAuthorizationPendingServer, createReadOnlyServer } from './server.js';
+import {
+  createApplicationServer,
+  createAuthorizationPendingServer,
+  createReadOnlyServer,
+} from './server.js';
 import { classifySourceSessionLiveness } from './source-session-liveness.js';
 import { createUserScopedStorageClient } from './user-scoped-storage-client.js';
 
@@ -94,6 +99,8 @@ export interface NativeUserMcpReadHandlerConfig {
    * holds `storage:write`. The remote pilot entry always sets it.
    */
   readonly storageReadOnly?: boolean;
+  /** Immutable profile constructed at startup from compiled approvals, never from MCP input. */
+  readonly capabilityProfile?: CapabilityRegistrationProfile;
 }
 
 export interface ReadCompositionObservation {
@@ -195,6 +202,20 @@ function callbackUrl(
 export function createNativeUserMcpReadHandler(
   config: NativeUserMcpReadHandlerConfig,
 ): (request: Request) => Promise<Response> {
+  return createNativeUserMcpComposedHandler(config, 'read-only');
+}
+
+/** Explicit application entrypoint; no default CLI or remote pilot selects it. */
+export function createNativeUserMcpApplicationHandler(
+  config: NativeUserMcpReadHandlerConfig,
+): (request: Request) => Promise<Response> {
+  return createNativeUserMcpComposedHandler(config, 'application');
+}
+
+function createNativeUserMcpComposedHandler(
+  config: NativeUserMcpReadHandlerConfig,
+  composition: 'read-only' | 'application',
+): (request: Request) => Promise<Response> {
   if (!RemoteOAuthClientIdSchema.safeParse(config.downstreamClientId).success) invalidConfig();
   if (config.downstreamClientId === config.expectedClientId) invalidConfig();
   if (config.ingressRole !== MCP_INGRESS_ROLE) invalidConfig();
@@ -240,7 +261,7 @@ export function createNativeUserMcpReadHandler(
   const fetchImpl = config.fetch;
   const storageBucket = config.storageBucket;
   if (storageBucket !== undefined && !checkStorageBucketId(storageBucket).ok) invalidConfig();
-  const storageReadOnly = config.storageReadOnly === true;
+  const storageReadOnly = composition === 'read-only' || config.storageReadOnly === true;
   const store = new DownstreamOAuthGrantStore({
     issuer,
     authOrigin,
@@ -282,55 +303,115 @@ export function createNativeUserMcpReadHandler(
     }
   };
 
-  const dispatchWithTokenB = async (request: Request, accessToken: string): Promise<Response> => {
-    const mcp = createMcpHandler(
-      async () => {
-        const client = createFixedSupabaseClient({
-          origin: authOrigin,
-          credentials: {
-            projectPublishableKey: config.publishableKey,
-            userAccessToken: accessToken,
-          },
-          ...(fetchImpl === undefined ? {} : { fetch: fetchImpl }),
-        });
-        const storageRegistration =
-          storageBucket === undefined
-            ? undefined
-            : {
-                client: createUserScopedStorageClient({
-                  origin: storageOrigin,
-                  bucket: storageBucket,
-                  credentials: {
-                    projectPublishableKey: config.publishableKey,
-                    userAccessToken: accessToken,
-                  },
-                  ...(fetchImpl === undefined ? {} : { fetch: fetchImpl }),
-                }),
-                ...(storageReadOnly ? { readOnly: true } : {}),
-              };
-        return createReadOnlyServer({
-          client,
-          ...(storageRegistration === undefined ? {} : { storageRegistration }),
-          ...(enableMarker
-            ? {
-                testMarker: {
-                  readMarker: (signal) => {
-                    if (config.observation !== undefined) config.observation.markerReads += 1;
-                    return readTestMarker({
-                      origin: authOrigin,
-                      accessToken,
-                      publishableKey: config.publishableKey,
-                      signal,
-                      ...(fetchImpl === undefined ? {} : { fetch: fetchImpl }),
-                    });
-                  },
+  const dispatchWithTokenB = async (
+    request: Request,
+    accessToken: string,
+    principal: VerifiedNativeUserPrincipal,
+  ): Promise<Response> => {
+    const createServerWithB = async () => {
+      const client = createFixedSupabaseClient({
+        origin: authOrigin,
+        credentials: {
+          projectPublishableKey: config.publishableKey,
+          userAccessToken: accessToken,
+        },
+        ...(fetchImpl === undefined ? {} : { fetch: fetchImpl }),
+      });
+      // B's client binding was signature-verified by the grant store. The
+      // fixed /user verifier returns only the subject, so add the verified
+      // B client here rather than trusting response or user metadata.
+      const verifiedClient = {
+        ...client,
+        verifyUserIdentity: async (signal?: AbortSignal) => {
+          const current = store.resolve(principalBinding(principal));
+          if (current.status !== 'live' || current.accessToken !== accessToken) {
+            throw new Error('credential_unavailable');
+          }
+          return { ...(await client.verifyUserIdentity(signal)), clientId: current.bClientId };
+        },
+      };
+      const storageRegistration =
+        storageBucket === undefined
+          ? undefined
+          : {
+              client: createUserScopedStorageClient({
+                origin: storageOrigin,
+                bucket: storageBucket,
+                credentials: {
+                  projectPublishableKey: config.publishableKey,
+                  userAccessToken: accessToken,
                 },
-              }
-            : {}),
-        });
-      },
-      { maxRequestBodySize: MCP_MAX_REQUEST_BODY_BYTES },
-    );
+                ...(fetchImpl === undefined ? {} : { fetch: fetchImpl }),
+              }),
+              ...(storageReadOnly ? { readOnly: true } : {}),
+            };
+      const createServer =
+        composition === 'read-only' ? createReadOnlyServer : createApplicationServer;
+      return createServer({
+        client: verifiedClient,
+        ...(config.capabilityProfile === undefined
+          ? {}
+          : {
+              capabilityRegistration: {
+                profile: config.capabilityProfile,
+                origin: authOrigin,
+                expectedDataClientId: config.downstreamClientId,
+                currentCredential: async (signal: AbortSignal) => {
+                  if (signal.aborted) throw new Error('credential_unavailable');
+                  const current = store.resolve(principalBinding(principal));
+                  if (current.status !== 'live') throw new Error('credential_unavailable');
+                  const liveness = await classifySourceSessionLiveness(
+                    {
+                      supabaseUrl: config.supabaseUrl,
+                      publishableKey: config.publishableKey,
+                      ...(config.livenessTimeoutMs === undefined
+                        ? {}
+                        : { timeoutMs: config.livenessTimeoutMs }),
+                      ...(fetchImpl === undefined ? {} : { fetch: fetchImpl }),
+                    },
+                    {
+                      accessToken: current.accessToken,
+                      sourceSessionId: principal.sourceSessionId,
+                      aClientId: principal.clientId,
+                    },
+                  );
+                  if (!liveness.live || signal.aborted) throw new Error('credential_unavailable');
+                  const credentials = {
+                    projectPublishableKey: config.publishableKey,
+                    userAccessToken: current.accessToken,
+                  };
+                  const identity = await createFixedSupabaseClient({
+                    origin: authOrigin,
+                    credentials,
+                    ...(fetchImpl === undefined ? {} : { fetch: fetchImpl }),
+                  }).verifyUserIdentity(signal);
+                  return { credentials, identity: { ...identity, clientId: current.bClientId } };
+                },
+                ...(fetchImpl === undefined ? {} : { fetch: fetchImpl }),
+              },
+            }),
+        ...(storageRegistration === undefined ? {} : { storageRegistration }),
+        ...(enableMarker
+          ? {
+              testMarker: {
+                readMarker: (signal) => {
+                  if (config.observation !== undefined) config.observation.markerReads += 1;
+                  return readTestMarker({
+                    origin: authOrigin,
+                    accessToken,
+                    publishableKey: config.publishableKey,
+                    signal,
+                    ...(fetchImpl === undefined ? {} : { fetch: fetchImpl }),
+                  });
+                },
+              },
+            }
+          : {}),
+      });
+    };
+    const mcp = createMcpHandler(createServerWithB, {
+      maxRequestBodySize: MCP_MAX_REQUEST_BODY_BYTES,
+    });
     try {
       return await mcp.fetch(request);
     } finally {
@@ -395,7 +476,7 @@ export function createNativeUserMcpReadHandler(
       const gated = await config.dispatchGate(request.clone());
       if (gated !== undefined) return gated;
     }
-    return dispatchWithTokenB(request, grant.accessToken);
+    return dispatchWithTokenB(request, grant.accessToken, principal);
   };
 
   const native = createNativeUserMcpHandler({

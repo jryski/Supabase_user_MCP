@@ -7,7 +7,10 @@ import {
   DownstreamOAuthGrantStore,
 } from './downstream-oauth-grant.js';
 import { MCP_INGRESS_ROLE, NativeUserMcpConfigError } from './native-user-mcp.js';
-import { createNativeUserMcpReadHandler } from './native-user-mcp-read-handler.js';
+import {
+  createNativeUserMcpApplicationHandler,
+  createNativeUserMcpReadHandler,
+} from './native-user-mcp-read-handler.js';
 
 const RESOURCE = 'https://mcp.loopback.invalid/mcp';
 const SUPABASE_URL = 'https://project.loopback.invalid';
@@ -584,6 +587,7 @@ describe('storage tools are exposed and callable through the read handler only w
   async function boundHandler(options: {
     readonly capabilities: ReadonlyArray<string>;
     readonly storageBucket?: string;
+    readonly application?: boolean;
   }) {
     const material = await keys();
     const tokenA = await signA(material.privateKey);
@@ -613,7 +617,11 @@ describe('storage tools are exposed and callable through the read handler only w
       }
       return new Response('unexpected', { status: 500 });
     };
-    const handler = createNativeUserMcpReadHandler({
+    const createHandler =
+      options.application === true
+        ? createNativeUserMcpApplicationHandler
+        : createNativeUserMcpReadHandler;
+    const handler = createHandler({
       resourceServer: RESOURCE,
       supabaseUrl: SUPABASE_URL,
       expectedClientId: A_CLIENT,
@@ -684,6 +692,23 @@ describe('storage tools are exposed and callable through the read handler only w
     expect(session.storageRequests()).toEqual([
       `${SUPABASE_URL}/storage/v1/object/list/mcp-user-storage`,
     ]);
+  });
+
+  it('keeps a write grant read-only unless the application entrypoint is explicitly selected', async () => {
+    const options = {
+      capabilities: ['storage:read', 'storage:write'],
+      storageBucket: 'mcp-user-storage',
+    };
+    const read = await boundHandler(options);
+    expect(await read.listNames()).toEqual(expect.arrayContaining(STORAGE_TOOL_NAMES));
+    expect(await read.listNames()).not.toContain('storage_put');
+    expect(refused(await read.callStorage('storage_delete', { key: 'note.txt' }))).toBe(true);
+    expect(read.storageRequests()).toEqual([]);
+    const application = await boundHandler({ ...options, application: true });
+    expect(await application.listNames()).toEqual(
+      expect.arrayContaining(['storage_put', 'storage_delete']),
+    );
+    expect(application.storageRequests()).toEqual([]);
   });
 
   for (const [label, options] of [

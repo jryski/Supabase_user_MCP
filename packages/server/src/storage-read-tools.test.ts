@@ -11,7 +11,7 @@ import {
 import { beforeEach, describe, expect, it } from 'vitest';
 
 import type { VerifiedFixedSupabaseClient } from './fixed-supabase-client.js';
-import { createReadOnlyServer } from './server.js';
+import { createApplicationServer, createReadOnlyServer } from './server.js';
 import {
   createPathPrefixStoragePrincipalResolver,
   type StoragePrincipalResolver,
@@ -1039,7 +1039,7 @@ describe('storage write tools: create and delete behind the same scope seam', ()
       let tools: Awaited<ReturnType<Client['listTools']>>['tools'] = [];
       let instructions = '';
       await withClient(
-        createReadOnlyServer({
+        createApplicationServer({
           client: memoryClient(uid),
           storageRegistration: { client: storage.sessionClient(uid) },
         }),
@@ -1072,5 +1072,27 @@ describe('storage write tools: create and delete behind the same scope seam', ()
       [...MEMORY_TOOLS, ...STORAGE_TOOLS].toSorted(),
     );
     expect(readOnlyAgent.instructions).toMatch(/Read-only storage tools/);
+  });
+
+  it('clamps writes in the read-only composition even when its storage config requests them', async () => {
+    await withClient(
+      createReadOnlyServer({
+        client: memoryClient(USER_1),
+        storageRegistration: { client: storage.sessionClient(USER_1), readOnly: false },
+      }),
+      async (mcp) => {
+        const names = (await mcp.listTools()).tools.map((tool) => tool.name);
+        expect(names).not.toContain('storage_put');
+        expect(names).not.toContain('storage_delete');
+        await expect(
+          mcp.callTool({
+            name: 'storage_delete',
+            arguments: { key: 'keep.txt' },
+          }),
+        ).rejects.toThrow('not found');
+      },
+    );
+    expect(storage.calls.some((call) => call.startsWith('delete:'))).toBe(false);
+    expect(storage.objects.has(`${USER_2}/keep.txt`)).toBe(true);
   });
 });

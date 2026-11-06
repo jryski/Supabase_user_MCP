@@ -67,6 +67,24 @@ export {
 } from './artifact-text-index.js';
 export { createAuthorizationServerMetadata } from './authorization-server-metadata.js';
 export {
+  createHostedOAuthConsentHandler,
+  HOSTED_CONSENT_DEADLINE_MS,
+  type HostedConsentChallenge,
+  type HostedConsentChallengeStore,
+  type HostedOAuthConsentConfig,
+  type VerifiedHostedConsentSession,
+} from './hosted-oauth-consent.js';
+export {
+  createCapabilityRegistrationProfile,
+  prepareCapabilityMcpRegistration,
+  type CapabilityAllowlistStartupEvent,
+  type CapabilityCurrentCredential,
+  type CapabilityRegistrationConfig,
+  type CapabilityRegistrationProfile,
+  type CapabilityRegistrationProfileConfig,
+  type PreparedCapabilityRegistration,
+} from './capability-mcp-registration.js';
+export {
   DOWNSTREAM_AUTHORIZATION_REQUIRED,
   DOWNSTREAM_B_GRANT_PROFILE,
   DOWNSTREAM_B_SCOPE,
@@ -138,6 +156,7 @@ export {
   type SupabaseOAuthScope,
 } from './oauth-consent.js';
 export {
+  createNativeUserMcpApplicationHandler,
   createNativeUserMcpReadHandler,
   type NativeUserMcpReadHandlerConfig,
 } from './native-user-mcp-read-handler.js';
@@ -176,6 +195,7 @@ export {
   type RemoteTokenSigningKey,
 } from './remote-token-verifier.js';
 export {
+  createApplicationServer,
   createReadOnlyServer,
   type ReadOnlyServer,
   type ReadOnlyServerOptions,
