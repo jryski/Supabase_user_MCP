@@ -4,6 +4,12 @@ This directory is the design source of truth for Supabase User MCP. The root REA
 the project overview; documents here define the contracts that implementation and tests
 must satisfy.
 
+## Native-first integration
+
+Read [NATIVE_FIRST.md](NATIVE_FIRST.md) for the 2026-10-27 direction, vendor/local
+responsibilities, compatibility evidence and remaining identity/storage acceptance.
+It refocuses source work without changing accepted security or deployment gates.
+
 ## Start here
 
 | Document | Question answered |

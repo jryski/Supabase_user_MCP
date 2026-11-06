@@ -7,6 +7,15 @@ This catalog defines both merged foundations and the intended product surface. E
 status governs its named scope. `Implemented` or `Partially implemented` does not mean that a
 larger milestone, deployment profile, or production security gate is complete.
 
+## Native-first delivery addendum, 2026-10-27
+
+The [native-first integration plan](NATIVE_FIRST.md) reuses vendor authentication,
+discovery, transport and consent components. Fixed memory/storage capabilities,
+delegation, live authorization checks, bounds and audit remain application work.
+Storage list/get source candidates and proposed put/delete/database policies are not
+accepted remote capabilities. Per-feature statuses below still describe their named
+scope; this addendum does not promote planned writes to implemented.
+
 ## Status legend
 
 | Status | Meaning |
