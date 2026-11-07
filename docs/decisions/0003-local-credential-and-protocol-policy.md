@@ -105,6 +105,20 @@ must no longer be served with that credential.
 | Revoked credential | `credential_revoked` |
 | Replacement and restart required | `credential_refresh_required` |
 
+The local credential loader (`packages/server/src/local-credential-loader.ts`) reports
+content refusals with these codes, which fall in the classes above:
+
+| Loader code | Condition | Class |
+| --- | --- | --- |
+| `CREDENTIAL_SECRET_KEY` | The trimmed key slot starts with `sb_secret_` (any letter case) | `credential_malformed` |
+| `CREDENTIAL_CONFLATED` | The key equals the token, or the key is JWT-shaped (for example a legacy anon or `service_role` key) | `credential_malformed` |
+| `CREDENTIAL_KEY_NOT_PUBLISHABLE` | The trimmed key is not exactly `sb_publishable_` followed by `[A-Za-z0-9_-]` characters | `credential_malformed` |
+| `CREDENTIAL_TOKEN_INVALID` | The token is not a three-segment JWT whose unverified payload has an integer `exp`, `role` exactly `authenticated`, and a UUID `sub` (so `service_role` and `anon` tokens are refused) | `credential_malformed` |
+| `CREDENTIAL_TOKEN_EXPIRED` | The token `exp` is not in the future | `credential_expired` |
+
+The loader decodes the token without verifying it; signature verification stays with the
+upstream identity check.
+
 Errors contain no path, credential content, claims, or upstream response body.
 
 ### MCP protocol
