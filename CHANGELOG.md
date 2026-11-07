@@ -10,6 +10,11 @@ the first public package is released.
 
 ### Added
 
+- Local compatibility candidate for UUID memory IDs and an operator-fixed
+  `SUPABASE_USER_MCP_RPC_SCHEMA` in the stdio composition. The default remains
+  `memory`; tools cannot select routing or identity. See the
+  [candidate evidence](docs/evidence/MEMORY_COMPATIBILITY_2026_11_06.md) for
+  provenance, scope and review gates.
 - Explicit native application composition for grant-gated storage create/delete
   and finite release-approved database capabilities. Default/read-only server
   composition clamps storage writes. The compiled capability approval list is
