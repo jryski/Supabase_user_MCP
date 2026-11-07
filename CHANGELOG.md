@@ -10,6 +10,9 @@ the first public package is released.
 
 ### Added
 
+- Native and remote-pilot memory RPC schema wiring for UUID compatibility,
+  fixed and validated at startup with the same default as stdio.
+
 - Local compatibility candidate for UUID memory IDs and an operator-fixed
   `SUPABASE_USER_MCP_RPC_SCHEMA` in the stdio composition. The default remains
   `memory`; tools cannot select routing or identity. See the

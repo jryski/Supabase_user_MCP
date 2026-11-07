@@ -276,6 +276,15 @@ function parseMemorySearchPayload(value: unknown, limit: number): FixedMemorySea
   });
 }
 
+/** Normalize trusted startup routing without constructing a credential-bearing client. */
+export function resolveFixedRpcSchema(value: unknown): string {
+  const configured = value === undefined ? DEFAULT_FIXED_SCHEMA : value;
+  if (typeof configured !== 'string') invalid();
+  const schema = configured.trim();
+  if (!SCHEMA_IDENTIFIER.test(schema)) invalid();
+  return schema;
+}
+
 export function createFixedSupabaseClient(
   config: FixedSupabaseClientConfig,
 ): VerifiedFixedSupabaseClient {
@@ -314,10 +323,7 @@ export function createFixedSupabaseClient(
   ) {
     invalid();
   }
-  const configuredSchema = config.rpcSchema === undefined ? DEFAULT_FIXED_SCHEMA : config.rpcSchema;
-  if (typeof configuredSchema !== 'string') invalid();
-  const rpcSchema = configuredSchema.trim();
-  if (!SCHEMA_IDENTIFIER.test(rpcSchema)) invalid();
+  const rpcSchema = resolveFixedRpcSchema(config.rpcSchema);
   const fetchImplementation = config.fetch ?? globalThis.fetch;
   const listHeaders = Object.freeze({
     Accept: 'application/json',

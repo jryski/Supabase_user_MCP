@@ -24,6 +24,24 @@ URLs remain valid until expiry after a grant is revoked. See
 unresolved agent-prefix decision. This change does not approve that ADR or apply
 its migrations to an adopter's project.
 
+## Fix the memory RPC schema at startup
+
+Both native handler constructors accept an optional `memoryRpcSchema` in trusted
+server configuration. It defaults to `memory`, is validated at construction, and
+is snapshotted before any request. The remote pilot reads the same setting from
+`SUPABASE_USER_MCP_RPC_SCHEMA`. It uses the stdio compatibility validator: trim
+outer whitespace, then require a lowercase SQL identifier of 1–63 characters.
+An explicitly empty or malformed value fails startup with a fixed error.
+
+The setting changes only the fixed memory RPCs' profile headers. It does not
+select a new RPC, approve a generic capability, configure a Storage schema or
+change the public liveness/storage-session RPC profiles. Auth verification gets
+no schema header. Memory calls still use the independently bound Token B, and
+tool arguments cannot override routing or identity. A configured schema must
+already be exposed by the adopter with the correct RPC contracts and grants;
+this setting creates no exposure, policy or permission. UUID memory identifiers
+and existing opaque identifiers use the same registered tools.
+
 ## Register a finite application capability set
 
 Use `createCapabilityRegistrationProfile` once at startup, choosing the

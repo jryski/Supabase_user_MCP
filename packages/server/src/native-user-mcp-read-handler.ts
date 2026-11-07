@@ -14,7 +14,7 @@ import {
   type DownstreamHandshakePrincipal,
   DownstreamOAuthGrantStore,
 } from './downstream-oauth-grant.js';
-import { createFixedSupabaseClient } from './fixed-supabase-client.js';
+import { createFixedSupabaseClient, resolveFixedRpcSchema } from './fixed-supabase-client.js';
 import type { CapabilityRegistrationProfile } from './capability-mcp-registration.js';
 import { isLoopbackRedirectHostname, isLoopbackRedirectHttpUrl } from './loopback-host.js';
 import {
@@ -50,6 +50,8 @@ export interface NativeUserMcpReadHandlerConfig {
   readonly jwks: NativeUserMcpConfig['jwks'];
   readonly downstreamClientId: string;
   readonly downstreamRedirectUri: string;
+  /** Fixed memory RPC schema, validated and snapshotted at startup. Defaults to memory. */
+  readonly memoryRpcSchema?: string;
   /** Programmatic TEST marker. Default CLI leaves this off. */
   readonly enableTestMarker?: boolean;
   readonly fetch?: typeof globalThis.fetch;
@@ -219,6 +221,12 @@ function createNativeUserMcpComposedHandler(
   if (!RemoteOAuthClientIdSchema.safeParse(config.downstreamClientId).success) invalidConfig();
   if (config.downstreamClientId === config.expectedClientId) invalidConfig();
   if (config.ingressRole !== MCP_INGRESS_ROLE) invalidConfig();
+  let memoryRpcSchema: string;
+  try {
+    memoryRpcSchema = resolveFixedRpcSchema(config.memoryRpcSchema);
+  } catch {
+    invalidConfig();
+  }
   const httpsBehindTerminator = config.httpsCallbackBehindTlsTerminator === true;
   // A plaintext callback must be an exact loopback host, by the same rule the
   // grant store applies (`isLoopbackRedirectHttpUrl`, which accepts `[::1]`).
@@ -311,6 +319,7 @@ function createNativeUserMcpComposedHandler(
     const createServerWithB = async () => {
       const client = createFixedSupabaseClient({
         origin: authOrigin,
+        rpcSchema: memoryRpcSchema,
         credentials: {
           projectPublishableKey: config.publishableKey,
           userAccessToken: accessToken,

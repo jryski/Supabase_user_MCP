@@ -40,6 +40,9 @@ export const NATIVE_REMOTE_PILOT_B_REDIRECT_URI_ENV = 'SUPABASE_USER_MCP_B_REDIR
  */
 export const NATIVE_REMOTE_PILOT_STORAGE_BUCKET_ENV = 'SUPABASE_USER_MCP_STORAGE_BUCKET';
 
+/** Fixed memory RPC profile only; never a schema-exposure or grant setting. */
+export const NATIVE_REMOTE_PILOT_RPC_SCHEMA_ENV = 'SUPABASE_USER_MCP_RPC_SCHEMA';
+
 /** Names only. Values are never logged or echoed. */
 export const NATIVE_REMOTE_PILOT_REQUIRED_ENV = Object.freeze([
   NATIVE_REMOTE_PILOT_OPT_IN_ENV,
@@ -54,9 +57,10 @@ export const NATIVE_REMOTE_PILOT_REQUIRED_ENV = Object.freeze([
   LISTEN_PORT_ENV,
 ]);
 
-/** Optional names. Unset means the feature is off. */
+/** Optional names. Unset preserves each feature's default behavior. */
 export const NATIVE_REMOTE_PILOT_OPTIONAL_ENV = Object.freeze([
   NATIVE_REMOTE_PILOT_STORAGE_BUCKET_ENV,
+  NATIVE_REMOTE_PILOT_RPC_SCHEMA_ENV,
 ]);
 
 /**
@@ -162,6 +166,9 @@ export function createNativeUserMcpRemotePilotFromEnvironment(
     jwks,
     downstreamClientId: requiredText(env[NATIVE_REMOTE_PILOT_B_CLIENT_ID_ENV]),
     downstreamRedirectUri: redirect.href,
+    ...(env[NATIVE_REMOTE_PILOT_RPC_SCHEMA_ENV] === undefined
+      ? {}
+      : { memoryRpcSchema: env[NATIVE_REMOTE_PILOT_RPC_SCHEMA_ENV] }),
     httpsCallbackBehindTlsTerminator: true,
     downstreamAuthorizationViaToolResult: true,
     ...(storageBucket === undefined ? {} : { storageBucket, storageReadOnly: true }),

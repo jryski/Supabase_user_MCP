@@ -20,6 +20,7 @@ import {
   NATIVE_REMOTE_PILOT_OPT_IN_VALUE,
   NATIVE_REMOTE_PILOT_OPTIONAL_ENV,
   NATIVE_REMOTE_PILOT_REQUIRED_ENV,
+  NATIVE_REMOTE_PILOT_RPC_SCHEMA_ENV,
   NATIVE_REMOTE_PILOT_STORAGE_BUCKET_ENV,
   NATIVE_REMOTE_PILOT_SUPABASE_URL_ENV,
 } from './native-user-mcp-remote-pilot.js';
@@ -644,7 +645,10 @@ describe('native user MCP remote pilot: storage through the environment entrypoi
   }
 
   it('lists the storage name as optional, never required', () => {
-    expect([...NATIVE_REMOTE_PILOT_OPTIONAL_ENV]).toEqual([NATIVE_REMOTE_PILOT_STORAGE_BUCKET_ENV]);
+    expect([...NATIVE_REMOTE_PILOT_OPTIONAL_ENV]).toEqual([
+      NATIVE_REMOTE_PILOT_STORAGE_BUCKET_ENV,
+      NATIVE_REMOTE_PILOT_RPC_SCHEMA_ENV,
+    ]);
     expect(NATIVE_REMOTE_PILOT_REQUIRED_ENV).not.toContain(NATIVE_REMOTE_PILOT_STORAGE_BUCKET_ENV);
   });
 

@@ -74,6 +74,7 @@ These are inputs, not facts established by this change:
 | `SUPABASE_USER_MCP_B_REDIRECT_URI` | `https://<host>/oauth/downstream/callback` |
 | `SUPABASE_USER_MCP_AGENT_ID` | agent id stamped on A and B |
 | `SUPABASE_USER_MCP_LISTEN_PORT` | loopback port |
+| `SUPABASE_USER_MCP_RPC_SCHEMA` | optional; startup-fixed memory RPC schema, default `memory` |
 | `SUPABASE_USER_MCP_STORAGE_BUCKET` | optional; a Storage bucket name only, for example `<bucket>`; unset or empty keeps storage off |
 
 Startup fails closed on any missing or insecure value, on a redirect off the
@@ -82,6 +83,14 @@ service-role, secret-key, credential-file, or user-bearer variable is set.
 The key slot accepts only an `sb_publishable_` key. A secret key (`sb_secret_`
 in any letter case), a legacy JWT-shaped anon key, or any other shape fails
 startup with a fixed error that never contains the key.
+
+`SUPABASE_USER_MCP_RPC_SCHEMA` selects the profile for the three fixed memory
+RPCs only. The startup validator trims outer whitespace and requires a lowercase
+SQL identifier of 1–63 characters. An explicit empty or malformed value fails
+startup with a fixed error. Configuration is snapshotted; a tool cannot change
+it. Auth, liveness, storage and generic capability routing stay unchanged. The
+schema and authorized memory RPCs must already exist with the adopter's reviewed
+exposure and grants. This setting applies no policy, grant or schema change.
 
 Storage is off by default. With `SUPABASE_USER_MCP_STORAGE_BUCKET` set to a
 valid bucket name, a session whose grant B holds `storage:read` also lists
