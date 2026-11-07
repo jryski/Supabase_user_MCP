@@ -8,13 +8,6 @@ the first public package is released.
 
 ## [Unreleased]
 
-### Fixed
-
-- Require verified DELETE journal mode with EXTRA synchronization for persistent
-  consent nonces, refusing unsupported modes and transaction-time downgrades.
-  This addresses the documented last-commit durability risk of rollback-mode FULL;
-  power-loss fault injection and deployment qualification remain outside the tests.
-
 ### Added
 
 - Optional persistent SQLite consent nonce store for same-host processes, with
@@ -87,6 +80,11 @@ the first public package is released.
   local copy. Accepted and refused keys are unchanged.
 
 ### Fixed
+
+- Require verified DELETE journal mode with EXTRA synchronization for persistent
+  consent nonces, refusing unsupported modes and transaction-time downgrades.
+  This addresses the documented last-commit durability risk of rollback-mode FULL;
+  power-loss fault injection and deployment qualification remain outside the tests.
 
 - Native-user Token A must use configured `role=mcp_ingress`. `role=authenticated`
   is rejected. A nil or empty `session_id` is rejected. This change does not create the
