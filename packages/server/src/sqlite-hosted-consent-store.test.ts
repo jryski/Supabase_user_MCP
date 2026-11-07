@@ -311,7 +311,13 @@ describe.skipIf(process.platform === 'win32' || process.getuid === undefined)(
             },
             body: new URLSearchParams({ nonce: key, decision: 'approve' }),
           });
-        expect((await b(submit())).status).toBe(lostReply ? 503 : 303);
+        const decision = await b(submit());
+        expect(decision.status).toBe(lostReply ? 409 : 303);
+        if (lostReply) {
+          expect(await decision.text()).toBe(
+            'Consent outcome unavailable. Restart authorization to check its status.',
+          );
+        }
         first.close();
         const restarted = handler(await open(path));
         expect((await restarted(submit())).status).toBe(409);
