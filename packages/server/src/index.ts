@@ -71,6 +71,24 @@ export {
   type VerifiedUserIdentity,
 } from './fixed-supabase-client.js';
 export {
+  createControlPlaneClient,
+  type ControlPlaneClient,
+  type ControlPlaneClientConfig,
+  ControlPlaneClientError,
+  type ControlPlaneClientErrorCode,
+} from './control-plane-client.js';
+export {
+  createControlPlaneServer,
+  type ControlPlaneServer,
+  type ControlPlaneServerOptions,
+  CONTROL_PLANE_SERVER_NAME,
+} from './control-plane-server.js';
+export {
+  createControlPlaneToolExecutor,
+  type ControlPlaneOperationalEvent,
+  type ControlPlaneToolExecutionContext,
+} from './control-plane-tool-governor.js';
+export {
   LocalCredentialError,
   type LocalCredentialErrorCode,
   type LocalCredentialLoaderOptions,
