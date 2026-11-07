@@ -50,7 +50,7 @@ describe('read-only stdio startup', () => {
   it('assembles the exact fixed client and verifies the server before starting stdio', async () => {
     const order: string[] = [];
     const credentials = Object.freeze({
-      projectPublishableKey: 'synthetic-publishable-key',
+      projectPublishableKey: 'sb_publishable_synthetic',
       userAccessToken: 'header.payload.signature',
     });
     const client: VerifiedFixedSupabaseClient = {
@@ -166,7 +166,7 @@ describe('read-only stdio startup', () => {
     };
     const dependencies: StdioStartupDependencies = {
       loadCredentials: async () => ({
-        projectPublishableKey: 'synthetic-publishable-key',
+        projectPublishableKey: 'sb_publishable_synthetic',
         userAccessToken: 'header.payload.signature',
       }),
       createClient: () => client,

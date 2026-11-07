@@ -1,4 +1,5 @@
 import type { LocalCredentials } from './local-credential-loader.js';
+import { isPublishableProjectKey, isSecretProjectKey } from './publishable-key.js';
 import {
   MemoryGetInputSchema,
   type MemoryGetInput,
@@ -9,7 +10,8 @@ import {
 } from '@supabase-user-mcp/contracts';
 
 const FIXED_PATH = '/rest/v1/memories?select=id%2Ccontent&limit=100';
-const FIXED_SCHEMA = 'memory';
+const DEFAULT_FIXED_SCHEMA = 'memory';
+const SCHEMA_IDENTIFIER = /^[a-z][a-z0-9_]{0,62}$/;
 const FIXED_SEARCH_PATH = '/rest/v1/rpc/authorized_memory_search_v1';
 const FIXED_GET_PATH = '/rest/v1/rpc/authorized_memory_get_v1';
 const FIXED_LIST_RECENT_PATH = '/rest/v1/rpc/authorized_memory_list_recent_v1';
@@ -33,6 +35,8 @@ export type FixedMemoryRecordField = (typeof ALLOWED_MEMORY_ROW_FIELDS)[number];
 
 export type FixedSupabaseClientErrorCode =
   | 'FIXED_CLIENT_INVALID_CREDENTIAL'
+  | 'FIXED_CLIENT_SECRET_KEY'
+  | 'FIXED_CLIENT_KEY_NOT_PUBLISHABLE'
   | 'FIXED_CLIENT_INVALID_REQUEST'
   | 'FIXED_CLIENT_INVALID_CURSOR'
   | 'FIXED_CLIENT_TIMEOUT'
@@ -55,6 +59,8 @@ export interface FixedSupabaseClientConfig {
   readonly origin: string;
   readonly credentials: LocalCredentials;
   readonly fetch?: typeof globalThis.fetch;
+  /** Fixed at startup; never accepted from a tool invocation. Defaults to "memory". */
+  readonly rpcSchema?: string;
   readonly timeoutMs?: number;
   readonly maxResponseBytes?: number;
 }
@@ -90,6 +96,7 @@ export interface FixedSupabaseClient {
 
 export interface VerifiedUserIdentity {
   readonly principalId: string;
+  readonly clientId?: string;
 }
 
 export interface VerifiedFixedSupabaseClient extends FixedSupabaseClient {
@@ -269,6 +276,15 @@ function parseMemorySearchPayload(value: unknown, limit: number): FixedMemorySea
   });
 }
 
+/** Normalize trusted startup routing without constructing a credential-bearing client. */
+export function resolveFixedRpcSchema(value: unknown): string {
+  const configured = value === undefined ? DEFAULT_FIXED_SCHEMA : value;
+  if (typeof configured !== 'string') invalid();
+  const schema = configured.trim();
+  if (!SCHEMA_IDENTIFIER.test(schema)) invalid();
+  return schema;
+}
+
 export function createFixedSupabaseClient(
   config: FixedSupabaseClientConfig,
 ): VerifiedFixedSupabaseClient {
@@ -288,14 +304,16 @@ export function createFixedSupabaseClient(
   }
   const key = config.credentials.projectPublishableKey?.trim();
   const token = config.credentials.userAccessToken?.trim();
-  if (
-    !key ||
-    !token ||
-    key === token ||
-    key.split('.').length === 3 ||
-    token.split('.').length !== 3
-  ) {
+  if (!key || !token) invalid();
+  // Only an `sb_publishable_` key may fill the key slot. A secret key (any
+  // letter case) and a JWT-shaped key keep their specific codes; every other
+  // shape is refused as not publishable. No code ever echoes the key.
+  if (isSecretProjectKey(key)) throw new FixedSupabaseClientError('FIXED_CLIENT_SECRET_KEY');
+  if (key === token || key.split('.').length === 3 || token.split('.').length !== 3) {
     invalid();
+  }
+  if (!isPublishableProjectKey(key)) {
+    throw new FixedSupabaseClientError('FIXED_CLIENT_KEY_NOT_PUBLISHABLE');
   }
   const timeoutMs = config.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const maxResponseBytes = config.maxResponseBytes ?? DEFAULT_MAX_RESPONSE_BYTES;
@@ -305,10 +323,11 @@ export function createFixedSupabaseClient(
   ) {
     invalid();
   }
+  const rpcSchema = resolveFixedRpcSchema(config.rpcSchema);
   const fetchImplementation = config.fetch ?? globalThis.fetch;
   const listHeaders = Object.freeze({
     Accept: 'application/json',
-    'Accept-Profile': FIXED_SCHEMA,
+    'Accept-Profile': rpcSchema,
     Authorization: `Bearer ${token}`,
     apikey: key,
   });
@@ -316,7 +335,7 @@ export function createFixedSupabaseClient(
   const postHeaders = Object.freeze({
     ...listHeaders,
     'Content-Type': 'application/json',
-    'Content-Profile': FIXED_SCHEMA,
+    'Content-Profile': rpcSchema,
   });
   const authHeaders = Object.freeze({
     Accept: 'application/json',

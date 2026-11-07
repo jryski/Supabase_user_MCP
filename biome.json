@@ -31,5 +31,13 @@
     "rules": {
       "preset": "recommended"
     }
-  }
+  },
+  "overrides": [
+    {
+      "includes": ["test/review-139-human-suspension-verbatim.test.ts"],
+      "formatter": {
+        "enabled": false
+      }
+    }
+  ]
 }
