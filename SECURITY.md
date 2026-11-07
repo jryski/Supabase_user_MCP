@@ -18,9 +18,13 @@ prototyping; all code and documentation should be treated as pre-release.
 
 Do not open a public issue containing exploit details.
 
-Use [GitHub Private Vulnerability Reporting](https://github.com/jryski/Supabase_user_MCP/security/advisories/new).
-If private reporting is unavailable, contact the maintainer through the
-[GitHub profile](https://github.com/jryski) without posting sensitive details publicly.
+Use this repository's own private vulnerability reporting form:
+<https://github.com/jryski/Supabase_user_MCP/security/advisories/new>
+
+If the form is unavailable, email <jryski@gmail.com> instead. Do not post
+sensitive details publicly. Reports about another program component belong in that
+component's own form; the
+[program map](https://github.com/WireSpeedComputing/sovereign-ai-os) lists them.
 
 Include, where possible:
 
