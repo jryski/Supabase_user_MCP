@@ -78,6 +78,10 @@ Create a JSON file outside the repository with exactly these two fields:
 The key and user token are different credentials. Do not use `service_role`, a project access token,
 a database password, or a JWT-shaped project key. The user token must be unexpired.
 
+Use an `sb_publishable_` project key. The user-scoped storage client behind the storage read
+tools accepts only keys of the form `sb_publishable_<letters, digits, _ or ->` and refuses
+everything else at construction, including `sb_secret_` keys and legacy anon-JWT project keys.
+
 On POSIX, restrict the file to its owner:
 
 ```shell

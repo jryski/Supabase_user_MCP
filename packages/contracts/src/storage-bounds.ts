@@ -19,7 +19,7 @@ export const STORAGE_MAX_RELATIVE_KEY_BYTES = 512;
 export const STORAGE_MAX_KEY_SEGMENTS = 8;
 export const STORAGE_MAX_SEGMENT_BYTES = 128;
 /** Raw bytes accepted inline in one `storage_put` or returned inline by `storage_get`. */
-export const STORAGE_MAX_INLINE_BYTES = 32 * 1024;
+export const STORAGE_MAX_INLINE_BYTES = 16 * 1024;
 /** Largest object size a signed upload or download may declare. */
 export const STORAGE_MAX_OBJECT_BYTES = 5 * 1024 * 1024;
 export const STORAGE_MAX_LIST_ITEMS = 100;
@@ -66,6 +66,7 @@ export type StorageBoundsRejection =
   | 'disallowed_mime'
   | 'mime_extension_mismatch'
   | 'invalid_size'
+  | 'invalid_mode'
   | 'size_exceeded'
   | 'invalid_base64'
   | 'invalid_bucket';
@@ -179,7 +180,15 @@ export function checkStorageSize(
   if (typeof size !== 'number' || !Number.isSafeInteger(size) || size < 0) {
     return reject('invalid_size');
   }
-  const limit = mode === 'inline' ? STORAGE_MAX_INLINE_BYTES : STORAGE_MAX_OBJECT_BYTES;
+  // Fail closed: only the two declared modes have a limit; anything else is rejected
+  // rather than defaulting to the larger signed-URL limit.
+  const limit =
+    mode === 'inline'
+      ? STORAGE_MAX_INLINE_BYTES
+      : mode === 'signed'
+        ? STORAGE_MAX_OBJECT_BYTES
+        : undefined;
+  if (limit === undefined) return reject('invalid_mode');
   if (size > limit) return reject('size_exceeded');
   return accept(size);
 }
@@ -225,9 +234,11 @@ export const StorageMimeTypeSchema = z.enum(
 /**
  * Compile-time and load-time guard: one inline object, base64-encoded, must
  * fit inside the shared read-tool response budget with room for its envelope.
+ * The MCP read-tool result carries the output twice (structuredContent plus the
+ * untrusted text block), so the encoded payload is counted twice.
  */
 export const STORAGE_INLINE_ENVELOPE_HEADROOM_BYTES =
-  MAX_RESPONSE_BYTES - Math.ceil(STORAGE_MAX_INLINE_BYTES / 3) * 4;
+  MAX_RESPONSE_BYTES - 2 * Math.ceil(STORAGE_MAX_INLINE_BYTES / 3) * 4;
 if (STORAGE_INLINE_ENVELOPE_HEADROOM_BYTES < 16 * 1024) {
   throw new RangeError('Storage inline limit leaves too little response headroom.');
 }
