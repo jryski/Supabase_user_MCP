@@ -10,6 +10,9 @@ the first public package is released.
 
 ### Added
 
+- Optional persistent SQLite consent nonce store for same-host processes, with
+  atomic one-time consumption, expiry/capacity bounds and private-storage checks.
+
 - Native and remote-pilot memory RPC schema wiring for UUID compatibility,
   fixed and validated at startup with the same default as stdio.
 

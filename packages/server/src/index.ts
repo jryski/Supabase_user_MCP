@@ -67,6 +67,13 @@ export {
 } from './artifact-text-index.js';
 export { createAuthorizationServerMetadata } from './authorization-server-metadata.js';
 export {
+  createSqliteHostedConsentChallengeStore,
+  SQLITE_CONSENT_DATABASE_NAME,
+  SQLITE_CONSENT_STORE_ERROR,
+  type SqliteHostedConsentChallengeStore,
+  type SqliteHostedConsentChallengeStoreOptions,
+} from './sqlite-hosted-consent-store.js';
+export {
   createHostedOAuthConsentHandler,
   HOSTED_CONSENT_DEADLINE_MS,
   type HostedConsentChallenge,

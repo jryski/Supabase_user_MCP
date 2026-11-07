@@ -55,6 +55,12 @@ decision may still commit after a lost/timed-out response. Its nonce remains
 consumed and the response is an unknown outcome, never an automatic retry.
 The host should also enforce its usual connection/body and provider timeouts.
 
+For a single POSIX host, the optional
+[SQLite challenge adapter](SQLITE_HOSTED_CONSENT_STORE.md) supplies a bounded
+persistent store shared across its local processes. It is explicitly selected;
+no backend is created by default. Distributed hosts still need their own shared
+atomic implementation.
+
 The challenge store must implement atomic `putIfAbsent` and destructive `take`
 across all instances that can serve the route. It holds only nonce-keyed user ID,
 opaque session ID, authorization ID, the viewed-detail SHA256 and expiry. Bound
