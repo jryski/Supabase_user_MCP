@@ -13,7 +13,7 @@ import {
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createHostedOAuthConsentHandler } from './hosted-oauth-consent.js';
 import type { OAuthConsentApi } from './oauth-consent.js';
 import {
@@ -57,6 +57,7 @@ async function open(path: string, maxEntries = 2, now?: () => number) {
 }
 
 afterEach(() => {
+  vi.restoreAllMocks();
   for (const store of connections.splice(0)) store.close();
   for (const path of directories.splice(0)) rmSync(path, { recursive: true, force: true });
 });
@@ -76,6 +77,120 @@ describe.skipIf(process.platform === 'win32' || process.getuid === undefined)(
       const restarted = await open(path);
       expect(await restarted.take(nonce(1))).toEqual(original);
       expect(await restarted.take(nonce(1))).toBeUndefined();
+    });
+
+    it('verifies DELETE + EXTRA on every connection and retains consumed state after reopening', async () => {
+      const { DatabaseSync } = await import('node:sqlite');
+      const exec = DatabaseSync.prototype.exec;
+      const profiles: { journal: unknown; synchronous: unknown }[] = [];
+      vi.spyOn(DatabaseSync.prototype, 'exec').mockImplementation(function (
+        this: InstanceType<typeof DatabaseSync>,
+        sql: string,
+      ) {
+        exec.call(this, sql);
+        if (sql.includes('PRAGMA main.synchronous = EXTRA;'))
+          profiles.push({
+            journal: this.prepare('PRAGMA main.journal_mode').get()?.journal_mode,
+            synchronous: this.prepare('PRAGMA main.synchronous').get()?.synchronous,
+          });
+      });
+      const path = directory();
+      const first = await open(path);
+      const second = await open(path);
+      const value = challenge();
+      expect(await first.putIfAbsent(nonce(1), value)).toBe(true);
+      expect(await second.take(nonce(1))).toEqual(value);
+      first.close();
+      second.close();
+      const reopened = await open(path);
+      expect(await reopened.take(nonce(1))).toBeUndefined();
+      expect(profiles).toEqual(
+        Array.from({ length: 3 }, () => ({
+          journal: 'delete',
+          synchronous: 3,
+        })),
+      );
+    });
+
+    it.each([
+      ['synchronous FULL', 'PRAGMA main.synchronous = FULL;'],
+      ['journal MEMORY', 'PRAGMA main.journal_mode = MEMORY; PRAGMA main.synchronous = EXTRA;'],
+    ] as const)(
+      'fails closed before initialization if configuration yields %s',
+      async (_, replacement) => {
+        const { DatabaseSync } = await import('node:sqlite');
+        const exec = DatabaseSync.prototype.exec;
+        vi.spyOn(DatabaseSync.prototype, 'exec').mockImplementation(function (
+          this: InstanceType<typeof DatabaseSync>,
+          sql: string,
+        ) {
+          exec.call(this, sql.replace('PRAGMA main.synchronous = EXTRA;', replacement));
+        });
+        const path = directory();
+        await expect(open(path)).rejects.toThrow(SQLITE_CONSENT_STORE_ERROR);
+        const unchanged = new DatabaseSync(join(path, SQLITE_CONSENT_DATABASE_NAME));
+        try {
+          expect(
+            unchanged
+              .prepare(
+                "SELECT count(*) AS count FROM sqlite_schema WHERE name LIKE 'mcp_consent_%'",
+              )
+              .get()?.count,
+          ).toBe(0);
+        } finally {
+          unchanged.close();
+        }
+      },
+    );
+
+    it.each([
+      ['synchronous FULL', 'PRAGMA main.synchronous = FULL;'],
+      ['journal MEMORY', 'PRAGMA main.journal_mode = MEMORY;'],
+    ] as const)('refuses consumption after a connection changes to %s', async (_, downgrade) => {
+      const { DatabaseSync } = await import('node:sqlite');
+      const exec = DatabaseSync.prototype.exec;
+      let active: InstanceType<typeof DatabaseSync> | undefined;
+      vi.spyOn(DatabaseSync.prototype, 'exec').mockImplementation(function (
+        this: InstanceType<typeof DatabaseSync>,
+        sql: string,
+      ) {
+        active = this;
+        exec.call(this, sql);
+      });
+      const store = await open(directory());
+      const value = challenge();
+      await store.putIfAbsent(nonce(1), value);
+      if (!active) throw new Error('Synthetic adapter connection was not observed.');
+      active.exec(downgrade);
+      await expect(store.take(nonce(1))).rejects.toThrow(SQLITE_CONSENT_STORE_ERROR);
+      active.exec('PRAGMA main.journal_mode = DELETE; PRAGMA main.synchronous = EXTRA;');
+      expect(await store.take(nonce(1))).toEqual(value);
+      expect(await store.take(nonce(1))).toBeUndefined();
+    });
+
+    it('refuses an existing WAL database without converting it or consuming pending metadata', async () => {
+      const { DatabaseSync } = await import('node:sqlite');
+      const path = directory();
+      const store = await open(path);
+      await store.putIfAbsent(nonce(1), challenge());
+      store.close();
+      const filename = join(path, SQLITE_CONSENT_DATABASE_NAME);
+      const setup = new DatabaseSync(filename);
+      try {
+        expect(setup.prepare('PRAGMA main.journal_mode = WAL').get()?.journal_mode).toBe('wal');
+      } finally {
+        setup.close();
+      }
+      await expect(open(path)).rejects.toThrow(SQLITE_CONSENT_STORE_ERROR);
+      const unchanged = new DatabaseSync(filename);
+      try {
+        expect(unchanged.prepare('PRAGMA main.journal_mode').get()?.journal_mode).toBe('wal');
+        expect(
+          unchanged.prepare('SELECT count(*) AS count FROM mcp_consent_challenges').get()?.count,
+        ).toBe(1);
+      } finally {
+        unchanged.close();
+      }
     });
 
     it('enforces shared capacity, expires entries and makes space without evicting live forms', async () => {

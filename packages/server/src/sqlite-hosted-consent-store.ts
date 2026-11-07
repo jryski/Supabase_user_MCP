@@ -192,6 +192,13 @@ export async function createSqliteHostedConsentChallengeStore(
         guard();
         db.exec('BEGIN IMMEDIATE');
         active = true;
+        // Prepare fresh PRAGMA queries: some PRAGMAs are evaluated at prepare time.
+        // Check after acquiring the writer lock, before reading or changing a nonce.
+        if (
+          db.prepare('PRAGMA main.journal_mode').get()?.journal_mode !== 'delete' ||
+          db.prepare('PRAGMA main.synchronous').get()?.synchronous !== 3
+        )
+          unavailable();
         const result = operation();
         db.exec('COMMIT');
         active = false;
@@ -208,7 +215,13 @@ export async function createSqliteHostedConsentChallengeStore(
         return unavailable();
       }
     };
-    db.exec('PRAGMA trusted_schema = OFF; PRAGMA synchronous = FULL; PRAGMA secure_delete = ON;');
+    // Do not silently convert an existing WAL/other-mode database or change its custody.
+    if (db.prepare('PRAGMA main.journal_mode').get()?.journal_mode !== 'delete') unavailable();
+    // DELETE + FULL can lose the final commit after power loss. EXTRA also syncs
+    // the journal directory after unlink; the transaction check refuses a downgrade.
+    db.exec(
+      'PRAGMA trusted_schema = OFF; PRAGMA main.synchronous = EXTRA; PRAGMA secure_delete = ON;',
+    );
     transact(() => {
       const id = db.prepare('PRAGMA application_id').get()?.application_id;
       const version = db.prepare('PRAGMA user_version').get()?.user_version;

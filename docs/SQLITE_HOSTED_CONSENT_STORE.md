@@ -56,7 +56,8 @@ npm dependency is installed. Unused/default entrypoints do not load SQLite.
 Each insert or destructive take runs in a SQLite `BEGIN IMMEDIATE` transaction.
 Deletion commits before a challenge is returned to the route, so separate
 connections/processes can consume one nonce at most once. Restarting with the
-same database retains both pending forms and committed consumption. A missing
+same database retains both pending forms and committed consumption, subject to
+the storage durability requirements below. A missing
 nonce returns `undefined`; a duplicate insert or full store returns `false`.
 Existing live forms are not evicted to make room.
 
@@ -71,10 +72,25 @@ the next operation.
 The default limit is 1024 entries, with a maximum of 4096. The chosen capacity is
 persisted and must match across processes. Stored metadata and database files are
 bounded, with a 16 MiB database-file ceiling. SQLite extension loading is disabled,
-trusted-schema behavior is disabled, and commits request full synchronization.
+trusted-schema behavior is disabled, and the adapter requires DELETE journal mode
+with `synchronous=EXTRA` (3). An existing database in another journal mode is
+refused without conversion. Every connection requests EXTRA, and each transaction
+verifies both effective settings after acquiring its writer lock, before reading
+or changing a nonce. A weaker or unsupported setting fails closed.
 The lock wait is capped at 250 ms; a busy or unavailable backend fails closed.
 This synchronous local adapter does not establish a deadline for a stalled
 underlying filesystem; qualify the actual local volume and host request budget.
+
+SQLite documents that DELETE journal mode with FULL synchronization may lose its
+last commit after a power loss on some filesystems. If that commit consumed a
+nonce, the nonce could reappear. EXTRA additionally requests synchronization of
+the journal directory after the journal is unlinked at commit. See
+[SQLite's synchronization guarantees](https://www.sqlite.org/pragma.html#pragma_synchronous).
+This profile still depends on the local filesystem, VFS and storage device
+honoring synchronization; it is not a guarantee against arbitrary hardware
+failure, a dishonest storage stack or restoration of an older snapshot. Upgrading
+the adapter does not recover a previously lost commit. If a prior failure leaves
+consent state uncertain, restart authorization and inspect Auth's current state.
 
 Native/OS/SQL errors are replaced by the fixed
 `SQLITE_CONSENT_STORE_UNAVAILABLE` error without paths or record contents.
@@ -97,7 +113,11 @@ The source suite uses temporary synthetic private directories and actual SQLite
 connections. It checks restart, collision/capacity/expiry behavior, strict
 metadata, private storage/refusal, busy-backend failure, three real Node processes,
 and the actual hosted consent handler across independent connections, including
-lost approval replies and replay after restart. These tests do not establish
+lost approval replies and replay after restart. Regression cases inspect actual
+connection settings, reject weaker synchronization and unsupported journal modes,
+and prove that a configuration downgrade refuses consumption without deleting
+the pending nonce. These are configuration and ordinary restart tests; no
+power-loss or storage fault injection was performed. These tests do not establish
 hosted mounting, real-user consent or deployment acceptance.
 
 API reference: [Node 22 SQLite documentation](https://nodejs.org/download/release/latest-jod/docs/api/sqlite.html).
