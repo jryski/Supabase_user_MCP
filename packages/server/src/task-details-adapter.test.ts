@@ -7,7 +7,9 @@ import {
   createTaskDetailsRefusal,
   createTaskDetailsV2McpResult,
   MAX_PAGE_SIZE,
+  MAX_TASK_DETAILS_REQUEST_BYTES,
   MAX_TASK_DETAILS_TIMEOUT_MS,
+  ReadEventsV2InputSchema,
   segmentWindow,
   TASK_DETAILS_UNTRUSTED_TEXT_PREFIX,
   TASK_DETAILS_V2_BUDGET_REQUEST_ID,
@@ -200,6 +202,97 @@ async function sdkFrame(output: unknown, requestId: string | number): Promise<st
 }
 
 describe('synthetic: negotiation, version conflict and registration', () => {
+  it('refuses a schema-valid request over 2048 bytes before calling the port', async () => {
+    const injected = port();
+    const occurredAt = `2026-01-01T00:00:00.${'1'.repeat(3000)}Z`;
+    const input = {
+      readVersion: 2 as const,
+      view: 'events' as const,
+      taskId: TASK,
+      limit: 1,
+      after: { occurredAt, receiptId: RECEIPT },
+    };
+    expect(ReadEventsV2InputSchema.safeParse(input).success).toBe(true);
+    expect(Buffer.byteLength(JSON.stringify(input))).toBeGreaterThan(
+      MAX_TASK_DETAILS_REQUEST_BYTES,
+    );
+    const result = await createTaskDetailsAdapter({ port: injected }).readEvents(input);
+    expect(result).toEqual(createTaskDetailsRefusal('INVALID_REQUEST'));
+    expect(Object.isFrozen(result)).toBe(true);
+    expect(injected.readEvents).not.toHaveBeenCalled();
+  });
+
+  it('refuses an in-budget event cursor the decoder would refuse before calling the port', async () => {
+    const fraction13 = {
+      readVersion: 2 as const,
+      view: 'events' as const,
+      taskId: TASK,
+      limit: 1,
+      after: { occurredAt: `2026-01-01T00:00:00.${'1'.repeat(13)}Z`, receiptId: RECEIPT },
+    };
+    const preEpoch = {
+      ...fraction13,
+      after: { occurredAt: '1969-12-31T23:59:59Z', receiptId: RECEIPT },
+    };
+    for (const input of [fraction13, preEpoch]) {
+      const injected = port();
+      expect(ReadEventsV2InputSchema.safeParse(input).success).toBe(true);
+      expect(Buffer.byteLength(JSON.stringify(input))).toBeLessThanOrEqual(
+        MAX_TASK_DETAILS_REQUEST_BYTES,
+      );
+      const result = await createTaskDetailsAdapter({ port: injected }).readEvents(input);
+      expect(result).toEqual(createTaskDetailsRefusal('INVALID_REQUEST'));
+      expect(injected.readEvents).not.toHaveBeenCalled();
+    }
+    const after = { occurredAt: '2026-01-01T00:00:00.5Z', receiptId: RECEIPT };
+    const accepted = port({
+      readEvents: vi.fn(async () =>
+        ok({
+          readVersion: 2,
+          view: 'events',
+          taskId: TASK,
+          limit: 1,
+          after,
+          nextAfter: null,
+          events: [],
+          coverage: {
+            completeHistory: false,
+            actualStoredAttributionOnly: true,
+            approvalInferred: false,
+          },
+        }),
+      ),
+    });
+    const result = await createTaskDetailsAdapter({ port: accepted }).readEvents({
+      readVersion: 2,
+      view: 'events',
+      taskId: TASK,
+      limit: 1,
+      after,
+    });
+    expect(result.ok).toBe(true);
+    expect(accepted.readEvents).toHaveBeenCalledTimes(1);
+  });
+
+  it('maps a throwing readVersion getter on the caller input to INVALID_REQUEST', async () => {
+    const secret = 'synthetic-readversion-must-not-leak';
+    const injected = port();
+    const input = {
+      view: 'task' as const,
+      taskId: TASK,
+      expectedVersion: VERSION,
+      get readVersion(): number {
+        throw new Error(secret);
+      },
+    };
+    const result = await createTaskDetailsAdapter({ port: injected }).readTask(input);
+    expect(result).toEqual(createTaskDetailsRefusal('INVALID_REQUEST'));
+    expect(result).toMatchObject({ refusal: { retryable: false } });
+    expect(JSON.stringify(result)).not.toContain(secret);
+    expect(Object.isFrozen(result)).toBe(true);
+    expect(injected.readTask).not.toHaveBeenCalled();
+  });
+
   it('keeps the adapter and contract unregistered', () => {
     expect(Object.keys(contractsIndex)).not.toContain('decodeTaskDetailV2');
     expect(Object.keys(serverIndex)).not.toContain('createTaskDetailsAdapter');

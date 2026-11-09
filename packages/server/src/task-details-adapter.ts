@@ -20,6 +20,7 @@ import {
   decodeTaskListV2,
   decodeTaskMutationReceiptV2,
   type EventListV2,
+  eventInstantAccepted,
   type ReadAssignmentTargetsV2Input,
   ReadAssignmentTargetsV2InputSchema,
   type ReadCoordinationTargetsV2Input,
@@ -142,21 +143,42 @@ function negotiate<T extends { readVersion: number }>(
   if (typeof unsafeInput !== 'object' || unsafeInput === null || Array.isArray(unsafeInput)) {
     throw new AdapterRefusal('MALFORMED_REPRESENTATION');
   }
-  if ((unsafeInput as Record<string, unknown>).readVersion !== 2) {
-    throw new AdapterRefusal('UNSUPPORTED_REPRESENTATION');
-  }
   let snapshot: unknown;
   try {
     snapshot = JSON.parse(JSON.stringify(unsafeInput)) as unknown;
   } catch {
     throw new AdapterRefusal('INVALID_REQUEST');
   }
+  if (typeof snapshot !== 'object' || snapshot === null || Array.isArray(snapshot)) {
+    throw new AdapterRefusal('INVALID_REQUEST');
+  }
+  if ((snapshot as Record<string, unknown>).readVersion !== 2) {
+    throw new AdapterRefusal('UNSUPPORTED_REPRESENTATION');
+  }
   if (!requestWithinPacketLimit(taskDetailsRequestByteLength(snapshot))) {
     throw new AdapterRefusal('INVALID_REQUEST');
   }
   const parsed = schema.safeParse(snapshot);
   if (!parsed.success) throw new AdapterRefusal('INVALID_REQUEST');
+  // Cursor grammar runs only after the request is inside the byte bound. An over-budget
+  // request is already refused above, so this check does not apply to it.
+  if (
+    requestWithinPacketLimit(taskDetailsRequestByteLength(snapshot)) &&
+    !eventRequestCursorAccepted(parsed.data)
+  ) {
+    throw new AdapterRefusal('INVALID_REQUEST');
+  }
   return parsed.data;
+}
+
+function eventRequestCursorAccepted(value: { readVersion: number }): boolean {
+  if (!('after' in value)) return true;
+  const after = (value as { after?: unknown }).after;
+  if (after === null || after === undefined || typeof after !== 'object') return true;
+  if (!('occurredAt' in after)) return true;
+  const occurredAt = (after as { occurredAt?: unknown }).occurredAt;
+  if (typeof occurredAt !== 'string') return true;
+  return eventInstantAccepted(occurredAt);
 }
 
 function unwrapPortResult(result: unknown): unknown {

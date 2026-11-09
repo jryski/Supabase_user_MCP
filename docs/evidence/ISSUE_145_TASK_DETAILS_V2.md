@@ -33,7 +33,7 @@ Files:
 - `tasks`: keyset by task id.
 - `assignment_targets`: typed principal identity, keyset by principal id. Coverage is exactly `completeLibrary: false` and `eligibleTargetsGrantAuthority: false`.
 - `coordination_targets`: the same principal plus a distinct `clientId`, with the same coverage flags.
-- `events`: keyset by parsed timestamp plus receipt id, scoped to one `taskId`. Instants are compared after parsing, including fractions below a millisecond, so offset forms and same-millisecond events order chronologically and a cursor does not stick. An instant before 1970 is refused. The packet does not define a cross-task event page; that shape is not implemented. Coverage is exactly `completeHistory: false`, `actualStoredAttributionOnly: true` and `approvalInferred: false`.
+- `events`: keyset by parsed timestamp plus receipt id, scoped to one `taskId`. Instants are compared after parsing, including fractions below a millisecond and at most 12 fractional digits, so offset forms and same-millisecond events order chronologically and a cursor does not stick. An instant before 1970 is refused. The packet is silent on both restrictions; they fail closed. The packet does not define a cross-task event page; that shape is not implemented. Coverage is exactly `completeHistory: false`, `actualStoredAttributionOnly: true` and `approvalInferred: false`.
 - Only `note` and `submit` may carry an evidence segment. Stored attribution is evidence. Approval is not inferred.
 - Eligible targets do not grant authority. The packet does not define a withdrawn-target wire field. An unavailable assignment target is a port denial, not a status on the target list.
 
@@ -53,7 +53,7 @@ Packet ceilings, all enforced:
 - complete result: 60000 bytes
 - timeout: no more than 5000ms, and also no more than the shared governor (`MAX_TOOL_EXECUTION_MS`, 2000ms)
 
-Stored text is labelled untrusted. `structuredContent` for a successful read is the wrapper `{ ok: true, value }`, and that wrapper is what the 27000-byte ceiling measures. A mutation result keeps `{ ok: true, receipt }` as its structured content. A refusal is returned as itself and is never labelled `ok: true`. A result that exceeds the structured ceiling or the complete-result ceiling is `RESPONSE_LIMIT_EXCEEDED`.
+Stored text is labelled untrusted. `structuredContent` for a successful read is the wrapper `{ ok: true, value }`, and that wrapper is what the 27000-byte ceiling measures. A mutation result keeps `{ ok: true, receipt }` as its structured content. A refusal is returned as itself and is never labelled `ok: true`. For those adapter outputs, `structuredContent` matches the text payload. A value that is none of those shapes is outside the adapter: the structured channel wraps it and the text shows the input. A result that exceeds the structured ceiling or the complete-result ceiling is `RESPONSE_LIMIT_EXCEEDED`.
 
 NUL, other C0 controls except tab, LF and CR, DEL, and lone surrogates are rejected and never rewritten.
 
@@ -61,7 +61,7 @@ NUL, other C0 controls except tab, LF and CR, DEL, and lone surrogates are rejec
 
 The adapter is constructed with `createTaskDetailsAdapter({ port, timeoutMs? })`. The port is injected. Inputs have no caller identity, client, session, workstream, role, SQL, URL or credential. Authorization denials `not_found`, `wrong_workstream`, `wrong_client` and `wrong_session` are the same `NOT_AVAILABLE` bytes.
 
-The adapter copies the input with one JSON snapshot before it measures or parses that input. A throw while unwrapping a port result becomes the frozen `UPSTREAM_UNAVAILABLE` refusal. A throw from a getter inside a value already accepted for decoding becomes the frozen `INTERNAL_ERROR` refusal and is not retryable. A throw while measuring the request becomes `INVALID_REQUEST`. The outer refusal and its inner `refusal` object are both frozen. The thrown text is not returned.
+The adapter copies the input with one JSON snapshot before it reads `readVersion`, measures, or parses that input. A throw while copying or measuring the request, including a throwing `readVersion` getter, becomes the frozen `INVALID_REQUEST` refusal. A request over 2048 bytes is `INVALID_REQUEST` and the port is not called. An in-budget event cursor uses the same instant rules as an event page, so more than 12 fractional digits or an instant before 1970 is `INVALID_REQUEST` before the port is called. A throw while unwrapping a port result becomes the frozen `UPSTREAM_UNAVAILABLE` refusal. A throw from a getter inside a value already accepted for decoding becomes the frozen `INTERNAL_ERROR` refusal and is not retryable. The outer refusal and its inner `refusal` object are both frozen. The thrown text is not returned.
 
 An already-aborted caller makes no port call. A deadline aborts the port signal. A mid-flight cancel aborts the port signal and the abort listener is removed when the call settles.
 

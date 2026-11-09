@@ -583,6 +583,57 @@ describe('synthetic: keyset order, coverage flags, arrays and text', () => {
         eventPage([eventRow('1970-01-01T00:00:10Z', 2), eventRow('1970-01-01T00:00:09Z', 3)]),
       ),
     ).toThrow(TaskDetailsDecodeError);
+    expect(
+      decodeEventListV2(
+        eventPage([eventRow('2026-01-01T00:00:00.25Z', 2), eventRow('2026-01-01T00:00:00.5Z', 3)]),
+      ).events,
+    ).toHaveLength(2);
+    expect(() =>
+      decodeEventListV2(
+        eventPage([eventRow('2026-01-01T00:00:00.5Z', 2), eventRow('2026-01-01T00:00:00.25Z', 3)]),
+      ),
+    ).toThrow(TaskDetailsDecodeError);
+    expect(
+      decodeEventListV2(
+        eventPage([
+          eventRow('2026-01-01T00:00:00.5Z', 2),
+          eventRow('2026-01-01T00:00:00.500000Z', 3),
+        ]),
+      ).events,
+    ).toHaveLength(2);
+    expect(() =>
+      decodeEventListV2(
+        eventPage([
+          eventRow('2026-01-01T00:00:00.5Z', 3),
+          eventRow('2026-01-01T00:00:00.500000Z', 2),
+        ]),
+      ),
+    ).toThrow(TaskDetailsDecodeError);
+    expect(
+      decodeEventListV2(
+        eventPage([eventRow('2026-01-01T05:29:00+05:30', 2), eventRow('2026-01-01T00:00:00Z', 3)]),
+      ).events,
+    ).toHaveLength(2);
+    expect(() =>
+      decodeEventListV2(
+        eventPage([eventRow('2026-01-01T00:00:00Z', 2), eventRow('2026-01-01T05:29:00+05:30', 3)]),
+      ),
+    ).toThrow(TaskDetailsDecodeError);
+    const fraction12 = `2026-01-01T00:00:00.${'1'.repeat(12)}Z`;
+    const fraction13 = `2026-01-01T00:00:00.${'1'.repeat(13)}Z`;
+    expect(decodeEventListV2(eventPage([eventRow(fraction12, 2)])).events).toHaveLength(1);
+    expect(() => decodeEventListV2(eventPage([eventRow(fraction13, 2)]))).toThrow(
+      TaskDetailsDecodeError,
+    );
+    expect(() =>
+      decodeEventListV2({
+        ...eventPage([]),
+        after: {
+          occurredAt: '1969-12-31T23:59:59Z',
+          receiptId: eventRow('1969-12-31T23:59:59Z', 2).receiptId,
+        },
+      }),
+    ).toThrow(TaskDetailsDecodeError);
     expect(DETAIL_BODY_MAX_CHARS).toBe(8000);
   });
 

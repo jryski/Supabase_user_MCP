@@ -442,6 +442,11 @@ function instantSortKey(occurredAt: string): string | null {
   return normalized;
 }
 
+/** Request cursors use the same instant rules as an event page. */
+export function eventInstantAccepted(occurredAt: string): boolean {
+  return instantSortKey(occurredAt) !== null;
+}
+
 export const EventListV2Schema = z
   .object({
     readVersion: ReadVersionSchema,
@@ -818,6 +823,10 @@ function createTaskDetailsV2McpResultUnchecked(output: unknown) {
  * MCP result. Stored text is labelled untrusted. The 27000-byte structured ceiling applies to the
  * emitted success wrapper `{ ok: true, value }`, which is what a caller puts in `structuredContent`.
  * The complete result object is bounded separately.
+ *
+ * Supported outputs are `{ ok: true, value }`, `{ ok: true, receipt }`, and a refusal
+ * `{ ok: false }`. For those, `structuredContent` matches the text payload. Any other value is
+ * wrapped on the structured channel only. The adapter does not emit that shape.
  */
 export function createTaskDetailsV2McpResult(output: unknown) {
   const structuredContent = emittedStructured(output);
