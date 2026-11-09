@@ -1,116 +1,93 @@
-# Issue #145: versioned task-details/activity contract v2 (synthetic, unregistered)
+# Issue #145: task-details v2 against the sanitized portable downstream task contract packet
 
 ## What this is
 
-This change adds a strict `task-details.v2` read/activity contract, a fail-closed decoder, and an adapter over an injected port. The contract covers a bounded task body, an opaque version, recorded provenance, typed assignment targets and stored notes. Nothing is registered with an MCP server and nothing is exported from a package index. No migration, schema, registry or deployment file changes.
+This change is a strict, unregistered `readVersion: 2` contract and an adapter over an injected port. It follows the sanitized portable downstream task contract packet. Nothing is registered with an MCP server and nothing is exported from a package index. No migration, schema, registry, package or lockfile changes.
 
-The base is `main` at `181cbf9d`. No module from draft #71 is imported, and the change builds and tests on `main` alone. Two things mirror #71 @5ffd0974 as local declarations: the 8 task status values and the synthetic receipt fixtures described below.
+The qualification base is `main` at `585f5464ec9c498857a928fce16f9b66b2f3817b`.
 
 Files:
 
-- `packages/contracts/src/task-details-v2.ts`: schemas, `clipUtf8`, `decodeTaskDetailsV2`, `decodeTaskMutationReceiptV2`, fixed refusals, the MCP result helper and the frame-size estimator.
-- `packages/server/src/task-details-adapter.ts`: `createTaskDetailsAdapter({ port, timeoutMs? })`.
-- `packages/contracts/src/task-details-v2.test.ts` and `packages/server/src/task-details-adapter.test.ts`: synthetic contract tests.
+- `packages/contracts/src/task-details-v2.ts`
+- `packages/contracts/src/task-details-v2.test.ts`
+- `packages/server/src/task-details-adapter.ts`
+- `packages/server/src/task-details-adapter.test.ts`
+- `docs/evidence/ISSUE_145_TASK_DETAILS_V2.md`
 
-## v1 label and negotiation
+## Named missing-contract gate: consumer v1 compatibility
 
-There is no v1 task-details read. `TASK_DETAILS_V1_LABEL` names the two #71 write receipts: **create_work_item / post_model_message @5ffd0974**. This module does not read, produce or change them. A read that does not negotiate `representation: "task-details.v2"` is refused with `UNSUPPORTED_REPRESENTATION` before the port is called. The v2 decoders also refuse those receipt bytes.
+**NAMED MISSING-CONTRACT GATE: consumer v1 compatibility.** The sanitized portable downstream task contract packet says v1 stays the default and that board and event-history remain read-only tools, but it does not supply v1 bytes. This change does not invent a v1 fixture and does not treat any other receipt as v1 evidence. Closing the gate needs a published v1 fixture and a test that pins it. Until then this module makes no consumer v1 byte-shape claim.
 
-The tests pin those receipt bytes as inline constants. Each constant is labelled as a *synthetic fixture mirroring #71 receipt outputs @5ffd0974*. They are not imported from #71, and they are not a consumer v1 compatibility fixture.
+## Negotiation and vocabulary
 
-## Missing-contract gate: consumer v1 compatibility
+- A call negotiates with `readVersion: 2` only. The decoder and the adapter both refuse any other number with `UNSUPPORTED_REPRESENTATION`. A missing version, a non-object, or an array (including one tagged with version 1, and an oversized array) is `MALFORMED_REPRESENTATION`.
+- Task status is exactly `open`, `in_progress`, `blocked`, `done`, `cancelled`. Any other value fails closed.
+- Event command is exactly `create`, `update`, `assign`, `transition`, `note`, `submit`, `review`.
+- Kinds are exactly `human` or `agent`.
+- Returned ids are canonical lower-case UUIDs. Versions are 64 lower-case hex characters, compared for equality only. The contract does not require a UUID version nibble; that constraint is not in the packet.
+- Each call accepts at most 10 rows.
 
-**NAMED MISSING-CONTRACT GATE: consumer v1 compatibility.** No public consumer v1 task-details fixture exists. The #71 receipts and any recollection of a consumer shape do not stand in for one. Until a consumer publishes a v1 fixture, this change makes no claim of byte or shape compatibility with any consumer v1 read. Closing the gate needs that published fixture and a test that pins it.
+## Views
 
-## v2 shape
+- `task`: one task. The read requires `taskId` and an exact `expectedVersion`. A version mismatch is `VERSION_CONFLICT` and the refusal carries no task data. A provider payload whose version differs from the requested version is `MALFORMED_REPRESENTATION`, also with no data.
+- `tasks`: keyset by task id.
+- `assignment_targets`: typed principal identity, keyset by principal id. Coverage is exactly `completeLibrary: false` and `eligibleTargetsGrantAuthority: false`.
+- `coordination_targets`: the same principal plus a distinct `clientId`, with the same coverage flags.
+- `events`: keyset by parsed timestamp plus receipt id, scoped to one `taskId`. Instants are compared after parsing, so offset and fractional-second forms order chronologically. The packet does not define a cross-task event page; that shape is not implemented. Coverage is exactly `completeHistory: false`, `actualStoredAttributionOnly: true` and `approvalInferred: false`.
+- Only `note` and `submit` may carry an evidence segment. Stored attribution is evidence. Approval is not inferred.
+- Eligible targets do not grant authority. The packet does not define a withdrawn-target wire field. An unavailable assignment target is a port denial, not a status on the target list.
 
-- `task.body` and each note `text` are `{ text, clipped, totalBytes, returnedBytes }`.
-  - Byte counts are UTF-8, and clipping never splits a code point.
-  - The decoder refuses inconsistent coverage, such as a byte count that does not match the text, or `clipped: false` while bytes are missing.
-  - Field ceilings are 8192 bytes for the body, 2048 bytes per note, 256 UTF-16 code units for the title and 512 for a citation.
-- `task.status` is a strict enum declared locally in the v2 contract. Its 8 values mirror #71's work-item status list (`WorkItemStatusSchema` @5ffd0974) in the same order: `inbox`, `backlog`, `ready`, `in_progress`, `blocked`, `review`, `done`, `cancelled`. `main` has no status list of its own. Any other value, such as `archived` or `canceled`, fails closed as `MALFORMED_REPRESENTATION`. Reconciling it with a deployed work-item status set is an integration step.
-- `task.version` is an opaque printable-ASCII token. Callers compare it for equality only.
-- `createdBy`, `lastChangedBy` and every activity `recordedBy` are `{ actorKind: human|agent, actorId, clientId, occurredAt }`, as recorded by the database.
-- `assignmentTargets.targets[]` is `{ kind: human|agent, id, status: active|withdrawn }`. It comes from authoritative membership and carries count coverage. There are at most 50 targets.
-- `activity.entries[]` is a discriminated union, with at most 50 entries:
-  - `note`: bounded text, plus `citation` only when one was stored;
-  - `assignment`: a typed assignee.
-- Each entry carries an immutable `receiptId`. There are no command payloads and no approval fields.
-- All objects are strict. Unknown keys, wrong types and `citation: null` fail with `MALFORMED_REPRESENTATION`. A different `representation` fails with `UNSUPPORTED_REPRESENTATION`.
+A null keyset cursor means the provider returned no further key. It is not a claim that a library or a history is complete.
 
-## Text policy: NUL, controls and surrogates
+## Segments and bounds
 
-Text is rejected deterministically and never rewritten. This applies to stored text (title, body, note text, citation) and to written text (note text, citation). Text is rejected when it contains any of these:
+A segment is `{ text, offset, totalChars, nextOffset, complete }`. Offsets count Unicode code points. Coverage must be exact: `nextOffset = offset + returned`, and `complete` is true only when `nextOffset = totalChars`.
 
-- NUL or another C0 control other than tab, line feed and carriage return;
-- DEL;
-- a lone UTF-16 surrogate.
+The packet does not state per-field character ceilings. List segments are capped more tightly than detail segments. The detail body cap is inside the 27000-byte structured ceiling of the emitted success wrapper `{ ok: true, value }`. The largest legal body wraps without throwing.
 
-Stored text is refused as `MALFORMED_REPRESENTATION` and written text as `INVALID_REQUEST`. `clipUtf8` throws `RangeError` for a lone surrogate, because UTF-8 cannot carry one faithfully. It also throws for a limit that is not a non-negative safe integer: `NaN`, `Infinity`, negative or fractional.
+Packet ceilings, all enforced:
 
-## One whole-frame size policy
+- request: 2048 bytes
+- provider response: 60000 bytes
+- structured content: 27000 bytes
+- complete result: 60000 bytes
+- timeout: no more than 5000ms, and also no more than the shared governor (`MAX_TOOL_EXECUTION_MS`, 2000ms)
 
-- **Ceiling.** The limit is 65536 bytes, which is `MAX_RESPONSE_BYTES`. It counts the UTF-8 bytes of the complete JSON-RPC response frame: `{"jsonrpc":"2.0","id":…,"result":…}`, the JSON escaping and the newline delimiter.
-- **No duplicate copy.** `createTaskDetailsV2McpResult` emits the payload once, as text with an untrusted-data prefix. There is no `structuredContent` copy.
-- **Worst-case request id.** Size is measured with the largest legal request id, a 1024-byte serialized string. A result that is accepted therefore fits for every legal id. A test runs a real in-test SDK server with a throwaway probe tool and checks that the captured frame matches the estimator byte for byte.
-- **Field ceilings vs. the frame.** The field and count ceilings cannot all be reached at once inside the frame. The frame budget is authoritative. A decoded result whose frame would exceed 65536 bytes is refused as `RESPONSE_LIMIT_EXCEEDED`, which is not retryable. The message asks the caller to request fewer activity entries.
-- **Raw precheck.** A raw payload that serializes above the ceiling is refused before schema parsing, which bounds parse cost.
-- **Boundary tests.** Tests cover a frame of exactly 65536 bytes (accepted), 65537 (refused) and 65535 (accepted). They also cover the all-fields-at-maximum result (refused) and the largest legal mutation receipt (fits).
-- **Proposed RPC.** The proposed read RPC should fill entries newest-first within the frame budget and report clipped coverage. That keeps a full task readable without a refusal.
+Stored text is labelled untrusted. `structuredContent` for a successful read is the wrapper `{ ok: true, value }`, and that wrapper is what the 27000-byte ceiling measures. A result that exceeds the structured ceiling or the complete-result ceiling is `RESPONSE_LIMIT_EXCEEDED`.
 
-## Adapter, authorization, deadline and cancellation
+NUL, other C0 controls except tab, LF and CR, DEL, and lone surrogates are rejected and never rewritten.
 
-Inputs accept only finite parameters: `taskId`, `activityLimit` (1 to 50, default 20), `expectedVersion`, `idempotencyKey`, note `text`, optional `citation`, and a typed `target`. There is no acting identity, client, session, workstream, role, SQL, relation, URL or credential parameter. The port is injected, and identity and authorization come from the session behind it.
+## Adapter
 
-| Port denial | Refusal |
-| --- | --- |
-| `not_found`, `wrong_workstream`, `wrong_client`, `wrong_session` | `NOT_AVAILABLE` (identical bytes, no detail) |
-| `version_conflict` | `VERSION_CONFLICT` |
-| `idempotency_conflict` | `IDEMPOTENCY_CONFLICT` |
-| `target_unknown`, `target_withdrawn` | `TARGET_UNAVAILABLE` |
-| `unavailable`, thrown port error, throw while reading a port result | `UPSTREAM_UNAVAILABLE` (retryable) |
-| unknown or prototype-named denial | `INTERNAL_ERROR` |
+The adapter is constructed with `createTaskDetailsAdapter({ port, timeoutMs? })`. The port is injected. Inputs have no caller identity, client, session, workstream, role, SQL, URL or credential. Authorization denials `not_found`, `wrong_workstream`, `wrong_client` and `wrong_session` are the same `NOT_AVAILABLE` bytes.
 
-A throw while reading a port result, such as from a throwing `ok` getter or a Proxy trap, is caught in the port wrapper and becomes the fixed `UPSTREAM_UNAVAILABLE` refusal. A throw outside the wrapper, such as from a throwing getter on caller input, reaches a backstop that returns the same fixed refusal. Neither path passes the thrown value or its text to the caller, and tests pin the exact frozen refusal for both.
+A throw while reading a port result, or a throw after the request has been accepted, becomes the frozen `UPSTREAM_UNAVAILABLE` refusal. A throw while measuring the request becomes `INVALID_REQUEST`. The outer refusal and its inner `refusal` object are both frozen. The thrown text is not returned.
 
-Port results are decoded strictly and checked against the request:
-
-- a read must match the requested `taskId` and return no more than `activityLimit` entries;
-- a receipt must name the requested `taskId`.
-
-Deadline and cancellation:
-
-- `timeoutMs` must be a safe integer from 1 to `MAX_TOOL_EXECUTION_MS`; otherwise construction throws `RangeError`.
-- When the deadline passes, the port signal is aborted and the result is `DEADLINE_EXCEEDED`.
-- When the caller aborts mid-flight, the port signal is aborted and the call settles promptly with `REQUEST_CANCELLED`.
-- A caller signal that is already aborted gets `REQUEST_CANCELLED` with zero port calls.
-- Only `DEADLINE_EXCEEDED`, `REQUEST_CANCELLED` and `UPSTREAM_UNAVAILABLE` are retryable.
+An already-aborted caller makes no port call. A deadline aborts the port signal. A mid-flight cancel aborts the port signal and the abort listener is removed when the call settles.
 
 ## Acceptance level
 
-**Synthetic contract tests only.** All data is synthetic, and the tests run against an in-memory port that simulates database-owned session authorization. This is not runtime acceptance against a real database, session, client or user. The adapter is unregistered, and nothing in the runtime calls it.
+**Synthetic contract tests only.** The port is in-memory. This is not runtime acceptance. The adapter is unregistered.
 
-**Leak gate.** Locally, the leak gate's gitleaks and policy passes ran over `181cbf9d..HEAD` with 0 findings. The LEAK private-pattern pass was not run locally because the private pattern secret isn't available locally; it runs only in trusted CI.
+## Open contract gaps
+
+The packet is silent on these points. They stay fail-closed and are not given invented semantics:
+
+- Consumer v1 bytes, and the board and event-history v1 tool schemas.
+- Per-field character ceilings (only the byte ceilings and the tighter list clip are implemented).
+- A UUID version nibble.
+- A cross-task event page.
+- A task-list completeness flag. A null cursor does not claim a complete library.
+- A withdrawn-target field on the wire.
+- Note and assign write payloads, and a successful idempotent replay flag. Writes that already fail closed remain, and they are not a claim that the packet defined them.
 
 ## Proposed native RPCs (proposal only, no migration)
 
-```text
-planning.get_task_details_v2(p_task_id text, p_activity_limit integer) returns jsonb
-```
-
-- **Parameters:** `p_task_id` must match the identifier grammar, and `p_activity_limit` must be between 1 and 50. There are no other parameters.
-- **Return:** exactly the `task-details.v2` object above, within the frame budget. The database clips text, fills entries newest-first and computes coverage.
-- **Authorization:** owned by the database. Actor, client and session come from the authenticated request context, never from parameters. Before reading anything, the RPC checks the session's current membership in the task's workstream and client. It never returns command payloads or private fields.
-- **Errors:** one SQLSTATE, `TD404`, covers not found, wrong workstream, wrong client, wrong member and invalid session, so the caller learns nothing more. `22023` covers invalid parameters.
-- **Writes:** notes and assignments would bind to proposed native note and assign RPCs. Each takes `p_expected_version`, `p_idempotency_key` and, for assignment, a typed target. They return `TD409` (version), `TD410` (idempotency) and `TD422` (target withdrawn or unknown). No such RPC exists in this repository; each is a separate finite proposal.
+No SQL is shipped. A future database-owned read would take the same finite parameters as the port: identifiers, an exact expected version on a detail read, a page limit of at most 10, and a keyset cursor. Identity would come from the authenticated session, never from parameters. That RPC does not exist in this change.
 
 ## Remaining integration work
 
-- **Build-output import.** The adapter imports the contract from `../../contracts/dist/task-details-v2.js`, the contracts build output, because the contract is deliberately not exported from the contracts index. Running the adapter tests therefore needs `npm run build` (or `npm run check`, which builds) first. Replacing this with a package-index import is part of the export step below.
-- **Bind the port.** Bind `TaskDetailsPort` to the proposed RPCs under an authenticated user session, not a privileged key.
-- **Export and register.** Export the contract from the contracts index, switch the adapter to the package import, and register a read tool behind explicit v2 negotiation.
-- **Status set.** Reconcile `task.status` with the deployed status set.
-- **Consumer v1 gate.** Close the consumer v1 compatibility gate with a published fixture.
-- **Live acceptance.** Run real read → note → read-back → assign acceptance with human and agent sessions.
-
-Each of these is a separate reviewed change.
+- Export the contract and register tools only after review.
+- Bind the port under an authenticated session.
+- Close the consumer v1 gate with a published fixture.
+- Run a real read acceptance. That is a separate change.

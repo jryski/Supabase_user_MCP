@@ -1,859 +1,726 @@
 import { describe, expect, it } from 'vitest';
 
-import { MAX_REQUEST_ID_BYTES, MAX_RESPONSE_BYTES } from './read-tools.js';
+import { MAX_REQUEST_ID_BYTES, MAX_TOOL_EXECUTION_MS } from './read-tools.js';
 import {
   AppendTaskNoteV2InputSchema,
+  AssignmentTargetListV2Schema,
   AssignTaskV2InputSchema,
-  clipUtf8,
+  CONSUMER_V1_COMPATIBILITY_GATE,
+  CoordinationTargetListV2Schema,
+  clipChars,
+  codePointLength,
+  completeWithinPacketLimit,
   createTaskDetailsRefusal,
   createTaskDetailsV2McpResult,
-  decodeTaskDetailsV2,
+  DETAIL_BODY_MAX_CHARS,
+  decodeAssignmentTargetListV2,
+  decodeCoordinationTargetListV2,
+  decodeEventListV2,
+  decodeTaskDetailV2,
+  decodeTaskListV2,
   decodeTaskMutationReceiptV2,
-  MAX_ACTIVITY_ENTRIES,
-  MAX_ACTIVITY_TEXT_BYTES,
-  MAX_ASSIGNMENT_TARGETS,
-  MAX_TASK_BODY_BYTES,
-  MAX_TASK_DETAILS_V2_FRAME_BYTES,
-  ReadTaskDetailsV2InputSchema,
+  EVENT_COMMAND_V2_VALUES,
+  EventListV2Schema,
+  LIST_SEGMENT_MAX_CHARS,
+  MAX_COMPLETE_RESULT_BYTES,
+  MAX_PAGE_SIZE,
+  MAX_PROVIDER_RESPONSE_BYTES,
+  MAX_STRUCTURED_CONTENT_BYTES,
+  MAX_TASK_DETAILS_REQUEST_BYTES,
+  MAX_TASK_DETAILS_TIMEOUT_MS,
+  providerWithinPacketLimit,
+  ReadTaskDetailV2InputSchema,
+  ReadTaskListV2InputSchema,
+  requestWithinPacketLimit,
+  segmentWindow,
+  structuredWithinPacketLimit,
+  TASK_DETAILS_READ_VERSION,
   TASK_DETAILS_UNTRUSTED_TEXT_PREFIX,
-  TASK_DETAILS_V1_LABEL,
   TASK_DETAILS_V2_BUDGET_REQUEST_ID,
-  TASK_DETAILS_V2_REPRESENTATION,
+  TASK_STATUS_V2_VALUES,
   TaskDetailsDecodeError,
-  type TaskDetailsRefusalCode,
-  type TaskDetailsV2,
+  type TaskDetailV2,
   taskDetailsV2WireFrameByteLength,
+  timeoutWithinPacketLimit,
 } from './task-details-v2.js';
 
-/** Synthetic idempotency values are built, not written as literals, so they never read as keys. */
-const syntheticIdempotencyKey = (suffix: string): string => `idem-synthetic-${suffix}`;
+const TASK = '00000000-0000-4000-8000-000000000001';
+const TASK_B = '00000000-0000-4000-8000-000000000002';
+const HUMAN = '00000000-0000-4000-8000-0000000000a1';
+const AGENT = '00000000-0000-4000-8000-0000000000b1';
+const CLIENT = '00000000-0000-4000-8000-0000000000c1';
+const WORKSTREAM = '00000000-0000-4000-8000-0000000000d1';
+const RECEIPT = '00000000-0000-4000-8000-0000000000e1';
+const VERSION = 'ab'.repeat(32);
+const VERSION_B = 'cd'.repeat(32);
+const TIME = '2026-01-01T00:00:00.000Z';
 
-const SYNTHETIC_TIME = '2026-01-01T00:00:00.000Z';
-
-// Synthetic fixture mirroring #71 receipt outputs @5ffd0974. These bytes are written here by hand;
-// nothing is imported from #71. They are not a consumer v1 compatibility fixture.
-const SYNTHETIC_71_CREATE_RECEIPT_BYTES =
-  '{"ok":true,"receipt":{"id":"00000000-0000-4000-8000-000000000001","itemNumber":1,"boardSlug":"synthetic-board","created":true,"idempotencyKey":"synthetic-item-001"}}';
-const SYNTHETIC_71_POST_RECEIPT_BYTES =
-  '{"ok":true,"receipt":{"id":"00000000-0000-4000-8000-000000000002","seq":7,"posted":true}}';
-const SYNTHETIC_71_ERROR_BYTES =
-  '{"ok":false,"error":{"code":"IDEMPOTENCY_CONFLICT","message":"Idempotency key conflicts with an existing request.","retryable":false}}';
-
-function provenance(actorKind: 'human' | 'agent', actorId: string, clientId: string) {
-  return { actorKind, actorId, clientId, occurredAt: SYNTHETIC_TIME };
+function segment(text: string, maxChars: number) {
+  return segmentWindow(text, maxChars);
 }
 
-function syntheticDetails(): TaskDetailsV2 {
+function detail(overrides: Partial<TaskDetailV2['task']> = {}): TaskDetailV2 {
   return {
-    representation: 'task-details.v2',
+    readVersion: 2,
+    view: 'task',
     task: {
-      taskId: 'task-synthetic-001',
-      workstreamId: 'workstream-synthetic-a',
-      title: 'Synthetic task title',
+      taskId: TASK,
+      title: segment('Synthetic title', DETAIL_BODY_MAX_CHARS),
       status: 'in_progress',
-      body: clipUtf8('Synthetic task body.', MAX_TASK_BODY_BYTES),
-      version: 'ver-synthetic-0002',
-      createdBy: provenance('human', 'human-synthetic-a', 'client-synthetic-a'),
-      lastChangedBy: provenance('agent', 'agent-synthetic-a', 'client-synthetic-a'),
-      assignee: { kind: 'agent', id: 'agent-synthetic-a' },
-    },
-    assignmentTargets: {
-      targets: [
-        { kind: 'human', id: 'human-synthetic-a', status: 'active' },
-        { kind: 'agent', id: 'agent-synthetic-a', status: 'active' },
-        { kind: 'agent', id: 'agent-synthetic-b', status: 'withdrawn' },
-      ],
-      coverage: { returnedCount: 3, totalCount: 3, clipped: false },
-    },
-    activity: {
-      entries: [
-        {
-          entryKind: 'note',
-          receiptId: 'receipt-synthetic-001',
-          recordedBy: provenance('agent', 'agent-synthetic-a', 'client-synthetic-a'),
-          text: clipUtf8('Synthetic note without a stored citation.', MAX_ACTIVITY_TEXT_BYTES),
-        },
-        {
-          entryKind: 'note',
-          receiptId: 'receipt-synthetic-002',
-          recordedBy: provenance('human', 'human-synthetic-a', 'client-synthetic-a'),
-          text: clipUtf8('Synthetic note with a stored citation.', MAX_ACTIVITY_TEXT_BYTES),
-          citation: { sourceRef: 'synthetic://source/001' },
-        },
-        {
-          entryKind: 'assignment',
-          receiptId: 'receipt-synthetic-003',
-          recordedBy: provenance('human', 'human-synthetic-a', 'client-synthetic-a'),
-          assignee: { kind: 'agent', id: 'agent-synthetic-a' },
-        },
-      ],
-      coverage: { returnedCount: 3, totalCount: 3, clipped: false },
+      version: VERSION,
+      body: segment('Synthetic body', DETAIL_BODY_MAX_CHARS),
+      assignedPrincipal: { kind: 'agent', id: AGENT },
+      workstreamId: WORKSTREAM,
+      citation: segment('', DETAIL_BODY_MAX_CHARS),
+      ...overrides,
     },
   };
 }
 
-/** Synthetic details sized by a count of full notes and the ASCII body length. */
-function sizedDetails(noteCount: number, bodyBytes: number): TaskDetailsV2 {
-  const base = syntheticDetails();
-  const entries = Array.from({ length: noteCount }, (_, index) => ({
-    entryKind: 'note' as const,
-    receiptId: `receipt-synthetic-size-${index}`,
-    recordedBy: provenance('agent', 'agent-synthetic-a', 'client-synthetic-a'),
-    text: clipUtf8('n'.repeat(MAX_ACTIVITY_TEXT_BYTES), MAX_ACTIVITY_TEXT_BYTES),
-  }));
-  return {
-    ...base,
-    task: { ...base.task, body: clipUtf8('b'.repeat(bodyBytes), MAX_TASK_BODY_BYTES) },
-    activity: {
-      entries,
-      coverage: { returnedCount: noteCount, totalCount: noteCount, clipped: false },
-    },
-  };
-}
-
-const budgetFrame = (details: TaskDetailsV2) =>
-  taskDetailsV2WireFrameByteLength(TASK_DETAILS_V2_BUDGET_REQUEST_ID, { ok: true, details });
-
-/**
- * Finds sizing whose budget frame is exactly the ceiling. Body lengths stay within 1000..8191 so
- * each extra ASCII byte adds exactly one frame byte.
- */
-function exactCeilingDetails(): { details: TaskDetailsV2; noteCount: number; bodyBytes: number } {
-  for (let noteCount = 1; noteCount <= MAX_ACTIVITY_ENTRIES; noteCount += 1) {
-    const delta = MAX_TASK_DETAILS_V2_FRAME_BYTES - budgetFrame(sizedDetails(noteCount, 1_000));
-    if (delta >= 1 && delta < MAX_TASK_BODY_BYTES - 1_000) {
-      const bodyBytes = 1_000 + delta;
-      return { details: sizedDetails(noteCount, bodyBytes), noteCount, bodyBytes };
-    }
-  }
-  throw new Error('no exact-ceiling sizing found');
-}
-
-/** Every field and count at its schema maximum, with worst-case JSON escaping. */
-function allFieldsAtMaximum(): TaskDetailsV2 {
-  const quote = (bytes: number) => clipUtf8('"'.repeat(bytes), bytes);
-  const id = (prefix: string, index: number) => `${prefix}-${index}`.padEnd(128, 'x');
-  const who = (index: number) => ({
-    actorKind: 'agent' as const,
-    actorId: id('agent', index),
-    clientId: id('client', index),
-    occurredAt: SYNTHETIC_TIME,
-  });
-  return {
-    representation: 'task-details.v2',
-    task: {
-      taskId: id('task', 0),
-      workstreamId: id('workstream', 0),
-      title: '"'.repeat(256),
-      status: 'in_progress',
-      body: quote(MAX_TASK_BODY_BYTES),
-      version: '!'.repeat(128),
-      createdBy: who(0),
-      lastChangedBy: who(1),
-      assignee: { kind: 'agent', id: id('agent', 0) },
-    },
-    assignmentTargets: {
-      targets: Array.from({ length: MAX_ASSIGNMENT_TARGETS }, (_, index) => ({
-        kind: 'agent' as const,
-        id: id('agent', index),
-        status: 'active' as const,
-      })),
-      coverage: {
-        returnedCount: MAX_ASSIGNMENT_TARGETS,
-        totalCount: MAX_ASSIGNMENT_TARGETS,
-        clipped: false,
-      },
-    },
-    activity: {
-      entries: Array.from({ length: MAX_ACTIVITY_ENTRIES }, (_, index) => ({
-        entryKind: 'note' as const,
-        receiptId: id('receipt', index),
-        recordedBy: who(index),
-        text: quote(MAX_ACTIVITY_TEXT_BYTES),
-        citation: { sourceRef: `s${'"'.repeat(510)}s` },
-      })),
-      coverage: {
-        returnedCount: MAX_ACTIVITY_ENTRIES,
-        totalCount: MAX_ACTIVITY_ENTRIES,
-        clipped: false,
-      },
-    },
-  };
-}
-
-function decodeErrorCode(decode: () => unknown): string {
-  try {
-    decode();
-  } catch (error) {
-    if (error instanceof TaskDetailsDecodeError) return error.code;
-    throw error;
-  }
-  return 'decoded';
-}
-
-function expectDecodeError(raw: unknown, code: TaskDetailsDecodeError['code']) {
-  expect(decodeErrorCode(() => decodeTaskDetailsV2(raw))).toBe(code);
-}
-
-describe('synthetic: v1 label names the #71 write receipts; there is no v1 task-details read', () => {
-  it('labels v1 as the #71 write receipt outputs, not a task-details read shape', () => {
-    expect(TASK_DETAILS_V1_LABEL).toBe(
-      '#71 create_work_item / post_model_message receipt outputs @5ffd0974',
+describe('synthetic: packet vocabulary and negotiation', () => {
+  it('names the consumer v1 gap and does not invent a v1 fixture', () => {
+    expect(CONSUMER_V1_COMPATIBILITY_GATE).toBe(
+      'NAMED MISSING-CONTRACT GATE: consumer v1 compatibility',
     );
-    expect(TASK_DETAILS_V2_REPRESENTATION).toBe('task-details.v2');
+    expect(TASK_DETAILS_READ_VERSION).toBe(2);
+    expect(TASK_STATUS_V2_VALUES).toEqual(['open', 'in_progress', 'blocked', 'done', 'cancelled']);
+    expect(EVENT_COMMAND_V2_VALUES).toEqual([
+      'create',
+      'update',
+      'assign',
+      'transition',
+      'note',
+      'submit',
+      'review',
+    ]);
   });
 
-  it('never decodes the synthetic #71-mirroring receipt or error bytes as v2', () => {
-    for (const bytes of [
-      SYNTHETIC_71_CREATE_RECEIPT_BYTES,
-      SYNTHETIC_71_POST_RECEIPT_BYTES,
-      SYNTHETIC_71_ERROR_BYTES,
-    ]) {
-      expectDecodeError(JSON.parse(bytes), 'MALFORMED_REPRESENTATION');
-      expect(decodeErrorCode(() => decodeTaskMutationReceiptV2(JSON.parse(bytes)))).toBe(
-        'MALFORMED_REPRESENTATION',
+  it('accepts the five statuses and fails closed on any other status', () => {
+    for (const status of TASK_STATUS_V2_VALUES) {
+      expect(decodeTaskDetailV2(detail({ status })).task.status).toBe(status);
+    }
+    for (const status of ['inbox', 'backlog', 'ready', 'review', 'archived', 'OPEN']) {
+      expect(() => decodeTaskDetailV2(detail({ status: status as 'open' }))).toThrow(
+        TaskDetailsDecodeError,
       );
     }
   });
+
+  it('requires readVersion 2 and rejects other versions before accepting a shape', () => {
+    expect(() => decodeTaskDetailV2({ ...detail(), readVersion: 1 })).toThrow(
+      expect.objectContaining({ code: 'UNSUPPORTED_REPRESENTATION' }),
+    );
+    expect(() => decodeTaskDetailV2({ view: 'task' })).toThrow(
+      expect.objectContaining({ code: 'MALFORMED_REPRESENTATION' }),
+    );
+    const tagged = Object.assign([], { readVersion: 2 });
+    expect(() => decodeTaskDetailV2(tagged)).toThrow(
+      expect.objectContaining({ code: 'MALFORMED_REPRESENTATION' }),
+    );
+  });
+
+  it('requires canonical lower-case UUIDs and 64-character lower-case hex versions', () => {
+    expect(decodeTaskDetailV2(detail()).task.taskId).toBe(TASK);
+    expect(() =>
+      decodeTaskDetailV2(detail({ taskId: '00000000-0000-4000-8000-00000000000A' })),
+    ).toThrow(TaskDetailsDecodeError);
+    expect(() => decodeTaskDetailV2(detail({ taskId: 'task-synthetic-001' }))).toThrow(
+      TaskDetailsDecodeError,
+    );
+    expect(() => decodeTaskDetailV2(detail({ version: VERSION.toUpperCase() }))).toThrow(
+      TaskDetailsDecodeError,
+    );
+    expect(() => decodeTaskDetailV2(detail({ version: 'ab'.repeat(31) }))).toThrow(
+      TaskDetailsDecodeError,
+    );
+    expect(
+      ReadTaskDetailV2InputSchema.safeParse({
+        readVersion: 2,
+        view: 'task',
+        taskId: TASK,
+        expectedVersion: VERSION,
+      }).success,
+    ).toBe(true);
+  });
 });
 
-describe('synthetic: v2 decoder', () => {
-  it('round-trips a valid v2 representation byte for byte', () => {
-    const value = syntheticDetails();
-    const bytes = JSON.stringify(value);
-    const decoded = decodeTaskDetailsV2(JSON.parse(bytes));
-    expect(decoded).toEqual(value);
-    expect(JSON.stringify(decoded)).toBe(bytes);
-    expect(decoded.activity.entries[0]).not.toHaveProperty('citation');
-    expect(decoded.activity.entries[1]).toHaveProperty('citation', {
-      sourceRef: 'synthetic://source/001',
+describe('synthetic: segments, views, events and coverage', () => {
+  it('clips on code-point boundaries and records offset, total, next and complete', () => {
+    expect(codePointLength('é')).toBe(1);
+    const clipped = segmentWindow('abcdef', 3);
+    expect(clipped).toEqual({
+      text: 'abc',
+      offset: 3 - 3,
+      totalChars: 6,
+      nextOffset: 3,
+      complete: false,
     });
+    const rest = segmentWindow('abcdef', 3, 3);
+    expect(rest).toMatchObject({ text: 'def', offset: 3, nextOffset: 6, complete: true });
+    expect(() => clipChars('abc', Number.NaN)).toThrow(RangeError);
+    expect(() => clipChars('abc', -1)).toThrow(RangeError);
+    expect(() => clipChars('a\uD800', 2)).toThrow(RangeError);
+    expect(LIST_SEGMENT_MAX_CHARS).toBeLessThan(DETAIL_BODY_MAX_CHARS);
   });
 
-  it('refuses unknown representation versions', () => {
-    for (const representation of ['task-details.v1', 'task-details.v3', 'task-details', 'V2']) {
-      expectDecodeError({ ...syntheticDetails(), representation }, 'UNSUPPORTED_REPRESENTATION');
-    }
-  });
-
-  it('refuses malformed representations, extra keys and wrong types', () => {
-    const base = syntheticDetails();
-    const malformed: unknown[] = [
-      null,
-      'task-details.v2',
-      [],
-      { ...base, representation: 2 },
-      (({ representation: _r, ...rest }) => rest)(base),
-      { ...base, extra: true },
-      { ...base, task: { ...base.task, actingAgent: 'agent-synthetic-z' } },
-      { ...base, task: { ...base.task, version: '' } },
-      { ...base, task: { ...base.task, version: 'has space' } },
-      { ...base, task: { ...base.task, status: 'in-progress' } },
-      { ...base, task: { ...base.task, createdBy: { ...base.task.createdBy, occurredAt: 'x' } } },
-      { ...base, task: { ...base.task, assignee: { kind: 'robot', id: 'x' } } },
-      { ...base, task: { ...base.task, body: { ...base.task.body, returnedBytes: 1 } } },
-      { ...base, task: { ...base.task, body: { ...base.task.body, clipped: true } } },
-      {
-        ...base,
-        activity: {
-          ...base.activity,
-          entries: [{ ...base.activity.entries[0], citation: null }],
-          coverage: { returnedCount: 1, totalCount: 1, clipped: false },
+  it('rejects an inconsistent segment and a list segment above the tighter cap', () => {
+    const broken = detail();
+    broken.task.body = { ...broken.task.body, complete: true, totalChars: 99 };
+    expect(() => decodeTaskDetailV2(broken)).toThrow(TaskDetailsDecodeError);
+    const page = {
+      readVersion: 2,
+      view: 'tasks' as const,
+      limit: 1,
+      afterTaskId: null,
+      nextAfterTaskId: null,
+      tasks: [
+        {
+          ...detail().task,
+          title: segmentWindow('x'.repeat(LIST_SEGMENT_MAX_CHARS + 1), LIST_SEGMENT_MAX_CHARS + 1),
+          body: segment('', LIST_SEGMENT_MAX_CHARS),
+          citation: segment('', LIST_SEGMENT_MAX_CHARS),
         },
-      },
-      {
-        ...base,
-        activity: {
-          ...base.activity,
-          entries: [{ ...base.activity.entries[0], payload: { command: 'synthetic' } }],
-          coverage: { returnedCount: 1, totalCount: 1, clipped: false },
-        },
-      },
-      {
-        ...base,
-        activity: {
-          ...base.activity,
-          coverage: { returnedCount: 2, totalCount: 3, clipped: true },
-        },
-      },
-      {
-        ...base,
-        activity: {
-          ...base.activity,
-          coverage: { returnedCount: 3, totalCount: 9, clipped: false },
-        },
-      },
-      {
-        ...base,
-        assignmentTargets: {
-          ...base.assignmentTargets,
-          targets: [{ kind: 'agent', id: 'agent-synthetic-a', status: 'retired' }],
-          coverage: { returnedCount: 1, totalCount: 1, clipped: false },
-        },
-      },
-      {
-        ...base,
-        activity: {
-          entries: [base.activity.entries[0], base.activity.entries[0]],
-          coverage: { returnedCount: 2, totalCount: 2, clipped: false },
-        },
-      },
-    ];
-    for (const raw of malformed) expectDecodeError(raw, 'MALFORMED_REPRESENTATION');
-  });
-
-  it('refuses identifiers outside the bounded grammar', () => {
-    const base = syntheticDetails();
-    for (const taskId of ['-task', 'task synthetic', 'task\u00e9', 'x'.repeat(129)]) {
-      expectDecodeError({ ...base, task: { ...base.task, taskId } }, 'MALFORMED_REPRESENTATION');
-    }
-  });
-
-  it('refuses bounded text whose byte count disagrees with its text', () => {
-    const base = syntheticDetails();
-    expectDecodeError(
-      {
-        ...base,
-        task: {
-          ...base.task,
-          body: { text: 'abc', clipped: true, totalBytes: 3, returnedBytes: 2 },
-        },
-      },
-      'MALFORMED_REPRESENTATION',
-    );
-    expectDecodeError(
-      {
-        ...base,
-        task: {
-          ...base.task,
-          body: { text: 'abc', clipped: false, totalBytes: 2, returnedBytes: 3 },
-        },
-      },
-      'MALFORMED_REPRESENTATION',
-    );
-  });
-
-  it('refuses coverage that returns more than the total', () => {
-    const base = syntheticDetails();
-    expectDecodeError(
-      {
-        ...base,
-        activity: {
-          ...base.activity,
-          coverage: { returnedCount: 3, totalCount: 2, clipped: false },
-        },
-      },
-      'MALFORMED_REPRESENTATION',
-    );
-  });
-
-  it('refuses extra provenance keys and padded citations', () => {
-    const base = syntheticDetails();
-    expectDecodeError(
-      {
-        ...base,
-        task: { ...base.task, createdBy: { ...base.task.createdBy, sessionId: 'session-x' } },
-      },
-      'MALFORMED_REPRESENTATION',
-    );
-    expectDecodeError(
-      {
-        ...base,
-        activity: {
-          entries: [{ ...base.activity.entries[1], citation: { sourceRef: ' synthetic://a' } }],
-          coverage: { returnedCount: 1, totalCount: 1, clipped: false },
-        },
-      },
-      'MALFORMED_REPRESENTATION',
-    );
-  });
-
-  it('accepts the title and citation ceilings and refuses one unit over', () => {
-    const base = syntheticDetails();
-    const withTitle = (title: string) => ({ ...base, task: { ...base.task, title } });
-    const withCitation = (sourceRef: string) => ({
-      ...base,
-      activity: {
-        entries: [{ ...base.activity.entries[1], citation: { sourceRef } }],
-        coverage: { returnedCount: 1, totalCount: 1, clipped: false },
-      },
-    });
-    expect(decodeTaskDetailsV2(withTitle('t'.repeat(256))).task.title).toHaveLength(256);
-    expectDecodeError(withTitle('t'.repeat(257)), 'MALFORMED_REPRESENTATION');
-    expect(decodeTaskDetailsV2(withCitation('c'.repeat(512))).activity.entries).toHaveLength(1);
-    expectDecodeError(withCitation('c'.repeat(513)), 'MALFORMED_REPRESENTATION');
-  });
-
-  it('refuses duplicate, miscounted or too many assignment targets', () => {
-    const base = syntheticDetails();
-    const target = { kind: 'agent', id: 'agent-synthetic-a', status: 'active' } as const;
-    const targets = (list: readonly unknown[], returnedCount = list.length) => ({
-      ...base,
-      assignmentTargets: {
-        targets: list,
-        coverage: {
-          returnedCount,
-          totalCount: Math.max(returnedCount, list.length),
-          clipped: false,
-        },
-      },
-    });
-    expectDecodeError(targets([target, target]), 'MALFORMED_REPRESENTATION');
-    expectDecodeError(
-      {
-        ...base,
-        assignmentTargets: {
-          targets: [target],
-          coverage: { returnedCount: 2, totalCount: 2, clipped: false },
-        },
-      },
-      'MALFORMED_REPRESENTATION',
-    );
-    const many = Array.from({ length: MAX_ASSIGNMENT_TARGETS + 1 }, (_, index) => ({
-      ...target,
-      id: `agent-synthetic-${index}`,
-    }));
-    expectDecodeError(targets(many), 'MALFORMED_REPRESENTATION');
-    expect(decodeTaskDetailsV2(targets(many.slice(0, MAX_ASSIGNMENT_TARGETS)))).toBeDefined();
-  });
-
-  it('refuses more than the maximum activity entries', () => {
-    const base = syntheticDetails();
-    const entry = base.activity.entries[2];
-    const entries = (count: number) => ({
-      ...base,
-      activity: {
-        entries: Array.from({ length: count }, (_, index) => ({
-          ...entry,
-          receiptId: `receipt-synthetic-many-${index}`,
-        })),
-        coverage: { returnedCount: count, totalCount: count, clipped: false },
-      },
-    });
-    expectDecodeError(entries(MAX_ACTIVITY_ENTRIES + 1), 'MALFORMED_REPRESENTATION');
-    expect(decodeTaskDetailsV2(entries(MAX_ACTIVITY_ENTRIES)).activity.entries).toHaveLength(
-      MAX_ACTIVITY_ENTRIES,
-    );
-  });
-
-  it('refuses oversized fields and approval semantics', () => {
-    const base = syntheticDetails();
-    expectDecodeError(
-      { ...base, task: { ...base.task, approved: true } },
-      'MALFORMED_REPRESENTATION',
-    );
-    const huge = 'x'.repeat(MAX_TASK_BODY_BYTES + 1);
-    expectDecodeError(
-      {
-        ...base,
-        task: {
-          ...base.task,
-          body: { text: huge, clipped: false, totalBytes: huge.length, returnedBytes: huge.length },
-        },
-      },
-      'MALFORMED_REPRESENTATION',
-    );
-  });
-
-  it('decodes mutation receipts strictly', () => {
-    const receipt = {
-      representation: 'task-details.v2',
-      receiptId: 'receipt-synthetic-010',
-      taskId: 'task-synthetic-001',
-      version: 'ver-synthetic-0003',
-      recordedBy: provenance('agent', 'agent-synthetic-a', 'client-synthetic-a'),
-      replayed: false,
+      ],
     };
-    expect(decodeTaskMutationReceiptV2(receipt)).toEqual(receipt);
-    expect(() =>
-      decodeTaskMutationReceiptV2({ ...receipt, representation: 'task-details.v9' }),
-    ).toThrow(TaskDetailsDecodeError);
-    expect(() => decodeTaskMutationReceiptV2({ ...receipt, sql: 'select 1' })).toThrow(
+    expect(() => decodeTaskListV2(page)).toThrow(TaskDetailsDecodeError);
+  });
+
+  it('accepts a task keyset page and rejects an out-of-order or oversized page', () => {
+    const page = {
+      readVersion: 2,
+      view: 'tasks' as const,
+      limit: 2,
+      afterTaskId: null,
+      nextAfterTaskId: TASK_B,
+      tasks: [detail().task, { ...detail().task, taskId: TASK_B }].map((task) => ({
+        ...task,
+        title: segment('t', LIST_SEGMENT_MAX_CHARS),
+        body: segment('b', LIST_SEGMENT_MAX_CHARS),
+        citation: segment('', LIST_SEGMENT_MAX_CHARS),
+      })),
+    };
+    expect(decodeTaskListV2(page).tasks).toHaveLength(2);
+    expect(() => decodeTaskListV2({ ...page, tasks: [...page.tasks].reverse() })).toThrow(
+      TaskDetailsDecodeError,
+    );
+    expect(() => decodeTaskListV2({ ...page, limit: MAX_PAGE_SIZE + 1 })).toThrow(
       TaskDetailsDecodeError,
     );
   });
-});
 
-describe('synthetic: one whole-frame size policy', () => {
-  it('emits the payload once, as labelled text, with no structured duplicate', () => {
-    const output = { ok: true, details: syntheticDetails() };
-    const result = createTaskDetailsV2McpResult(output);
-    expect(Object.keys(result).toSorted()).toEqual(['content', 'isError']);
-    expect(result.content).toEqual([
-      { type: 'text', text: `${TASK_DETAILS_UNTRUSTED_TEXT_PREFIX}${JSON.stringify(output)}` },
-    ]);
-  });
-
-  it('measures the complete JSON-RPC frame including envelope, escaping and newline', () => {
-    const output = { ok: true, details: syntheticDetails() };
-    const frame = `${JSON.stringify({
-      jsonrpc: '2.0',
-      id: 7,
-      result: createTaskDetailsV2McpResult(output),
-    })}\n`;
-    expect(taskDetailsV2WireFrameByteLength(7, output)).toBe(
-      new TextEncoder().encode(frame).byteLength,
-    );
-    expect(
-      new TextEncoder().encode(JSON.stringify(TASK_DETAILS_V2_BUDGET_REQUEST_ID)).byteLength,
-    ).toBe(MAX_REQUEST_ID_BYTES);
-    expect(MAX_TASK_DETAILS_V2_FRAME_BYTES).toBe(MAX_RESPONSE_BYTES);
-  });
-
-  it('refuses the all-fields-at-maximum result with RESPONSE_LIMIT_EXCEEDED', () => {
-    const maximum = allFieldsAtMaximum();
-    expect(budgetFrame(maximum)).toBeGreaterThan(MAX_TASK_DETAILS_V2_FRAME_BYTES);
-    expectDecodeError(maximum, 'RESPONSE_LIMIT_EXCEEDED');
-    const refusal = createTaskDetailsRefusal('RESPONSE_LIMIT_EXCEEDED');
-    expect(refusal.refusal.retryable).toBe(false);
-    expect(
-      taskDetailsV2WireFrameByteLength(TASK_DETAILS_V2_BUDGET_REQUEST_ID, refusal),
-    ).toBeLessThanOrEqual(MAX_TASK_DETAILS_V2_FRAME_BYTES);
-  });
-
-  it('accepts a frame of exactly 65536 bytes and refuses 65537', () => {
-    const { details, noteCount, bodyBytes } = exactCeilingDetails();
-    expect(budgetFrame(details)).toBe(MAX_TASK_DETAILS_V2_FRAME_BYTES);
-    expect(decodeTaskDetailsV2(details)).toEqual(details);
-    const over = sizedDetails(noteCount, bodyBytes + 1);
-    expect(budgetFrame(over)).toBe(MAX_TASK_DETAILS_V2_FRAME_BYTES + 1);
-    expectDecodeError(over, 'RESPONSE_LIMIT_EXCEEDED');
-    const under = sizedDetails(noteCount, bodyBytes - 1);
-    expect(budgetFrame(under)).toBe(MAX_TASK_DETAILS_V2_FRAME_BYTES - 1);
-    expect(decodeTaskDetailsV2(under)).toEqual(under);
-  });
-
-  it('keeps every accepted frame within the ceiling for every legal request id', () => {
-    const { details } = exactCeilingDetails();
-    for (const id of [null, 0, Number.MAX_SAFE_INTEGER, 'r', TASK_DETAILS_V2_BUDGET_REQUEST_ID]) {
-      expect(taskDetailsV2WireFrameByteLength(id, { ok: true, details })).toBeLessThanOrEqual(
-        MAX_RESPONSE_BYTES,
-      );
-    }
-  });
-
-  it('refuses an oversized raw payload before schema parsing', () => {
-    const base = syntheticDetails();
-    const huge = 'x'.repeat(MAX_RESPONSE_BYTES);
-    expectDecodeError(
-      { ...base, task: { ...base.task, body: { ...base.task.body, text: huge } } },
-      'RESPONSE_LIMIT_EXCEEDED',
-    );
-  });
-
-  it('fits the largest legal mutation receipt frame', () => {
-    const receipt = {
-      representation: 'task-details.v2',
-      receiptId: 'r'.repeat(128),
-      taskId: 't'.repeat(128),
-      version: '"'.repeat(128),
-      recordedBy: {
-        actorKind: 'agent',
-        actorId: 'a'.repeat(128),
-        clientId: 'c'.repeat(128),
-        occurredAt: '2026-01-01T00:00:00.000000000+14:00',
-      },
-      replayed: true,
+  it('declares target coverage flags and a distinct coordination client', () => {
+    const coverage = {
+      completeLibrary: false as const,
+      eligibleTargetsGrantAuthority: false as const,
     };
-    expect(decodeTaskMutationReceiptV2(receipt)).toEqual(receipt);
-    expect(
-      taskDetailsV2WireFrameByteLength(TASK_DETAILS_V2_BUDGET_REQUEST_ID, { ok: true, receipt }),
-    ).toBeLessThanOrEqual(MAX_RESPONSE_BYTES);
+    const assignment = {
+      readVersion: 2 as const,
+      view: 'assignment_targets' as const,
+      limit: 1,
+      afterPrincipalId: null,
+      nextAfterPrincipalId: null,
+      targets: [{ principal: { kind: 'human' as const, id: HUMAN } }],
+      coverage,
+    };
+    expect(decodeAssignmentTargetListV2(assignment).coverage).toEqual(coverage);
+    expect(() =>
+      AssignmentTargetListV2Schema.parse({
+        ...assignment,
+        coverage: { ...coverage, eligibleTargetsGrantAuthority: true },
+      }),
+    ).toThrow();
+    const coordination = {
+      readVersion: 2 as const,
+      view: 'coordination_targets' as const,
+      limit: 1,
+      after: null,
+      nextAfter: null,
+      targets: [{ principal: { kind: 'agent' as const, id: AGENT }, clientId: CLIENT }],
+      coverage,
+    };
+    expect(decodeCoordinationTargetListV2(coordination).targets[0]?.clientId).toBe(CLIENT);
+    expect(CoordinationTargetListV2Schema.safeParse(coordination).success).toBe(true);
+  });
+
+  it('accepts the event command vocabulary and evidence only on note and submit', () => {
+    const coverage = {
+      completeHistory: false as const,
+      actualStoredAttributionOnly: true as const,
+      approvalInferred: false as const,
+    };
+    const baseEvent = {
+      receiptId: RECEIPT,
+      occurredAt: TIME,
+      taskVersion: VERSION,
+      receiptVersion: VERSION_B,
+      actor: { kind: 'human' as const, id: HUMAN },
+      clientId: CLIENT,
+    };
+    for (const command of EVENT_COMMAND_V2_VALUES) {
+      const event =
+        command === 'note' || command === 'submit'
+          ? { ...baseEvent, command, evidence: segment('synthetic evidence', 400) }
+          : { ...baseEvent, command };
+      const page = {
+        readVersion: 2 as const,
+        view: 'events' as const,
+        taskId: TASK,
+        limit: 1,
+        after: null,
+        nextAfter: null,
+        events: [event],
+        coverage,
+      };
+      expect(decodeEventListV2(page).events[0]?.command).toBe(command);
+    }
+    expect(() =>
+      EventListV2Schema.parse({
+        readVersion: 2,
+        view: 'events',
+        taskId: TASK,
+        limit: 1,
+        after: null,
+        nextAfter: null,
+        events: [{ ...baseEvent, command: 'create', evidence: segment('no', 20) }],
+        coverage,
+      }),
+    ).toThrow();
+    expect(() =>
+      EventListV2Schema.parse({
+        readVersion: 2,
+        view: 'events',
+        taskId: TASK,
+        limit: 1,
+        after: null,
+        nextAfter: null,
+        events: [{ ...baseEvent, command: 'create' }],
+        coverage: { ...coverage, approvalInferred: true },
+      }),
+    ).toThrow();
   });
 });
 
-describe('synthetic: bounded and clipped text', () => {
-  it('clips UTF-8 on code point boundaries and reports coverage', () => {
-    const text = `${'a'.repeat(5)}\u00e9\u20ac\u{1f600}`;
-    expect(clipUtf8(text, 64)).toEqual({ text, clipped: false, totalBytes: 14, returnedBytes: 14 });
-    expect(clipUtf8(text, 6)).toEqual({
-      text: 'aaaaa',
-      clipped: true,
-      totalBytes: 14,
-      returnedBytes: 5,
-    });
-    expect(clipUtf8(text, 7)).toEqual({
-      text: 'aaaaa\u00e9',
-      clipped: true,
-      totalBytes: 14,
-      returnedBytes: 7,
-    });
-    expect(clipUtf8(text, 12)).toEqual({
-      text: 'aaaaa\u00e9\u20ac',
-      clipped: true,
-      totalBytes: 14,
-      returnedBytes: 10,
-    });
-    expect(clipUtf8(text, 0)).toEqual({
-      text: '',
-      clipped: true,
-      totalBytes: 14,
-      returnedBytes: 0,
-    });
+describe('synthetic: packet byte bounds', () => {
+  it('pins the packet numbers rather than only the exported names', () => {
+    expect(requestWithinPacketLimit(2048)).toBe(true);
+    expect(requestWithinPacketLimit(2049)).toBe(false);
+    expect(providerWithinPacketLimit(60_000)).toBe(true);
+    expect(providerWithinPacketLimit(60_001)).toBe(false);
+    expect(structuredWithinPacketLimit(27_000)).toBe(true);
+    expect(structuredWithinPacketLimit(27_001)).toBe(false);
+    expect(completeWithinPacketLimit(60_000)).toBe(true);
+    expect(completeWithinPacketLimit(60_001)).toBe(false);
+    expect(timeoutWithinPacketLimit(5_000)).toBe(true);
+    expect(timeoutWithinPacketLimit(5_001)).toBe(false);
+    expect(MAX_PAGE_SIZE).toBe(10);
   });
 
-  it('fails closed on a NaN, infinite, negative or fractional byte limit', () => {
-    for (const limit of [Number.NaN, Number.POSITIVE_INFINITY, -1, 1.5, 2 ** 53]) {
-      expect(() => clipUtf8('synthetic', limit)).toThrow(RangeError);
-    }
+  it('pins the request, provider, structured, complete and timeout ceilings', () => {
+    expect(requestWithinPacketLimit(MAX_TASK_DETAILS_REQUEST_BYTES)).toBe(true);
+    expect(requestWithinPacketLimit(MAX_TASK_DETAILS_REQUEST_BYTES + 1)).toBe(false);
+    expect(providerWithinPacketLimit(MAX_PROVIDER_RESPONSE_BYTES)).toBe(true);
+    expect(providerWithinPacketLimit(MAX_PROVIDER_RESPONSE_BYTES + 1)).toBe(false);
+    expect(structuredWithinPacketLimit(MAX_STRUCTURED_CONTENT_BYTES)).toBe(true);
+    expect(structuredWithinPacketLimit(MAX_STRUCTURED_CONTENT_BYTES + 1)).toBe(false);
+    expect(completeWithinPacketLimit(MAX_COMPLETE_RESULT_BYTES)).toBe(true);
+    expect(completeWithinPacketLimit(MAX_COMPLETE_RESULT_BYTES + 1)).toBe(false);
+    expect(timeoutWithinPacketLimit(MAX_TASK_DETAILS_TIMEOUT_MS)).toBe(true);
+    expect(timeoutWithinPacketLimit(MAX_TASK_DETAILS_TIMEOUT_MS + 1)).toBe(false);
+    expect(timeoutWithinPacketLimit(0)).toBe(false);
+    expect(MAX_PAGE_SIZE).toBe(10);
+    expect(MAX_TOOL_EXECUTION_MS).toBeLessThanOrEqual(MAX_TASK_DETAILS_TIMEOUT_MS);
+    expect(TASK_DETAILS_V2_BUDGET_REQUEST_ID.length + 2).toBe(MAX_REQUEST_ID_BYTES);
   });
 
-  it('fails closed on lone surrogates and keeps paired surrogates', () => {
-    expect(() => clipUtf8('a\ud800b', 64)).toThrow(RangeError);
-    expect(() => clipUtf8('a\udc00', 64)).toThrow(RangeError);
-    expect(clipUtf8('\u{1f600}', 64).returnedBytes).toBe(4);
+  it('refuses a provider payload above 60000 bytes before accepting it as a task', () => {
+    const prefix = '{"readVersion":2,"pad":"';
+    const suffix = '"}';
+    const fit = 'a'.repeat(MAX_PROVIDER_RESPONSE_BYTES - prefix.length - suffix.length);
+    const atLimit = JSON.parse(`${prefix}${fit}${suffix}`) as unknown;
+    const over = JSON.parse(`${prefix}${fit}a${suffix}`) as unknown;
+    expect(() => decodeTaskDetailV2(atLimit)).toThrow(
+      expect.objectContaining({ code: 'MALFORMED_REPRESENTATION' }),
+    );
+    expect(() => decodeTaskDetailV2(over)).toThrow(
+      expect.objectContaining({ code: 'RESPONSE_LIMIT_EXCEEDED' }),
+    );
   });
 
-  it('keeps a clipped body and clipped notes visible after decode', () => {
-    const base = syntheticDetails();
-    const longBody = '\u00e9'.repeat(MAX_TASK_BODY_BYTES);
-    const longNote = '\u20ac'.repeat(MAX_ACTIVITY_TEXT_BYTES);
-    const decoded = decodeTaskDetailsV2({
-      ...base,
-      task: { ...base.task, body: clipUtf8(longBody, MAX_TASK_BODY_BYTES) },
-      activity: {
-        entries: [
-          {
-            entryKind: 'note',
-            receiptId: 'receipt-synthetic-020',
-            recordedBy: provenance('agent', 'agent-synthetic-a', 'client-synthetic-a'),
-            text: clipUtf8(longNote, MAX_ACTIVITY_TEXT_BYTES),
-          },
-        ],
-        coverage: { returnedCount: 1, totalCount: 40, clipped: true },
-      },
-    });
-    expect(decoded.task.body).toMatchObject({
-      clipped: true,
-      totalBytes: MAX_TASK_BODY_BYTES * 2,
-      returnedBytes: MAX_TASK_BODY_BYTES,
-    });
-    const note = decoded.activity.entries[0];
-    expect(note?.entryKind).toBe('note');
-    if (note?.entryKind !== 'note') throw new Error('expected note');
-    expect(note.text.clipped).toBe(true);
-    expect(note.text.totalBytes).toBe(MAX_ACTIVITY_TEXT_BYTES * 3);
-    expect(note.text.returnedBytes).toBe(MAX_ACTIVITY_TEXT_BYTES - (MAX_ACTIVITY_TEXT_BYTES % 3));
-    expect(decoded.activity.coverage).toEqual({ returnedCount: 1, totalCount: 40, clipped: true });
-  });
-
-  it('rejects NUL, control characters and lone surrogates in stored text', () => {
-    const base = syntheticDetails();
-    const bounded = (text: string) => ({
-      text,
-      clipped: false,
-      totalBytes: new TextEncoder().encode(text).byteLength,
-      returnedBytes: new TextEncoder().encode(text).byteLength,
-    });
-    const note = base.activity.entries[1];
-    for (const bad of ['a\u0000b', 'a\u0007b', 'a\u001bb', 'a\u007fb', 'a\ud800b', 'a\udfffb']) {
-      expectDecodeError(
-        { ...base, task: { ...base.task, body: bounded(bad) } },
-        'MALFORMED_REPRESENTATION',
-      );
-      expectDecodeError(
-        { ...base, task: { ...base.task, title: bad } },
-        'MALFORMED_REPRESENTATION',
-      );
-      expectDecodeError(
-        {
-          ...base,
-          activity: {
-            entries: [{ ...note, text: bounded(bad), citation: { sourceRef: 'synthetic://a' } }],
-            coverage: { returnedCount: 1, totalCount: 1, clipped: false },
-          },
-        },
-        'MALFORMED_REPRESENTATION',
-      );
-      expectDecodeError(
-        {
-          ...base,
-          activity: {
-            entries: [{ ...note, citation: { sourceRef: bad } }],
-            coverage: { returnedCount: 1, totalCount: 1, clipped: false },
-          },
-        },
-        'MALFORMED_REPRESENTATION',
-      );
-    }
-    const allowed = 'line one\n\tline two\r\nline \u{1f600}';
-    const decoded = decodeTaskDetailsV2({
-      ...base,
-      task: { ...base.task, body: bounded(allowed) },
-    });
-    expect(decoded.task.body.text).toBe(allowed);
-  });
-
-  it('marks stored text as untrusted data in MCP results', () => {
-    const value = syntheticDetails();
-    const result = createTaskDetailsV2McpResult({ ok: true, details: value });
+  it('refuses structured content above 27000 bytes and labels stored text', () => {
+    const oversized = {
+      ok: true as const,
+      value: { pad: 'x'.repeat(MAX_STRUCTURED_CONTENT_BYTES) },
+    };
+    expect(() => createTaskDetailsV2McpResult(oversized)).toThrow(
+      expect.objectContaining({ code: 'RESPONSE_LIMIT_EXCEEDED' }),
+    );
+    const accepted = detail();
+    const result = createTaskDetailsV2McpResult(accepted);
     expect(result.content[0]?.text.startsWith(TASK_DETAILS_UNTRUSTED_TEXT_PREFIX)).toBe(true);
-    expect(result.isError).toBe(false);
-    expect(createTaskDetailsV2McpResult(createTaskDetailsRefusal('NOT_AVAILABLE')).isError).toBe(
-      true,
+    expect(result.structuredContent).toEqual({ ok: true, value: accepted });
+    expect(JSON.stringify(result).length).toBeLessThanOrEqual(MAX_COMPLETE_RESULT_BYTES);
+    const frame = taskDetailsV2WireFrameByteLength(TASK_DETAILS_V2_BUDGET_REQUEST_ID, {
+      ok: true,
+      value: accepted,
+    });
+    expect(frame).toBeGreaterThan(JSON.stringify(result).length);
+  });
+
+  it('fails closed on forbidden text and a non-plain prototype', () => {
+    expect(() => decodeTaskDetailV2(detail({ title: segment('bad\u0000text', 20) }))).toThrow(
+      TaskDetailsDecodeError,
     );
-  });
-});
-
-describe('synthetic: typed refusals', () => {
-  it('marks only deadline, cancellation and upstream refusals retryable', () => {
-    const codes: readonly TaskDetailsRefusalCode[] = [
-      'INVALID_REQUEST',
-      'UNSUPPORTED_REPRESENTATION',
-      'MALFORMED_REPRESENTATION',
-      'RESPONSE_LIMIT_EXCEEDED',
-      'NOT_AVAILABLE',
-      'VERSION_CONFLICT',
-      'IDEMPOTENCY_CONFLICT',
-      'TARGET_UNAVAILABLE',
-      'DEADLINE_EXCEEDED',
-      'REQUEST_CANCELLED',
-      'UPSTREAM_UNAVAILABLE',
-      'INTERNAL_ERROR',
-    ];
-    const retryable = codes.filter((code) => createTaskDetailsRefusal(code).refusal.retryable);
-    expect(retryable).toEqual(['DEADLINE_EXCEEDED', 'REQUEST_CANCELLED', 'UPSTREAM_UNAVAILABLE']);
-    for (const code of codes) {
-      expect(createTaskDetailsRefusal(code)).toMatchObject({ ok: false, refusal: { code } });
-    }
-  });
-});
-
-describe('synthetic: typed assignment targets', () => {
-  it('keeps human and agent kinds and withdrawn status distinct', () => {
-    const decoded = decodeTaskDetailsV2(syntheticDetails());
-    expect(decoded.assignmentTargets.targets).toEqual([
-      { kind: 'human', id: 'human-synthetic-a', status: 'active' },
-      { kind: 'agent', id: 'agent-synthetic-a', status: 'active' },
-      { kind: 'agent', id: 'agent-synthetic-b', status: 'withdrawn' },
-    ]);
-  });
-});
-
-describe('synthetic: input schemas reject caller identity and generic controls', () => {
-  const read = { representation: 'task-details.v2', taskId: 'task-synthetic-001' };
-  const note = {
-    representation: 'task-details.v2',
-    taskId: 'task-synthetic-001',
-    expectedVersion: 'ver-synthetic-0001',
-    idempotencyKey: syntheticIdempotencyKey('001'),
-    text: 'Synthetic note.',
-  };
-  const assign = {
-    representation: 'task-details.v2',
-    taskId: 'task-synthetic-001',
-    expectedVersion: 'ver-synthetic-0001',
-    idempotencyKey: syntheticIdempotencyKey('002'),
-    target: { kind: 'agent', id: 'agent-synthetic-a' },
-  };
-
-  it('accepts only finite parameters', () => {
-    expect(ReadTaskDetailsV2InputSchema.parse(read)).toEqual({ ...read, activityLimit: 20 });
-    expect(AppendTaskNoteV2InputSchema.safeParse(note).success).toBe(true);
-    expect(
-      AppendTaskNoteV2InputSchema.safeParse({ ...note, citation: { sourceRef: 'synthetic://a' } })
-        .success,
-    ).toBe(true);
-    expect(AssignTaskV2InputSchema.safeParse(assign).success).toBe(true);
-  });
-
-  it('bounds activityLimit to 1..50 integers', () => {
-    for (const activityLimit of [0, -1, 51, 1.5, Number.NaN, '5']) {
-      expect(ReadTaskDetailsV2InputSchema.safeParse({ ...read, activityLimit }).success).toBe(
-        false,
-      );
-    }
-    for (const activityLimit of [1, MAX_ACTIVITY_ENTRIES]) {
-      expect(ReadTaskDetailsV2InputSchema.parse({ ...read, activityLimit }).activityLimit).toBe(
-        activityLimit,
-      );
-    }
-  });
-
-  it('requires explicit v2 negotiation', () => {
-    expect(ReadTaskDetailsV2InputSchema.safeParse({ taskId: 'task-synthetic-001' }).success).toBe(
-      false,
-    );
-    expect(ReadTaskDetailsV2InputSchema.safeParse({ ...read, representation: 'v1' }).success).toBe(
-      false,
+    const foreign = Object.assign(Object.create({}), detail()) as TaskDetailV2;
+    expect(() => decodeTaskDetailV2(foreign)).toThrow(
+      expect.objectContaining({ code: 'MALFORMED_REPRESENTATION' }),
     );
   });
 
-  it('rejects caller-supplied identity, authority and database controls', () => {
-    const forbidden = [
-      'actingAgent',
-      'actorId',
-      'authorId',
-      'clientId',
-      'sessionId',
-      'userId',
-      'role',
-      'workstreamId',
-      'sql',
-      'schema',
-      'relation',
-      'url',
-      'credential',
-      'approved',
-      'payload',
-    ];
-    for (const key of forbidden) {
-      expect(ReadTaskDetailsV2InputSchema.safeParse({ ...read, [key]: 'x' }).success).toBe(false);
-      expect(AppendTaskNoteV2InputSchema.safeParse({ ...note, [key]: 'x' }).success).toBe(false);
-      expect(AssignTaskV2InputSchema.safeParse({ ...assign, [key]: 'x' }).success).toBe(false);
-    }
-    expect(
-      AssignTaskV2InputSchema.safeParse({
-        ...assign,
-        target: { ...assign.target, status: 'active' },
-      }).success,
-    ).toBe(false);
-  });
-
-  it('refuses empty, oversized or padded note text instead of clipping writes', () => {
+  it('decodes a note receipt and rejects evidence on an assignment receipt', () => {
+    const note = {
+      readVersion: 2,
+      command: 'note',
+      receiptId: RECEIPT,
+      taskId: TASK,
+      occurredAt: TIME,
+      taskVersion: VERSION,
+      receiptVersion: VERSION_B,
+      actor: { kind: 'agent', id: AGENT },
+      clientId: CLIENT,
+      evidence: segment('synthetic note', 400),
+    };
+    expect(decodeTaskMutationReceiptV2(note).command).toBe('note');
+    expect(() => decodeTaskMutationReceiptV2({ ...note, command: 'assign' })).toThrow(
+      TaskDetailsDecodeError,
+    );
     expect(
       AppendTaskNoteV2InputSchema.safeParse({
-        ...note,
-        text: '\u20ac'.repeat(Math.floor(MAX_ACTIVITY_TEXT_BYTES / 3) + 1),
+        readVersion: 2,
+        taskId: TASK,
+        expectedVersion: VERSION,
+        idempotencyKey: RECEIPT,
+        text: ' synthetic ',
       }).success,
     ).toBe(false);
-    expect(AppendTaskNoteV2InputSchema.safeParse({ ...note, text: ' padded ' }).success).toBe(
-      false,
-    );
-    expect(AppendTaskNoteV2InputSchema.safeParse({ ...note, text: '' }).success).toBe(false);
     expect(
-      AppendTaskNoteV2InputSchema.safeParse({ ...note, text: 'n'.repeat(MAX_ACTIVITY_TEXT_BYTES) })
-        .success,
+      AssignTaskV2InputSchema.safeParse({
+        readVersion: 2,
+        taskId: TASK,
+        expectedVersion: VERSION,
+        idempotencyKey: RECEIPT,
+        target: { kind: 'human', id: HUMAN },
+      }).success,
     ).toBe(true);
   });
 
-  it('rejects NUL, control characters and lone surrogates in written notes', () => {
-    for (const bad of ['a\u0000b', 'a\u0007b', 'a\u007fb', 'a\ud800b', 'a\udc00b']) {
-      expect(AppendTaskNoteV2InputSchema.safeParse({ ...note, text: bad }).success).toBe(false);
-      expect(
-        AppendTaskNoteV2InputSchema.safeParse({ ...note, citation: { sourceRef: bad } }).success,
-      ).toBe(false);
-    }
-    expect(
-      AppendTaskNoteV2InputSchema.safeParse({ ...note, text: 'line one\n\tline two\r\nend' })
-        .success,
-    ).toBe(true);
+  it('builds a frozen refusal that carries no task data', () => {
+    const refusal = createTaskDetailsRefusal('VERSION_CONFLICT');
+    expect(refusal).toEqual({
+      ok: false,
+      refusal: {
+        code: 'VERSION_CONFLICT',
+        message: 'Task version has changed.',
+        retryable: false,
+      },
+    });
+    expect(Object.isFrozen(refusal)).toBe(true);
+    expect(Object.isFrozen(refusal.refusal)).toBe(true);
+    expect(JSON.stringify(refusal)).not.toContain('task');
+    expect(createTaskDetailsRefusal('DEADLINE_EXCEEDED').refusal.retryable).toBe(true);
+    expect(createTaskDetailsRefusal('UPSTREAM_UNAVAILABLE').refusal.retryable).toBe(true);
+    expect(createTaskDetailsRefusal('REQUEST_CANCELLED').refusal.retryable).toBe(true);
+    expect(createTaskDetailsRefusal('NOT_AVAILABLE').refusal.retryable).toBe(false);
   });
 });
 
-describe('synthetic: arrays are never task-details objects', () => {
-  it('refuses arrays carrying a representation as MALFORMED_REPRESENTATION', () => {
-    const taggedV1 = Object.assign([], { representation: 'task-details.v1' });
-    const oversizedV2 = Object.assign(new Array(MAX_TASK_DETAILS_V2_FRAME_BYTES + 1).fill(1), {
-      representation: TASK_DETAILS_V2_REPRESENTATION,
+describe('synthetic: keyset order, coverage flags, arrays and text', () => {
+  const coverage = {
+    completeHistory: false as const,
+    actualStoredAttributionOnly: true as const,
+    approvalInferred: false as const,
+  };
+  const targetCoverage = {
+    completeLibrary: false as const,
+    eligibleTargetsGrantAuthority: false as const,
+  };
+
+  function eventRow(occurredAt: string, n: number) {
+    return {
+      command: 'create' as const,
+      receiptId: `00000000-0000-4000-8000-${String(n).padStart(12, '0')}`,
+      occurredAt,
+      taskVersion: VERSION,
+      receiptVersion: VERSION,
+      actor: { kind: 'human' as const, id: HUMAN },
+      clientId: CLIENT,
+    };
+  }
+
+  function eventPage(
+    events: ReturnType<typeof eventRow>[],
+    after: { occurredAt: string; receiptId: string } | null = null,
+  ) {
+    const last = events.at(-1);
+    return {
+      readVersion: 2 as const,
+      view: 'events' as const,
+      taskId: TASK,
+      limit: 10,
+      after,
+      nextAfter:
+        last === undefined ? null : { occurredAt: last.occurredAt, receiptId: last.receiptId },
+      events,
+      coverage,
+    };
+  }
+
+  it('orders events by parsed instant, not by the raw timestamp string', () => {
+    const correct = eventPage([
+      eventRow('2026-01-01T00:00:00Z', 2),
+      eventRow('2026-01-01T00:00:00.500Z', 3),
+    ]);
+    expect(decodeEventListV2(correct).events).toHaveLength(2);
+    expect(() =>
+      decodeEventListV2(
+        eventPage([eventRow('2026-01-01T00:00:00.500Z', 2), eventRow('2026-01-01T00:00:00Z', 3)]),
+      ),
+    ).toThrow(expect.objectContaining({ code: 'MALFORMED_REPRESENTATION' }));
+    expect(() =>
+      decodeEventListV2(
+        eventPage([eventRow('2026-01-01T01:00:00Z', 2), eventRow('2026-01-01T05:00:00+05:00', 3)]),
+      ),
+    ).toThrow(expect.objectContaining({ code: 'MALFORMED_REPRESENTATION' }));
+    const later = [
+      eventRow('2026-01-01T00:00:00Z', 2),
+      eventRow('2026-01-01T00:00:00.500Z', 3),
+      eventRow('2026-01-01T00:00:01Z', 4),
+    ];
+    expect(() => decodeEventListV2({ ...eventPage(later), limit: 2 })).toThrow(
+      TaskDetailsDecodeError,
+    );
+    const early = eventPage([eventRow('2026-01-01T00:00:00Z', 2)], {
+      occurredAt: '2026-01-01T00:00:03Z',
+      receiptId: eventRow('2026-01-01T00:00:03Z', 4).receiptId,
     });
-    // The serialized array is above the frame ceiling, so only the array check yields MALFORMED.
-    expect(JSON.stringify(oversizedV2).length).toBeGreaterThan(MAX_TASK_DETAILS_V2_FRAME_BYTES);
-    for (const raw of [taggedV1, oversizedV2]) {
-      expectDecodeError(raw, 'MALFORMED_REPRESENTATION');
-      expect(decodeErrorCode(() => decodeTaskMutationReceiptV2(raw))).toBe(
-        'MALFORMED_REPRESENTATION',
-      );
-    }
+    expect(() => decodeEventListV2(early)).toThrow(TaskDetailsDecodeError);
+  });
+
+  it('rejects a v1-tagged array and an oversized array as malformed', () => {
+    expect(() => decodeTaskDetailV2(Object.assign([], { readVersion: 1 }))).toThrow(
+      expect.objectContaining({ code: 'MALFORMED_REPRESENTATION' }),
+    );
+    const oversized = Object.assign(
+      Array.from({ length: 70_000 }, () => 'x'),
+      { readVersion: 2 },
+    );
+    expect(() => decodeTaskDetailV2(oversized)).toThrow(
+      expect.objectContaining({ code: 'MALFORMED_REPRESENTATION' }),
+    );
+  });
+
+  it('rejects DEL, a lone surrogate, a cycle, a bad timestamp and an unknown actor kind', () => {
+    expect(() =>
+      decodeTaskDetailV2(detail({ body: segment('a\u007fb', DETAIL_BODY_MAX_CHARS) })),
+    ).toThrow(TaskDetailsDecodeError);
+    expect(() =>
+      decodeTaskDetailV2(
+        detail({
+          body: { text: 'a\ud800', offset: 0, totalChars: 2, nextOffset: 2, complete: true },
+        }),
+      ),
+    ).toThrow(TaskDetailsDecodeError);
+    const cycle: Record<string, unknown> = { readVersion: 2 };
+    cycle.self = cycle;
+    expect(() => decodeTaskDetailV2(cycle)).toThrow(
+      expect.objectContaining({ code: 'MALFORMED_REPRESENTATION' }),
+    );
+    expect(() => decodeEventListV2(eventPage([eventRow('not-a-timestamp', 2)]))).toThrow(
+      TaskDetailsDecodeError,
+    );
+    expect(() =>
+      decodeTaskDetailV2(detail({ assignedPrincipal: { kind: 'service' as 'human', id: HUMAN } })),
+    ).toThrow(TaskDetailsDecodeError);
+  });
+
+  it('rejects each coverage flag when it is not the required literal', () => {
+    const targets = {
+      readVersion: 2 as const,
+      view: 'assignment_targets' as const,
+      limit: 1,
+      afterPrincipalId: null,
+      nextAfterPrincipalId: null,
+      targets: [{ principal: { kind: 'human' as const, id: HUMAN } }],
+      coverage: targetCoverage,
+    };
+    expect(() =>
+      decodeAssignmentTargetListV2({
+        ...targets,
+        coverage: { ...targetCoverage, completeLibrary: true },
+      }),
+    ).toThrow(TaskDetailsDecodeError);
+    expect(() =>
+      decodeEventListV2({
+        ...eventPage([eventRow(TIME, 2)]),
+        coverage: { ...coverage, completeHistory: true },
+      }),
+    ).toThrow(TaskDetailsDecodeError);
+    expect(() =>
+      decodeEventListV2({
+        ...eventPage([eventRow(TIME, 2)]),
+        coverage: { ...coverage, actualStoredAttributionOnly: false },
+      }),
+    ).toThrow(TaskDetailsDecodeError);
+  });
+
+  it('rejects inconsistent task, target and event keyset pages', () => {
+    const item = (id: string) => ({
+      taskId: id,
+      title: segment('t', LIST_SEGMENT_MAX_CHARS),
+      status: 'open' as const,
+      version: VERSION,
+      body: segment('b', LIST_SEGMENT_MAX_CHARS),
+      assignedPrincipal: null,
+      workstreamId: WORKSTREAM,
+      citation: segment('', LIST_SEGMENT_MAX_CHARS),
+    });
+    const tasks = {
+      readVersion: 2 as const,
+      view: 'tasks' as const,
+      limit: 2,
+      afterTaskId: TASK,
+      nextAfterTaskId: TASK_B,
+      tasks: [item(TASK), item(TASK_B)],
+    };
+    expect(() => decodeTaskListV2(tasks)).toThrow(TaskDetailsDecodeError);
+    expect(() =>
+      decodeTaskListV2({
+        ...tasks,
+        afterTaskId: null,
+        tasks: [item(TASK)],
+        limit: 1,
+        nextAfterTaskId: null,
+      }),
+    ).not.toThrow();
+    expect(() =>
+      decodeTaskListV2({
+        ...tasks,
+        afterTaskId: null,
+        limit: 2,
+        tasks: [item(TASK), item(TASK_B)],
+        nextAfterTaskId: TASK,
+      }),
+    ).toThrow(TaskDetailsDecodeError);
+    expect(() =>
+      decodeTaskListV2({
+        ...tasks,
+        afterTaskId: null,
+        limit: 1,
+        tasks: [item(TASK), item(TASK_B)],
+        nextAfterTaskId: TASK_B,
+      }),
+    ).toThrow(TaskDetailsDecodeError);
+    expect(() =>
+      ReadTaskListV2InputSchema.parse({
+        readVersion: 2,
+        view: 'tasks',
+        limit: 0,
+        afterTaskId: null,
+      }),
+    ).toThrow();
+
+    const unorderedTargets = {
+      readVersion: 2 as const,
+      view: 'assignment_targets' as const,
+      limit: 2,
+      afterPrincipalId: null,
+      nextAfterPrincipalId: HUMAN,
+      targets: [
+        { principal: { kind: 'agent' as const, id: AGENT } },
+        { principal: { kind: 'human' as const, id: HUMAN } },
+      ],
+      coverage: targetCoverage,
+    };
+    expect(() => decodeAssignmentTargetListV2(unorderedTargets)).toThrow(TaskDetailsDecodeError);
+    expect(() =>
+      decodeAssignmentTargetListV2({
+        ...unorderedTargets,
+        targets: [{ principal: { kind: 'human' as const, id: HUMAN } }],
+        limit: 1,
+        nextAfterPrincipalId: AGENT,
+      }),
+    ).toThrow(TaskDetailsDecodeError);
+
+    const ordered = {
+      readVersion: 2 as const,
+      view: 'coordination_targets' as const,
+      limit: 2,
+      after: null,
+      nextAfter: { principalId: AGENT, clientId: CLIENT },
+      targets: [
+        { principal: { kind: 'human' as const, id: HUMAN }, clientId: CLIENT },
+        { principal: { kind: 'agent' as const, id: AGENT }, clientId: CLIENT },
+      ],
+      coverage: targetCoverage,
+    };
+    expect(decodeCoordinationTargetListV2(ordered).targets).toHaveLength(2);
+    expect(() =>
+      decodeCoordinationTargetListV2({
+        ...ordered,
+        targets: [...ordered.targets].reverse(),
+        nextAfter: { principalId: HUMAN, clientId: CLIENT },
+      }),
+    ).toThrow(TaskDetailsDecodeError);
+    const coord = {
+      readVersion: 2 as const,
+      view: 'coordination_targets' as const,
+      limit: 1,
+      after: { principalId: HUMAN, clientId: CLIENT },
+      nextAfter: null,
+      targets: [{ principal: { kind: 'human' as const, id: HUMAN }, clientId: CLIENT }],
+      coverage: targetCoverage,
+    };
+    expect(() => decodeCoordinationTargetListV2(coord)).toThrow(TaskDetailsDecodeError);
+
+    const broken = segment('ab', 10);
+    expect(() =>
+      decodeTaskDetailV2(
+        detail({
+          body: {
+            ...broken,
+            offset: 5,
+            nextOffset: broken.nextOffset,
+            totalChars: broken.totalChars,
+            complete: broken.complete,
+          },
+        }),
+      ),
+    ).toThrow(TaskDetailsDecodeError);
+  });
+
+  it('wraps the largest legal detail without throwing and rejects one extra body character', () => {
+    const largest = detail({
+      body: segment('b'.repeat(DETAIL_BODY_MAX_CHARS), DETAIL_BODY_MAX_CHARS),
+    });
+    expect(decodeTaskDetailV2(largest).task.body.text).toHaveLength(DETAIL_BODY_MAX_CHARS);
+    expect(() => createTaskDetailsV2McpResult({ ok: true, value: largest })).not.toThrow();
+    expect(() =>
+      decodeTaskDetailV2(
+        detail({
+          body: segment('b'.repeat(DETAIL_BODY_MAX_CHARS + 1), DETAIL_BODY_MAX_CHARS + 1),
+        }),
+      ),
+    ).toThrow(TaskDetailsDecodeError);
+  });
+
+  it('rejects an acting-identity field on a detail read', () => {
+    expect(
+      ReadTaskDetailV2InputSchema.safeParse({
+        readVersion: 2,
+        view: 'task',
+        taskId: TASK,
+        expectedVersion: VERSION,
+        actingIdentity: HUMAN,
+      }).success,
+    ).toBe(false);
   });
 });

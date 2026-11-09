@@ -7,25 +7,47 @@ import { MAX_TOOL_EXECUTION_MS } from '@supabase-user-mcp/contracts';
 import {
   type AppendTaskNoteV2Input,
   AppendTaskNoteV2InputSchema,
+  type AssignmentTargetListV2,
   type AssignTaskV2Input,
   AssignTaskV2InputSchema,
+  adapterTimeoutIsLegal,
+  type CoordinationTargetListV2,
   createTaskDetailsRefusal,
-  decodeTaskDetailsV2,
+  decodeAssignmentTargetListV2,
+  decodeCoordinationTargetListV2,
+  decodeEventListV2,
+  decodeTaskDetailV2,
+  decodeTaskListV2,
   decodeTaskMutationReceiptV2,
-  type ReadTaskDetailsV2Input,
-  ReadTaskDetailsV2InputSchema,
-  TASK_DETAILS_V2_REPRESENTATION,
+  type EventListV2,
+  type ReadAssignmentTargetsV2Input,
+  ReadAssignmentTargetsV2InputSchema,
+  type ReadCoordinationTargetsV2Input,
+  ReadCoordinationTargetsV2InputSchema,
+  type ReadEventsV2Input,
+  ReadEventsV2InputSchema,
+  type ReadTaskDetailV2Input,
+  ReadTaskDetailV2InputSchema,
+  type ReadTaskListV2Input,
+  ReadTaskListV2InputSchema,
+  requestWithinPacketLimit,
   TaskDetailsDecodeError,
   type TaskDetailsRefusal,
   type TaskDetailsRefusalCode,
-  type TaskDetailsV2,
+  type TaskDetailV2,
+  type TaskListV2,
   type TaskMutationReceiptV2,
+  taskDetailsRequestByteLength,
 } from '../../contracts/dist/task-details-v2.js';
 
 /** Finite port parameters. There is no acting identity, credential, SQL, or relation. */
-export type TaskReadParams = Omit<ReadTaskDetailsV2Input, 'representation'>;
-export type TaskNoteParams = Omit<AppendTaskNoteV2Input, 'representation'>;
-export type TaskAssignParams = Omit<AssignTaskV2Input, 'representation'>;
+export type TaskDetailParams = Omit<ReadTaskDetailV2Input, 'readVersion'>;
+export type TaskListParams = Omit<ReadTaskListV2Input, 'readVersion'>;
+export type AssignmentTargetParams = Omit<ReadAssignmentTargetsV2Input, 'readVersion'>;
+export type CoordinationTargetParams = Omit<ReadCoordinationTargetsV2Input, 'readVersion'>;
+export type EventListParams = Omit<ReadEventsV2Input, 'readVersion'>;
+export type TaskNoteParams = Omit<AppendTaskNoteV2Input, 'readVersion'>;
+export type TaskAssignParams = Omit<AssignTaskV2Input, 'readVersion'>;
 
 /** Denials a database-owned port may report. Identity and authorization live behind the port. */
 export type TaskPortDenial =
@@ -44,17 +66,22 @@ export type TaskPortResult =
   | { readonly ok: false; readonly denial: TaskPortDenial };
 
 export interface TaskDetailsPort {
-  readonly readTaskDetails: (
-    params: TaskReadParams,
+  readonly readTask: (params: TaskDetailParams, signal: AbortSignal) => Promise<TaskPortResult>;
+  readonly readTasks: (params: TaskListParams, signal: AbortSignal) => Promise<TaskPortResult>;
+  readonly readAssignmentTargets: (
+    params: AssignmentTargetParams,
     signal: AbortSignal,
   ) => Promise<TaskPortResult>;
+  readonly readCoordinationTargets: (
+    params: CoordinationTargetParams,
+    signal: AbortSignal,
+  ) => Promise<TaskPortResult>;
+  readonly readEvents: (params: EventListParams, signal: AbortSignal) => Promise<TaskPortResult>;
   readonly appendNote: (params: TaskNoteParams, signal: AbortSignal) => Promise<TaskPortResult>;
   readonly assignTask: (params: TaskAssignParams, signal: AbortSignal) => Promise<TaskPortResult>;
 }
 
-export type TaskDetailsReadOutput =
-  | { readonly ok: true; readonly details: TaskDetailsV2 }
-  | TaskDetailsRefusal;
+export type TaskReadOutput<T> = { readonly ok: true; readonly value: T } | TaskDetailsRefusal;
 
 export type TaskMutationOutput =
   | { readonly ok: true; readonly receipt: TaskMutationReceiptV2 }
@@ -66,10 +93,26 @@ export interface TaskDetailsAdapterOptions {
 }
 
 export interface TaskDetailsAdapter {
-  readonly readTaskDetails: (
+  readonly readTask: (
     unsafeInput: unknown,
     signal?: AbortSignal,
-  ) => Promise<TaskDetailsReadOutput>;
+  ) => Promise<TaskReadOutput<TaskDetailV2>>;
+  readonly readTasks: (
+    unsafeInput: unknown,
+    signal?: AbortSignal,
+  ) => Promise<TaskReadOutput<TaskListV2>>;
+  readonly readAssignmentTargets: (
+    unsafeInput: unknown,
+    signal?: AbortSignal,
+  ) => Promise<TaskReadOutput<AssignmentTargetListV2>>;
+  readonly readCoordinationTargets: (
+    unsafeInput: unknown,
+    signal?: AbortSignal,
+  ) => Promise<TaskReadOutput<CoordinationTargetListV2>>;
+  readonly readEvents: (
+    unsafeInput: unknown,
+    signal?: AbortSignal,
+  ) => Promise<TaskReadOutput<EventListV2>>;
   readonly appendNote: (unsafeInput: unknown, signal?: AbortSignal) => Promise<TaskMutationOutput>;
   readonly assignTask: (unsafeInput: unknown, signal?: AbortSignal) => Promise<TaskMutationOutput>;
 }
@@ -81,7 +124,6 @@ class AdapterRefusal extends Error {
 }
 
 const DENIAL_CODES: Readonly<Record<TaskPortDenial, TaskDetailsRefusalCode>> = Object.freeze({
-  // Authorization denials are deliberately indistinguishable from a missing task.
   not_found: 'NOT_AVAILABLE',
   wrong_workstream: 'NOT_AVAILABLE',
   wrong_client: 'NOT_AVAILABLE',
@@ -93,17 +135,23 @@ const DENIAL_CODES: Readonly<Record<TaskPortDenial, TaskDetailsRefusalCode>> = O
   unavailable: 'UPSTREAM_UNAVAILABLE',
 });
 
-function negotiate<T>(
+function negotiate<T extends { readVersion: number }>(
   schema: { safeParse: (value: unknown) => { success: true; data: T } | { success: false } },
   unsafeInput: unknown,
 ): T {
-  if (
-    typeof unsafeInput !== 'object' ||
-    unsafeInput === null ||
-    (unsafeInput as Record<string, unknown>).representation !== TASK_DETAILS_V2_REPRESENTATION
-  ) {
+  if (typeof unsafeInput !== 'object' || unsafeInput === null || Array.isArray(unsafeInput)) {
+    throw new AdapterRefusal('MALFORMED_REPRESENTATION');
+  }
+  if ((unsafeInput as Record<string, unknown>).readVersion !== 2) {
     throw new AdapterRefusal('UNSUPPORTED_REPRESENTATION');
   }
+  let bytes: number;
+  try {
+    bytes = taskDetailsRequestByteLength(unsafeInput);
+  } catch {
+    throw new AdapterRefusal('INVALID_REQUEST');
+  }
+  if (!requestWithinPacketLimit(bytes)) throw new AdapterRefusal('INVALID_REQUEST');
   const parsed = schema.safeParse(unsafeInput);
   if (!parsed.success) throw new AdapterRefusal('INVALID_REQUEST');
   return parsed.data;
@@ -134,20 +182,18 @@ function decodeOrRefuse<T>(decode: (raw: unknown) => T, raw: unknown): T {
   }
 }
 
-function withoutRepresentation<T extends { representation: string }>(
-  input: T,
-): Omit<T, 'representation'> {
-  const { representation: _representation, ...params } = input;
+function withoutReadVersion<T extends { readVersion: number }>(input: T): Omit<T, 'readVersion'> {
+  const { readVersion: _readVersion, ...params } = input;
   return params;
 }
 
 /**
- * Creates an unregistered task-details.v2 adapter over an injected, database-owned port.
- * Every input is negotiated explicitly; every port result is decoded strictly.
+ * Unregistered task-details v2 adapter over an injected, database-owned port.
+ * Detail reads require an exact expected version. A version conflict returns a refusal and no data.
  */
 export function createTaskDetailsAdapter(options: TaskDetailsAdapterOptions): TaskDetailsAdapter {
   const timeoutMs = options.timeoutMs ?? MAX_TOOL_EXECUTION_MS;
-  if (!Number.isSafeInteger(timeoutMs) || timeoutMs <= 0 || timeoutMs > MAX_TOOL_EXECUTION_MS) {
+  if (!adapterTimeoutIsLegal(timeoutMs, MAX_TOOL_EXECUTION_MS)) {
     throw new RangeError('Invalid task-details adapter timeout.');
   }
 
@@ -155,7 +201,6 @@ export function createTaskDetailsAdapter(options: TaskDetailsAdapterOptions): Ta
     callerSignal: AbortSignal | undefined,
     body: (signal: AbortSignal) => Promise<T>,
   ): Promise<T | TaskDetailsRefusal> => {
-    // An already-cancelled caller never reaches the port.
     if (callerSignal?.aborted) return createTaskDetailsRefusal('REQUEST_CANCELLED');
     const controller = new AbortController();
     let timer: ReturnType<typeof setTimeout> | undefined;
@@ -174,8 +219,6 @@ export function createTaskDetailsAdapter(options: TaskDetailsAdapterOptions): Ta
     try {
       return await Promise.race([body(controller.signal), stop]);
     } catch (error) {
-      // Backstop for throws outside the port wrapper, such as a throwing getter on caller input.
-      // The refusal is fixed; the thrown value and its text never reach the caller.
       if (error instanceof AdapterRefusal) return createTaskDetailsRefusal(error.code);
       return createTaskDetailsRefusal('UPSTREAM_UNAVAILABLE');
     } finally {
@@ -188,49 +231,138 @@ export function createTaskDetailsAdapter(options: TaskDetailsAdapterOptions): Ta
     try {
       return unwrapPortResult(await invoke());
     } catch (error) {
-      // Typed refusals from unwrapping pass through. Any other throw, from the port call or while
-      // reading its result (a throwing getter or Proxy trap), becomes a fixed refusal; the thrown
-      // value and its text never reach the caller.
       if (error instanceof AdapterRefusal) throw error;
       throw new AdapterRefusal('UPSTREAM_UNAVAILABLE');
     }
   };
 
-  const mutation = async (
-    taskId: string,
+  const readValue = async <T>(
+    decode: (raw: unknown) => T,
     invoke: () => Promise<TaskPortResult>,
-  ): Promise<TaskMutationOutput> => {
-    const receipt = decodeOrRefuse(decodeTaskMutationReceiptV2, await callPort(invoke));
-    if (receipt.taskId !== taskId) throw new AdapterRefusal('MALFORMED_REPRESENTATION');
-    return Object.freeze({ ok: true as const, receipt });
+  ): Promise<TaskReadOutput<T>> => {
+    const value = decodeOrRefuse(decode, await callPort(invoke));
+    return Object.freeze({ ok: true as const, value });
   };
 
   return Object.freeze({
-    readTaskDetails: (unsafeInput: unknown, signal?: AbortSignal) =>
-      run(signal, async (portSignal): Promise<TaskDetailsReadOutput> => {
-        const input = negotiate(ReadTaskDetailsV2InputSchema, unsafeInput);
-        const params = withoutRepresentation(input);
-        const raw = await callPort(() => options.port.readTaskDetails(params, portSignal));
-        const details = decodeOrRefuse(decodeTaskDetailsV2, raw);
+    readTask: (unsafeInput: unknown, signal?: AbortSignal) =>
+      run(signal, async (portSignal) => {
+        const input = negotiate(ReadTaskDetailV2InputSchema, unsafeInput);
+        const value = decodeOrRefuse(
+          decodeTaskDetailV2,
+          await callPort(() => options.port.readTask(withoutReadVersion(input), portSignal)),
+        );
+        if (value.task.taskId !== input.taskId || value.task.version !== input.expectedVersion) {
+          throw new AdapterRefusal('MALFORMED_REPRESENTATION');
+        }
+        return Object.freeze({ ok: true as const, value });
+      }),
+    readTasks: (unsafeInput: unknown, signal?: AbortSignal) =>
+      run(signal, async (portSignal) => {
+        const input = negotiate(ReadTaskListV2InputSchema, unsafeInput);
+        const page = await readValue(decodeTaskListV2, () =>
+          options.port.readTasks(withoutReadVersion(input), portSignal),
+        );
         if (
-          details.task.taskId !== input.taskId ||
-          details.activity.entries.length > input.activityLimit
+          page.ok &&
+          (page.value.limit !== input.limit || page.value.afterTaskId !== input.afterTaskId)
         ) {
           throw new AdapterRefusal('MALFORMED_REPRESENTATION');
         }
-        return Object.freeze({ ok: true as const, details });
+        return page;
+      }),
+    readAssignmentTargets: (unsafeInput: unknown, signal?: AbortSignal) =>
+      run(signal, async (portSignal) => {
+        const input = negotiate(ReadAssignmentTargetsV2InputSchema, unsafeInput);
+        const page = await readValue(decodeAssignmentTargetListV2, () =>
+          options.port.readAssignmentTargets(withoutReadVersion(input), portSignal),
+        );
+        if (
+          page.ok &&
+          (page.value.limit !== input.limit ||
+            page.value.afterPrincipalId !== input.afterPrincipalId)
+        ) {
+          throw new AdapterRefusal('MALFORMED_REPRESENTATION');
+        }
+        return page;
+      }),
+    readCoordinationTargets: (unsafeInput: unknown, signal?: AbortSignal) =>
+      run(signal, async (portSignal) => {
+        const input = negotiate(ReadCoordinationTargetsV2InputSchema, unsafeInput);
+        const page = await readValue(decodeCoordinationTargetListV2, () =>
+          options.port.readCoordinationTargets(withoutReadVersion(input), portSignal),
+        );
+        if (
+          page.ok &&
+          (page.value.limit !== input.limit || !sameCursor(page.value.after, input.after))
+        ) {
+          throw new AdapterRefusal('MALFORMED_REPRESENTATION');
+        }
+        return page;
+      }),
+    readEvents: (unsafeInput: unknown, signal?: AbortSignal) =>
+      run(signal, async (portSignal) => {
+        const input = negotiate(ReadEventsV2InputSchema, unsafeInput);
+        const page = await readValue(decodeEventListV2, () =>
+          options.port.readEvents(withoutReadVersion(input), portSignal),
+        );
+        if (
+          page.ok &&
+          (page.value.taskId !== input.taskId ||
+            page.value.limit !== input.limit ||
+            !sameEventCursor(page.value.after, input.after))
+        ) {
+          throw new AdapterRefusal('MALFORMED_REPRESENTATION');
+        }
+        return page;
       }),
     appendNote: (unsafeInput: unknown, signal?: AbortSignal) =>
       run(signal, async (portSignal) => {
         const input = negotiate(AppendTaskNoteV2InputSchema, unsafeInput);
-        const params = withoutRepresentation(input);
-        return mutation(input.taskId, () => options.port.appendNote(params, portSignal));
+        const receipt = decodeOrRefuse(
+          decodeTaskMutationReceiptV2,
+          await callPort(() => options.port.appendNote(withoutReadVersion(input), portSignal)),
+        );
+        if (
+          receipt.taskId !== input.taskId ||
+          receipt.command !== 'note' ||
+          receipt.taskVersion !== input.expectedVersion
+        ) {
+          throw new AdapterRefusal('MALFORMED_REPRESENTATION');
+        }
+        return Object.freeze({ ok: true as const, receipt });
       }),
     assignTask: (unsafeInput: unknown, signal?: AbortSignal) =>
       run(signal, async (portSignal) => {
         const input = negotiate(AssignTaskV2InputSchema, unsafeInput);
-        const params = withoutRepresentation(input);
-        return mutation(input.taskId, () => options.port.assignTask(params, portSignal));
+        const receipt = decodeOrRefuse(
+          decodeTaskMutationReceiptV2,
+          await callPort(() => options.port.assignTask(withoutReadVersion(input), portSignal)),
+        );
+        if (
+          receipt.taskId !== input.taskId ||
+          receipt.command !== 'assign' ||
+          receipt.taskVersion !== input.expectedVersion
+        ) {
+          throw new AdapterRefusal('MALFORMED_REPRESENTATION');
+        }
+        return Object.freeze({ ok: true as const, receipt });
       }),
   });
+}
+
+function sameCursor(
+  left: { readonly principalId: string; readonly clientId: string } | null,
+  right: { readonly principalId: string; readonly clientId: string } | null,
+): boolean {
+  if (left === null || right === null) return left === right;
+  return left.principalId === right.principalId && left.clientId === right.clientId;
+}
+
+function sameEventCursor(
+  left: { readonly occurredAt: string; readonly receiptId: string } | null,
+  right: { readonly occurredAt: string; readonly receiptId: string } | null,
+): boolean {
+  if (left === null || right === null) return left === right;
+  return left.occurredAt === right.occurredAt && left.receiptId === right.receiptId;
 }
