@@ -160,12 +160,7 @@ function negotiate<T extends { readVersion: number }>(
   }
   const parsed = schema.safeParse(snapshot);
   if (!parsed.success) throw new AdapterRefusal('INVALID_REQUEST');
-  // Cursor grammar runs only after the request is inside the byte bound. An over-budget
-  // request is already refused above, so this check does not apply to it.
-  if (
-    requestWithinPacketLimit(taskDetailsRequestByteLength(snapshot)) &&
-    !eventRequestCursorAccepted(parsed.data)
-  ) {
+  if (!eventRequestCursorAccepted(parsed.data)) {
     throw new AdapterRefusal('INVALID_REQUEST');
   }
   return parsed.data;

@@ -548,7 +548,11 @@ export const ReadEventsV2InputSchema = z
     limit: PageLimitSchema,
     after: EventCursorSchema.nullable(),
   })
-  .strict();
+  .strict()
+  .refine(
+    (value) => value.after === null || eventInstantAccepted(value.after.occurredAt),
+    'Event cursor instant is not accepted.',
+  );
 
 export const AppendTaskNoteV2InputSchema = z
   .object({

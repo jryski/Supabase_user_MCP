@@ -202,7 +202,7 @@ async function sdkFrame(output: unknown, requestId: string | number): Promise<st
 }
 
 describe('synthetic: negotiation, version conflict and registration', () => {
-  it('refuses a schema-valid request over 2048 bytes before calling the port', async () => {
+  it('refuses an over-2048-byte event request before calling the port', async () => {
     const injected = port();
     const occurredAt = `2026-01-01T00:00:00.${'1'.repeat(3000)}Z`;
     const input = {
@@ -212,13 +212,30 @@ describe('synthetic: negotiation, version conflict and registration', () => {
       limit: 1,
       after: { occurredAt, receiptId: RECEIPT },
     };
-    expect(ReadEventsV2InputSchema.safeParse(input).success).toBe(true);
+    expect(ReadEventsV2InputSchema.safeParse(input).success).toBe(false);
     expect(Buffer.byteLength(JSON.stringify(input))).toBeGreaterThan(
       MAX_TASK_DETAILS_REQUEST_BYTES,
     );
     const result = await createTaskDetailsAdapter({ port: injected }).readEvents(input);
     expect(result).toEqual(createTaskDetailsRefusal('INVALID_REQUEST'));
     expect(Object.isFrozen(result)).toBe(true);
+    expect(injected.readEvents).not.toHaveBeenCalled();
+  });
+
+  it('checks readVersion before the 2048-byte bound', async () => {
+    const injected = port();
+    const input = {
+      readVersion: 3 as const,
+      view: 'events' as const,
+      taskId: TASK,
+      limit: 1,
+      after: { occurredAt: `2026-01-01T00:00:00.${'1'.repeat(3000)}Z`, receiptId: RECEIPT },
+    };
+    expect(Buffer.byteLength(JSON.stringify(input))).toBeGreaterThan(
+      MAX_TASK_DETAILS_REQUEST_BYTES,
+    );
+    const result = await createTaskDetailsAdapter({ port: injected }).readEvents(input);
+    expect(result).toEqual(createTaskDetailsRefusal('UNSUPPORTED_REPRESENTATION'));
     expect(injected.readEvents).not.toHaveBeenCalled();
   });
 
@@ -236,7 +253,7 @@ describe('synthetic: negotiation, version conflict and registration', () => {
     };
     for (const input of [fraction13, preEpoch]) {
       const injected = port();
-      expect(ReadEventsV2InputSchema.safeParse(input).success).toBe(true);
+      expect(ReadEventsV2InputSchema.safeParse(input).success).toBe(false);
       expect(Buffer.byteLength(JSON.stringify(input))).toBeLessThanOrEqual(
         MAX_TASK_DETAILS_REQUEST_BYTES,
       );
@@ -271,7 +288,56 @@ describe('synthetic: negotiation, version conflict and registration', () => {
       after,
     });
     expect(result.ok).toBe(true);
+    expect(
+      ReadEventsV2InputSchema.safeParse({
+        readVersion: 2,
+        view: 'events',
+        taskId: TASK,
+        limit: 1,
+        after,
+      }).success,
+    ).toBe(true);
     expect(accepted.readEvents).toHaveBeenCalledTimes(1);
+  });
+
+  it('reads readVersion from the snapshot, not from a later or inherited value', async () => {
+    let reads = 0;
+    const flipping = port();
+    const flipped = await createTaskDetailsAdapter({ port: flipping }).readTask({
+      view: 'task',
+      taskId: TASK,
+      expectedVersion: VERSION,
+      get readVersion() {
+        reads += 1;
+        return reads === 1 ? 2 : 3;
+      },
+    });
+    expect(flipped.ok).toBe(true);
+    expect(reads).toBe(1);
+    expect(flipping.readTask).toHaveBeenCalledTimes(1);
+
+    const inherited = port();
+    const hidden = await createTaskDetailsAdapter({ port: inherited }).readTask(
+      Object.assign(Object.create({ readVersion: 2 }), {
+        view: 'task',
+        taskId: TASK,
+        expectedVersion: VERSION,
+      }),
+    );
+    expect(hidden).toEqual(createTaskDetailsRefusal('UNSUPPORTED_REPRESENTATION'));
+    expect(inherited.readTask).not.toHaveBeenCalled();
+  });
+
+  it('refuses a snapshot that is not a plain object', async () => {
+    for (const input of [{ toJSON: () => null }, { toJSON: () => 5 }]) {
+      const injected = port();
+      const result = await createTaskDetailsAdapter({ port: injected }).readTask(input);
+      expect(result).toEqual(createTaskDetailsRefusal('INVALID_REQUEST'));
+      expect(result).toMatchObject({ refusal: { retryable: false } });
+      expect(Object.isFrozen(result)).toBe(true);
+      expect(Object.isFrozen((result as { refusal: object }).refusal)).toBe(true);
+      expect(injected.readTask).not.toHaveBeenCalled();
+    }
   });
 
   it('maps a throwing readVersion getter on the caller input to INVALID_REQUEST', async () => {
