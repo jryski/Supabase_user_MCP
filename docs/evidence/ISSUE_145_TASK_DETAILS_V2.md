@@ -33,7 +33,7 @@ Files:
 - `tasks`: keyset by task id.
 - `assignment_targets`: typed principal identity, keyset by principal id. Coverage is exactly `completeLibrary: false` and `eligibleTargetsGrantAuthority: false`.
 - `coordination_targets`: the same principal plus a distinct `clientId`, with the same coverage flags.
-- `events`: keyset by parsed timestamp plus receipt id, scoped to one `taskId`. Instants are compared after parsing, so offset and fractional-second forms order chronologically. The packet does not define a cross-task event page; that shape is not implemented. Coverage is exactly `completeHistory: false`, `actualStoredAttributionOnly: true` and `approvalInferred: false`.
+- `events`: keyset by parsed timestamp plus receipt id, scoped to one `taskId`. Instants are compared after parsing, including fractions below a millisecond, so offset forms and same-millisecond events order chronologically and a cursor does not stick. An instant before 1970 is refused. The packet does not define a cross-task event page; that shape is not implemented. Coverage is exactly `completeHistory: false`, `actualStoredAttributionOnly: true` and `approvalInferred: false`.
 - Only `note` and `submit` may carry an evidence segment. Stored attribution is evidence. Approval is not inferred.
 - Eligible targets do not grant authority. The packet does not define a withdrawn-target wire field. An unavailable assignment target is a port denial, not a status on the target list.
 
@@ -43,7 +43,7 @@ A null keyset cursor means the provider returned no further key. It is not a cla
 
 A segment is `{ text, offset, totalChars, nextOffset, complete }`. Offsets count Unicode code points. Coverage must be exact: `nextOffset = offset + returned`, and `complete` is true only when `nextOffset = totalChars`.
 
-The packet does not state per-field character ceilings. List segments are capped more tightly than detail segments. The detail body cap is inside the 27000-byte structured ceiling of the emitted success wrapper `{ ok: true, value }`. The largest legal body wraps without throwing.
+The packet does not state per-field character ceilings. `DETAIL_BODY_MAX_CHARS` is 8000 Unicode code points, not 8000 bytes. A body of 8000 4-byte characters can exceed the 27000-byte structured ceiling of the emitted `{ ok: true, value }` wrapper and is refused. List segments are tighter. The largest body that stays under that ceiling wraps without throwing.
 
 Packet ceilings, all enforced:
 
@@ -53,7 +53,7 @@ Packet ceilings, all enforced:
 - complete result: 60000 bytes
 - timeout: no more than 5000ms, and also no more than the shared governor (`MAX_TOOL_EXECUTION_MS`, 2000ms)
 
-Stored text is labelled untrusted. `structuredContent` for a successful read is the wrapper `{ ok: true, value }`, and that wrapper is what the 27000-byte ceiling measures. A result that exceeds the structured ceiling or the complete-result ceiling is `RESPONSE_LIMIT_EXCEEDED`.
+Stored text is labelled untrusted. `structuredContent` for a successful read is the wrapper `{ ok: true, value }`, and that wrapper is what the 27000-byte ceiling measures. A mutation result keeps `{ ok: true, receipt }` as its structured content. A refusal is returned as itself and is never labelled `ok: true`. A result that exceeds the structured ceiling or the complete-result ceiling is `RESPONSE_LIMIT_EXCEEDED`.
 
 NUL, other C0 controls except tab, LF and CR, DEL, and lone surrogates are rejected and never rewritten.
 
@@ -61,7 +61,7 @@ NUL, other C0 controls except tab, LF and CR, DEL, and lone surrogates are rejec
 
 The adapter is constructed with `createTaskDetailsAdapter({ port, timeoutMs? })`. The port is injected. Inputs have no caller identity, client, session, workstream, role, SQL, URL or credential. Authorization denials `not_found`, `wrong_workstream`, `wrong_client` and `wrong_session` are the same `NOT_AVAILABLE` bytes.
 
-A throw while reading a port result, or a throw after the request has been accepted, becomes the frozen `UPSTREAM_UNAVAILABLE` refusal. A throw while measuring the request becomes `INVALID_REQUEST`. The outer refusal and its inner `refusal` object are both frozen. The thrown text is not returned.
+The adapter copies the input with one JSON snapshot before it measures or parses that input. A throw while unwrapping a port result becomes the frozen `UPSTREAM_UNAVAILABLE` refusal. A throw from a getter inside a value already accepted for decoding becomes the frozen `INTERNAL_ERROR` refusal and is not retryable. A throw while measuring the request becomes `INVALID_REQUEST`. The outer refusal and its inner `refusal` object are both frozen. The thrown text is not returned.
 
 An already-aborted caller makes no port call. A deadline aborts the port signal. A mid-flight cancel aborts the port signal and the abort listener is removed when the call settles.
 

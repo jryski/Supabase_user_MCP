@@ -28,9 +28,9 @@ export const MAX_TASK_DETAILS_TIMEOUT_MS = 5_000;
 export const MAX_PAGE_SIZE = 10;
 
 /**
- * The packet does not state per-field character ceilings. Detail segments may be longer than list
- * segments. The body cap is inside the structured ceiling of the emitted `{ ok: true, value }`
- * wrapper: the largest legal body wraps without throwing. List segments are tighter.
+ * The packet does not state per-field character ceilings. `DETAIL_BODY_MAX_CHARS` is 8000 code
+ * points, not 8000 bytes. A body of 8000 4-byte characters can exceed the 27000-byte structured
+ * ceiling of the emitted `{ ok: true, value }` wrapper and is refused. List segments are tighter.
  */
 export const DETAIL_TITLE_MAX_CHARS = 240;
 export const DETAIL_BODY_MAX_CHARS = 8_000;
@@ -397,11 +397,49 @@ const EventCursorSchema = z
   })
   .strict();
 
-/** Normalized instant, then receipt id. Raw timestamp strings are not ordered. */
+/** Full-precision UTC instant, then receipt id. Milliseconds alone are not enough. */
 function eventKey(occurredAt: string, receiptId: string): string {
-  const instant = Date.parse(occurredAt);
-  const normalized = Number.isFinite(instant) ? String(instant).padStart(16, '0') : 'invalid';
+  const instant = instantSortKey(occurredAt);
+  const normalized = instant ?? 'invalid';
   return `${normalized}\u0000${receiptId}`;
+}
+
+function instantSortKey(occurredAt: string): string | null {
+  const match =
+    /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.(\d+))?(Z|[+-]\d{2}:\d{2})$/u.exec(
+      occurredAt,
+    );
+  if (match === null) return null;
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  const hour = Number(match[4]);
+  const minute = Number(match[5]);
+  const second = Number(match[6]);
+  const fraction = match[7] ?? '';
+  if (fraction.length > 12 || hour > 23 || minute > 59 || second > 60) return null;
+  const probe = new Date(Date.UTC(year, month - 1, day, hour, minute, second));
+  if (
+    probe.getUTCFullYear() !== year ||
+    probe.getUTCMonth() !== month - 1 ||
+    probe.getUTCDate() !== day ||
+    probe.getUTCHours() !== hour ||
+    probe.getUTCMinutes() !== minute ||
+    probe.getUTCSeconds() !== second
+  ) {
+    return null;
+  }
+  const zone = match[8] ?? 'Z';
+  let offsetMs = 0;
+  if (zone !== 'Z') {
+    const sign = zone.startsWith('-') ? -1 : 1;
+    offsetMs = sign * (Number(zone.slice(1, 3)) * 60 + Number(zone.slice(4, 6))) * 60_000;
+  }
+  const instant = probe.getTime() - offsetMs;
+  if (!Number.isFinite(instant) || instant < 0) return null;
+  const frac12 = fraction.padEnd(12, '0');
+  const normalized = `${String(instant).padStart(16, '0')}${frac12}`;
+  return normalized;
 }
 
 export const EventListV2Schema = z
@@ -419,10 +457,11 @@ export const EventListV2Schema = z
   .refine((value) => {
     if (value.events.length > value.limit) return false;
     const keys = value.events.map((event) => eventKey(event.occurredAt, event.receiptId));
+    if (keys.some((key) => key.startsWith('invalid'))) return false;
     if (!increasing(keys)) return false;
     if (value.after !== null) {
       const cursor = eventKey(value.after.occurredAt, value.after.receiptId);
-      if (keys.some((key) => key <= cursor)) return false;
+      if (cursor.startsWith('invalid') || keys.some((key) => key <= cursor)) return false;
     }
     if (value.events.length === 0) return value.nextAfter === null;
     const last = value.events.at(-1);
@@ -653,8 +692,17 @@ function isSuccessWrapper(output: unknown): output is { ok: true; value: unknown
   );
 }
 
+function isReceiptResult(output: object): boolean {
+  return (output as { ok?: unknown }).ok === true && Object.hasOwn(output, 'receipt');
+}
+
 function emittedStructured(output: unknown): unknown {
-  if (isSuccessWrapper(output)) return output;
+  if (
+    isSuccessWrapper(output) ||
+    (typeof output === 'object' && output !== null && isReceiptResult(output))
+  ) {
+    return output;
+  }
   if (typeof output === 'object' && output !== null && (output as { ok?: unknown }).ok === false) {
     return output;
   }

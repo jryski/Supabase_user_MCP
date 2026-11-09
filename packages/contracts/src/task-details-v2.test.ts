@@ -364,6 +364,42 @@ describe('synthetic: packet byte bounds', () => {
       value: accepted,
     });
     expect(frame).toBeGreaterThan(JSON.stringify(result).length);
+    const emoji = '😀';
+    const under = detail({ body: segment(emoji.repeat(6600), DETAIL_BODY_MAX_CHARS) });
+    const seam = detail({ body: segment(emoji.repeat(6601), DETAIL_BODY_MAX_CHARS) });
+    const underWrapped = { ok: true as const, value: under };
+    const seamWrapped = { ok: true as const, value: seam };
+    expect(Buffer.byteLength(JSON.stringify(under))).toBeLessThanOrEqual(27_000);
+    expect(Buffer.byteLength(JSON.stringify(underWrapped))).toBeLessThanOrEqual(27_000);
+    expect(Buffer.byteLength(JSON.stringify(seam))).toBeLessThanOrEqual(27_000);
+    expect(Buffer.byteLength(JSON.stringify(seamWrapped))).toBeGreaterThan(27_000);
+    expect(() => decodeTaskDetailV2(under)).not.toThrow();
+    expect(() => createTaskDetailsV2McpResult(underWrapped)).not.toThrow();
+    expect(() => decodeTaskDetailV2(seam)).toThrow(
+      expect.objectContaining({ code: 'RESPONSE_LIMIT_EXCEEDED' }),
+    );
+    const refusal = createTaskDetailsRefusal('NOT_AVAILABLE');
+    const refusalResult = createTaskDetailsV2McpResult(refusal);
+    expect(refusalResult.structuredContent).toEqual(refusal);
+    expect((refusalResult.structuredContent as { ok: boolean }).ok).toBe(false);
+    const receipt = {
+      ok: true as const,
+      receipt: {
+        readVersion: 2 as const,
+        command: 'note' as const,
+        receiptId: RECEIPT,
+        taskId: TASK,
+        occurredAt: TIME,
+        taskVersion: VERSION,
+        receiptVersion: VERSION_B,
+        actor: { kind: 'human' as const, id: HUMAN },
+        clientId: CLIENT,
+      },
+    };
+    const receiptResult = createTaskDetailsV2McpResult(receipt);
+    expect(receiptResult.structuredContent).toEqual(receipt);
+    const text = receiptResult.content[0]?.text.slice(TASK_DETAILS_UNTRUSTED_TEXT_PREFIX.length);
+    expect(JSON.parse(text ?? '')).toEqual(receipt);
   });
 
   it('fails closed on forbidden text and a non-plain prototype', () => {
@@ -390,6 +426,9 @@ describe('synthetic: packet byte bounds', () => {
       evidence: segment('synthetic note', 400),
     };
     expect(decodeTaskMutationReceiptV2(note).command).toBe('note');
+    expect(() => decodeTaskMutationReceiptV2({ ...note, occurredAt: 'not-a-timestamp' })).toThrow(
+      expect.objectContaining({ code: 'MALFORMED_REPRESENTATION' }),
+    );
     expect(() => decodeTaskMutationReceiptV2({ ...note, command: 'assign' })).toThrow(
       TaskDetailsDecodeError,
     );
@@ -503,6 +542,48 @@ describe('synthetic: keyset order, coverage flags, arrays and text', () => {
       receiptId: eventRow('2026-01-01T00:00:03Z', 4).receiptId,
     });
     expect(() => decodeEventListV2(early)).toThrow(TaskDetailsDecodeError);
+    const sameMillisecond = eventPage([
+      eventRow('2026-01-01T00:00:00.000100Z', 3),
+      eventRow('2026-01-01T00:00:00.000200Z', 2),
+    ]);
+    expect(decodeEventListV2(sameMillisecond).events).toHaveLength(2);
+    expect(() =>
+      decodeEventListV2(
+        eventPage([
+          eventRow('2026-01-01T00:00:00.000200Z', 2),
+          eventRow('2026-01-01T00:00:00.000100Z', 3),
+        ]),
+      ),
+    ).toThrow(TaskDetailsDecodeError);
+    const nextPage = eventPage([eventRow('2026-01-01T00:00:00.000200Z', 2)], {
+      occurredAt: '2026-01-01T00:00:00.000100Z',
+      receiptId: eventRow('2026-01-01T00:00:00.000100Z', 3).receiptId,
+    });
+    expect(decodeEventListV2(nextPage).events).toHaveLength(1);
+    expect(() => decodeEventListV2(eventPage([eventRow('1969-12-31T23:59:59Z', 2)]))).toThrow(
+      TaskDetailsDecodeError,
+    );
+    expect(() =>
+      decodeEventListV2(
+        eventPage([eventRow('1969-12-31T23:59:58Z', 2), eventRow('1969-12-31T23:59:59Z', 3)]),
+      ),
+    ).toThrow(TaskDetailsDecodeError);
+    expect(
+      decodeEventListV2(
+        eventPage([eventRow('1970-01-01T00:00:00.999Z', 2), eventRow('1970-01-01T00:00:01Z', 3)]),
+      ).events,
+    ).toHaveLength(2);
+    expect(
+      decodeEventListV2(
+        eventPage([eventRow('1970-01-01T00:00:09Z', 2), eventRow('1970-01-01T00:00:10Z', 3)]),
+      ).events,
+    ).toHaveLength(2);
+    expect(() =>
+      decodeEventListV2(
+        eventPage([eventRow('1970-01-01T00:00:10Z', 2), eventRow('1970-01-01T00:00:09Z', 3)]),
+      ),
+    ).toThrow(TaskDetailsDecodeError);
+    expect(DETAIL_BODY_MAX_CHARS).toBe(8000);
   });
 
   it('rejects a v1-tagged array and an oversized array as malformed', () => {

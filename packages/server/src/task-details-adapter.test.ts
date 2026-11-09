@@ -332,8 +332,24 @@ describe('synthetic: denials, throws, deadline and bounds', () => {
       },
     });
     const trapped = await createTaskDetailsAdapter({ port: port() }).readTask(input);
-    expect(trapped).toEqual(createTaskDetailsRefusal('UPSTREAM_UNAVAILABLE'));
+    expect(trapped.ok).toBe(true);
+    expect(reads).toBe(1);
     expect(JSON.stringify(trapped)).not.toContain(secret);
+
+    const throwingValue = {
+      readVersion: 2,
+      view: 'task',
+      get taskId() {
+        throw new Error(secret);
+      },
+    };
+    const internal = await createTaskDetailsAdapter({
+      port: port({ readTask: async () => ({ ok: true, value: throwingValue }) as never }),
+    }).readTask(readInput());
+    expect(internal).toEqual(createTaskDetailsRefusal('INTERNAL_ERROR'));
+    expect(internal).toMatchObject({ refusal: { retryable: false } });
+    expect(JSON.stringify(internal)).not.toContain(secret);
+    expect(Object.isFrozen(internal)).toBe(true);
   });
 
   it('aborts the port on deadline, mid-flight cancel, and a pre-aborted signal', async () => {

@@ -145,14 +145,16 @@ function negotiate<T extends { readVersion: number }>(
   if ((unsafeInput as Record<string, unknown>).readVersion !== 2) {
     throw new AdapterRefusal('UNSUPPORTED_REPRESENTATION');
   }
-  let bytes: number;
+  let snapshot: unknown;
   try {
-    bytes = taskDetailsRequestByteLength(unsafeInput);
+    snapshot = JSON.parse(JSON.stringify(unsafeInput)) as unknown;
   } catch {
     throw new AdapterRefusal('INVALID_REQUEST');
   }
-  if (!requestWithinPacketLimit(bytes)) throw new AdapterRefusal('INVALID_REQUEST');
-  const parsed = schema.safeParse(unsafeInput);
+  if (!requestWithinPacketLimit(taskDetailsRequestByteLength(snapshot))) {
+    throw new AdapterRefusal('INVALID_REQUEST');
+  }
+  const parsed = schema.safeParse(snapshot);
   if (!parsed.success) throw new AdapterRefusal('INVALID_REQUEST');
   return parsed.data;
 }
