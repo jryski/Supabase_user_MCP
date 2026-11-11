@@ -85,6 +85,16 @@ The packet is silent on these points. They stay fail-closed and are not given in
 
 No SQL is shipped. A future database-owned read would take the same finite parameters as the port: identifiers, an exact expected version on a detail read, a page limit of at most 10, and a keyset cursor. Identity would come from the authenticated session, never from parameters. That RPC does not exist in this change.
 
+## Shared references and cycles
+
+Issue #151. The decoder walks a value before schema checks. A repeated plain object is a shared reference, not a cycle, when the two uses are not nested. Sibling event records may share one actor. Sibling task records may share one principal or one text segment. One array instance may hold those sibling records. A JSON clone of the same page decodes to the same value.
+
+A cycle is still refused. That includes a record that contains itself, a child that points at an ancestor, an object and an array that contain each other, and two records that point at each other.
+
+Red on the previous candidate: the shared-reference cases were refused. Green on this candidate: those cases are accepted and the cycle cases stay refused. The candidate head is recorded in the PR and review evidence, because this file cannot contain its own commit sha.
+
+What ran: the repository check on Node 22 (format, lint, typecheck, build, and the test suite), markdown lint of this note, and a local leak scan with a dummy pattern. Verification is synthetic. The port is in-memory. This is not runtime acceptance, and the consumer v1 gate stays open.
+
 ## Remaining integration work
 
 - Export the contract and register tools only after review.

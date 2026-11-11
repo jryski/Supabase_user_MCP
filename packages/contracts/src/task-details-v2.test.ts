@@ -844,6 +844,91 @@ describe('synthetic: keyset order, coverage flags, arrays and text', () => {
     ).toThrow(TaskDetailsDecodeError);
   });
 
+  it('accepts one shared actor on a schema-valid two-event page', () => {
+    const actor = { kind: 'human' as const, id: HUMAN };
+    const events = [
+      { ...eventRow('2026-01-01T00:00:00Z', 2), actor },
+      { ...eventRow('2026-01-01T00:00:01Z', 3), actor },
+    ];
+    const page = eventPage(events);
+    expect(events[0]?.actor).toBe(events[1]?.actor);
+    const decoded = decodeEventListV2(page);
+    expect(decoded).toEqual(decodeEventListV2(JSON.parse(JSON.stringify(page))));
+    expect(decoded.events).toHaveLength(2);
+  });
+
+  it('accepts a shared principal and segment across sibling task records', () => {
+    const principal = { kind: 'human' as const, id: HUMAN };
+    const title = segment('Shared title', LIST_SEGMENT_MAX_CHARS);
+    const task = (taskId: string) => ({
+      taskId,
+      title,
+      status: 'open' as const,
+      version: VERSION,
+      body: title,
+      assignedPrincipal: principal,
+      workstreamId: WORKSTREAM,
+      citation: segment('', LIST_SEGMENT_MAX_CHARS),
+    });
+    const page = {
+      readVersion: 2 as const,
+      view: 'tasks' as const,
+      limit: 2,
+      afterTaskId: null,
+      nextAfterTaskId: TASK_B,
+      tasks: [task(TASK), task(TASK_B)],
+    };
+    expect(page.tasks[0]?.title).toBe(page.tasks[1]?.title);
+    expect(page.tasks[0]?.title).toBe(page.tasks[0]?.body);
+    expect(page.tasks[0]?.assignedPrincipal).toBe(page.tasks[1]?.assignedPrincipal);
+    const decoded = decodeTaskListV2(page);
+    expect(decoded).toEqual(decodeTaskListV2(JSON.parse(JSON.stringify(page))));
+  });
+
+  it('accepts one array instance shared by sibling records', () => {
+    const actor = { kind: 'human' as const, id: HUMAN };
+    const shared = [
+      { ...eventRow('2026-01-01T00:00:00Z', 2), actor },
+      { ...eventRow('2026-01-01T00:00:01Z', 3), actor },
+    ];
+    const left = { events: shared };
+    const right = { events: shared };
+    const page = eventPage(shared);
+    expect(left.events).toBe(right.events);
+    expect(page.events).toBe(shared);
+    expect(shared[0]?.actor).toBe(shared[1]?.actor);
+    const decoded = decodeEventListV2(page);
+    expect(decoded).toEqual(decodeEventListV2(JSON.parse(JSON.stringify(page))));
+    expect(decoded.events).toHaveLength(2);
+  });
+
+  it('rejects self, ancestor, object-array, and mutual cycles', () => {
+    const self: Record<string, unknown> = { readVersion: 2 };
+    self.self = self;
+    expect(() => decodeTaskDetailV2(self)).toThrow(
+      expect.objectContaining({ code: 'MALFORMED_REPRESENTATION' }),
+    );
+    const grandparent: Record<string, unknown> = { readVersion: 2, child: {} };
+    const child = grandparent.child as Record<string, unknown>;
+    child.deep = { back: grandparent };
+    expect(() => decodeTaskDetailV2(grandparent)).toThrow(
+      expect.objectContaining({ code: 'MALFORMED_REPRESENTATION' }),
+    );
+    const array: unknown[] = [];
+    const record: Record<string, unknown> = { readVersion: 2, array };
+    array.push(record);
+    expect(() => decodeTaskDetailV2(record)).toThrow(
+      expect.objectContaining({ code: 'MALFORMED_REPRESENTATION' }),
+    );
+    const left: Record<string, unknown> = { readVersion: 2 };
+    const right: Record<string, unknown> = {};
+    left.other = right;
+    right.other = left;
+    expect(() => decodeTaskDetailV2(left)).toThrow(
+      expect.objectContaining({ code: 'MALFORMED_REPRESENTATION' }),
+    );
+  });
+
   it('rejects an acting-identity field on a detail read', () => {
     expect(
       ReadTaskDetailV2InputSchema.safeParse({

@@ -612,16 +612,20 @@ function assertDecodable(value: unknown, seen: Set<object>): void {
   if (typeof value !== 'object' || value === null) return;
   if (seen.has(value)) throw new TaskDetailsDecodeError('MALFORMED_REPRESENTATION');
   seen.add(value);
-  if (Array.isArray(value)) {
-    for (const item of value) assertDecodable(item, seen);
-    return;
-  }
-  if (!isPlainRecord(value)) throw new TaskDetailsDecodeError('MALFORMED_REPRESENTATION');
-  if (Object.hasOwn(value, '__proto__')) {
-    throw new TaskDetailsDecodeError('MALFORMED_REPRESENTATION');
-  }
-  for (const key of Object.keys(value)) {
-    assertDecodable((value as Record<string, unknown>)[key], seen);
+  try {
+    if (Array.isArray(value)) {
+      for (const item of value) assertDecodable(item, seen);
+      return;
+    }
+    if (!isPlainRecord(value)) throw new TaskDetailsDecodeError('MALFORMED_REPRESENTATION');
+    if (Object.hasOwn(value, '__proto__')) {
+      throw new TaskDetailsDecodeError('MALFORMED_REPRESENTATION');
+    }
+    for (const key of Object.keys(value)) {
+      assertDecodable((value as Record<string, unknown>)[key], seen);
+    }
+  } finally {
+    seen.delete(value);
   }
 }
 

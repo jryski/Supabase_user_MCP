@@ -6,6 +6,7 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   createTaskDetailsRefusal,
   createTaskDetailsV2McpResult,
+  decodeEventListV2,
   MAX_PAGE_SIZE,
   MAX_TASK_DETAILS_REQUEST_BYTES,
   MAX_TASK_DETAILS_TIMEOUT_MS,
@@ -357,6 +358,53 @@ describe('synthetic: negotiation, version conflict and registration', () => {
     expect(JSON.stringify(result)).not.toContain(secret);
     expect(Object.isFrozen(result)).toBe(true);
     expect(injected.readTask).not.toHaveBeenCalled();
+  });
+
+  it('accepts a shared actor object on an event page from the port', async () => {
+    const actor = { kind: 'human' as const, id: HUMAN };
+    const first = {
+      command: 'create' as const,
+      receiptId: '00000000-0000-4000-8000-000000000002',
+      occurredAt: '2026-01-01T00:00:00Z',
+      taskVersion: VERSION,
+      receiptVersion: VERSION,
+      actor,
+      clientId: CLIENT,
+    };
+    const second = {
+      ...first,
+      receiptId: '00000000-0000-4000-8000-000000000003',
+      occurredAt: '2026-01-01T00:00:01Z',
+      actor,
+    };
+    const value = {
+      readVersion: 2 as const,
+      view: 'events' as const,
+      taskId: TASK,
+      limit: 2,
+      after: null,
+      nextAfter: { occurredAt: second.occurredAt, receiptId: second.receiptId },
+      events: [first, second],
+      coverage: {
+        completeHistory: false as const,
+        actualStoredAttributionOnly: true as const,
+        approvalInferred: false as const,
+      },
+    };
+    expect(value.events[0]?.actor).toBe(value.events[1]?.actor);
+    const injected = port({ readEvents: vi.fn(async () => ok(value)) });
+    const result = await createTaskDetailsAdapter({ port: injected }).readEvents({
+      readVersion: 2,
+      view: 'events',
+      taskId: TASK,
+      limit: 2,
+      after: null,
+    });
+    expect(result).toEqual({
+      ok: true,
+      value: decodeEventListV2(JSON.parse(JSON.stringify(value))),
+    });
+    expect(injected.readEvents).toHaveBeenCalledTimes(1);
   });
 
   it('keeps the adapter and contract unregistered', () => {
