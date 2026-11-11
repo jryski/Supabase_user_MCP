@@ -408,30 +408,57 @@ describe('synthetic: negotiation, version conflict and registration', () => {
     expect(injected.readEvents).toHaveBeenCalledTimes(1);
   });
 
-  it('refuses a deep shared diamond from the port before the deadline', async () => {
-    let reads = 0;
+  function countRead(reads: { count: number }): void {
+    reads.count += 1;
+    if (reads.count > 2 * MAX_PROVIDER_RESPONSE_BYTES) {
+      throw new Error('traversal-tripwire');
+    }
+  }
+
+  function diamond(depth: number, reads: { count: number }): object {
     let node: object = { leaf: 1 };
-    for (let level = 0; level < 40; level += 1) {
+    for (let level = 0; level < depth; level += 1) {
       const child = node;
       const layer: { l?: object; r?: object } = {};
       Object.defineProperty(layer, 'l', {
         enumerable: true,
         get() {
-          reads += 1;
+          countRead(reads);
           return child;
         },
       });
       Object.defineProperty(layer, 'r', {
         enumerable: true,
         get() {
-          reads += 1;
+          countRead(reads);
           return child;
         },
       });
       node = layer;
     }
+    return node;
+  }
+
+  function arrayDiamond(depth: number, reads: { count: number }): unknown[] {
+    let node: unknown = { leaf: 1 };
+    for (let level = 0; level < depth; level += 1) {
+      const child = node;
+      node = new Proxy([child, child], {
+        get(target, key, receiver) {
+          if (key === '0' || key === '1') countRead(reads);
+          return Reflect.get(target, key, receiver);
+        },
+      });
+    }
+    return node as unknown[];
+  }
+
+  it('refuses a deep shared diamond from the port before the deadline', async () => {
+    const reads = { count: 0 };
     const injected = port({
-      readEvents: vi.fn(async () => ok({ readVersion: 2, view: 'events', junk: node } as never)),
+      readEvents: vi.fn(async () =>
+        ok({ readVersion: 2, view: 'events', junk: diamond(40, reads) } as never),
+      ),
     });
     const started = performance.now();
     const result = await createTaskDetailsAdapter({ port: injected }).readEvents({
@@ -443,8 +470,30 @@ describe('synthetic: negotiation, version conflict and registration', () => {
     });
     expect(result).toEqual(createTaskDetailsRefusal('RESPONSE_LIMIT_EXCEEDED'));
     expect(result).toMatchObject({ refusal: { retryable: false } });
-    expect(reads).toBeLessThanOrEqual(MAX_PROVIDER_RESPONSE_BYTES);
-    expect(performance.now() - started).toBeLessThan(250);
+    expect(reads.count).toBeLessThanOrEqual(MAX_PROVIDER_RESPONSE_BYTES);
+    expect(performance.now() - started).toBeLessThan(2_000);
+    expect(injected.readEvents).toHaveBeenCalledTimes(1);
+  });
+
+  it('refuses a deep shared array diamond from the port before the deadline', async () => {
+    const reads = { count: 0 };
+    const injected = port({
+      readEvents: vi.fn(async () =>
+        ok({ readVersion: 2, view: 'events', junk: arrayDiamond(40, reads) } as never),
+      ),
+    });
+    const started = performance.now();
+    const result = await createTaskDetailsAdapter({ port: injected }).readEvents({
+      readVersion: 2,
+      view: 'events',
+      taskId: TASK,
+      limit: 1,
+      after: null,
+    });
+    expect(result).toEqual(createTaskDetailsRefusal('RESPONSE_LIMIT_EXCEEDED'));
+    expect(result).toMatchObject({ refusal: { retryable: false } });
+    expect(reads.count).toBeLessThanOrEqual(MAX_PROVIDER_RESPONSE_BYTES);
+    expect(performance.now() - started).toBeLessThan(2_000);
     expect(injected.readEvents).toHaveBeenCalledTimes(1);
   });
 

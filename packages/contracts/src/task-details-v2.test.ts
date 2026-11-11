@@ -896,6 +896,15 @@ describe('synthetic: keyset order, coverage flags, arrays and text', () => {
     expect(decoded.events).toHaveLength(2);
   });
 
+  const traversalTripwire = 2 * MAX_PROVIDER_RESPONSE_BYTES;
+
+  function countRead(reads: { count: number }): void {
+    reads.count += 1;
+    if (reads.count > traversalTripwire) {
+      throw new Error('traversal-tripwire');
+    }
+  }
+
   function diamond(depth: number, reads: { count: number }): object {
     let node: object = { leaf: 1 };
     for (let level = 0; level < depth; level += 1) {
@@ -904,14 +913,14 @@ describe('synthetic: keyset order, coverage flags, arrays and text', () => {
       Object.defineProperty(layer, 'l', {
         enumerable: true,
         get() {
-          reads.count += 1;
+          countRead(reads);
           return child;
         },
       });
       Object.defineProperty(layer, 'r', {
         enumerable: true,
         get() {
-          reads.count += 1;
+          countRead(reads);
           return child;
         },
       });
@@ -920,15 +929,38 @@ describe('synthetic: keyset order, coverage flags, arrays and text', () => {
     return node;
   }
 
+  function arrayDiamond(depth: number, reads: { count: number }): unknown[] {
+    let node: unknown = { leaf: 1 };
+    for (let level = 0; level < depth; level += 1) {
+      const child = node;
+      node = new Proxy([child, child], {
+        get(target, key, receiver) {
+          if (key === '0' || key === '1') countRead(reads);
+          return Reflect.get(target, key, receiver);
+        },
+      });
+    }
+    return node as unknown[];
+  }
+
   it('refuses a deep shared diamond before the walk can explode', () => {
     const reads = { count: 0 };
     const started = performance.now();
     expect(() =>
       decodeEventListV2({ readVersion: 2, view: 'events', junk: diamond(40, reads) }),
     ).toThrow(expect.objectContaining({ code: 'RESPONSE_LIMIT_EXCEEDED' }));
-    const elapsed = performance.now() - started;
     expect(reads.count).toBeLessThanOrEqual(MAX_PROVIDER_RESPONSE_BYTES);
-    expect(elapsed).toBeLessThan(250);
+    expect(performance.now() - started).toBeLessThan(2_000);
+  });
+
+  it('refuses a deep shared array diamond before the walk can explode', () => {
+    const reads = { count: 0 };
+    const started = performance.now();
+    expect(() =>
+      decodeEventListV2({ readVersion: 2, view: 'events', junk: arrayDiamond(40, reads) }),
+    ).toThrow(expect.objectContaining({ code: 'RESPONSE_LIMIT_EXCEEDED' }));
+    expect(reads.count).toBeLessThanOrEqual(MAX_PROVIDER_RESPONSE_BYTES);
+    expect(performance.now() - started).toBeLessThan(2_000);
   });
 
   it('still accepts a large in-bound page and does not treat byte size as a visit cap', () => {

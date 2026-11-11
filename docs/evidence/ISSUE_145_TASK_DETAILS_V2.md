@@ -93,6 +93,10 @@ A cycle is still refused. That includes a record that contains itself, a child t
 
 The walk also counts every value it enters and stops at the provider byte bound. A kept JSON value costs at least one byte, so a page inside that bound cannot need more visits. The refusal is the same response-limit code as an oversized provider payload, and it is not retryable. Explicit undefined is still counted, so a page full of omitted values can be refused even when its JSON is small. That keeps the walk finite.
 
+The budget runs before the version check. A value that is both over the visit budget and not version 2 is refused as over the response limit, not as an unsupported version.
+
+One known limit remains. An in-process port can expose an enumerable accessor that returns a primitive on the first read and a deep chain on the second. The budgeted walk sees the primitive, and later serialization expands the chain. The time is the same as before this budget. A later change could snapshot the value or reject accessor properties. This note does not change that behavior.
+
 Red on the previous candidate: shared references were refused, and a shared diamond of modest depth ran long enough that the visit count was not bounded. Green on this candidate: shared references are accepted, cycles stay refused, and a deep shared diamond is refused immediately. The candidate head is recorded in the PR and review evidence, because this file cannot contain its own commit sha.
 
 What ran: the repository check on Node 22 (format, lint, typecheck, build, and the test suite), markdown lint of this note, and a local leak scan with a dummy pattern. Verification is synthetic. The port is in-memory. This is not runtime acceptance, and the consumer v1 gate stays open.
