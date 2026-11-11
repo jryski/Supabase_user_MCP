@@ -8,6 +8,7 @@ import {
   createTaskDetailsV2McpResult,
   decodeEventListV2,
   MAX_PAGE_SIZE,
+  MAX_PROVIDER_RESPONSE_BYTES,
   MAX_TASK_DETAILS_REQUEST_BYTES,
   MAX_TASK_DETAILS_TIMEOUT_MS,
   ReadEventsV2InputSchema,
@@ -404,6 +405,46 @@ describe('synthetic: negotiation, version conflict and registration', () => {
       ok: true,
       value: decodeEventListV2(JSON.parse(JSON.stringify(value))),
     });
+    expect(injected.readEvents).toHaveBeenCalledTimes(1);
+  });
+
+  it('refuses a deep shared diamond from the port before the deadline', async () => {
+    let reads = 0;
+    let node: object = { leaf: 1 };
+    for (let level = 0; level < 40; level += 1) {
+      const child = node;
+      const layer: { l?: object; r?: object } = {};
+      Object.defineProperty(layer, 'l', {
+        enumerable: true,
+        get() {
+          reads += 1;
+          return child;
+        },
+      });
+      Object.defineProperty(layer, 'r', {
+        enumerable: true,
+        get() {
+          reads += 1;
+          return child;
+        },
+      });
+      node = layer;
+    }
+    const injected = port({
+      readEvents: vi.fn(async () => ok({ readVersion: 2, view: 'events', junk: node } as never)),
+    });
+    const started = performance.now();
+    const result = await createTaskDetailsAdapter({ port: injected }).readEvents({
+      readVersion: 2,
+      view: 'events',
+      taskId: TASK,
+      limit: 1,
+      after: null,
+    });
+    expect(result).toEqual(createTaskDetailsRefusal('RESPONSE_LIMIT_EXCEEDED'));
+    expect(result).toMatchObject({ refusal: { retryable: false } });
+    expect(reads).toBeLessThanOrEqual(MAX_PROVIDER_RESPONSE_BYTES);
+    expect(performance.now() - started).toBeLessThan(250);
     expect(injected.readEvents).toHaveBeenCalledTimes(1);
   });
 

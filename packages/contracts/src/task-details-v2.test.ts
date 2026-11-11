@@ -885,21 +885,69 @@ describe('synthetic: keyset order, coverage flags, arrays and text', () => {
     expect(decoded).toEqual(decodeTaskListV2(JSON.parse(JSON.stringify(page))));
   });
 
-  it('accepts one array instance shared by sibling records', () => {
-    const actor = { kind: 'human' as const, id: HUMAN };
-    const shared = [
-      { ...eventRow('2026-01-01T00:00:00Z', 2), actor },
-      { ...eventRow('2026-01-01T00:00:01Z', 3), actor },
-    ];
-    const left = { events: shared };
-    const right = { events: shared };
+  it('accepts a page when the same array is also held outside it', () => {
+    const shared = [eventRow('2026-01-01T00:00:00Z', 2), eventRow('2026-01-01T00:00:01Z', 3)];
+    const outside = { events: shared };
     const page = eventPage(shared);
-    expect(left.events).toBe(right.events);
-    expect(page.events).toBe(shared);
-    expect(shared[0]?.actor).toBe(shared[1]?.actor);
+    expect(outside.events).toBe(page.events);
+    expect(shared[0]?.actor).not.toBe(shared[1]?.actor);
     const decoded = decodeEventListV2(page);
     expect(decoded).toEqual(decodeEventListV2(JSON.parse(JSON.stringify(page))));
     expect(decoded.events).toHaveLength(2);
+  });
+
+  function diamond(depth: number, reads: { count: number }): object {
+    let node: object = { leaf: 1 };
+    for (let level = 0; level < depth; level += 1) {
+      const child = node;
+      const layer: { l?: object; r?: object } = {};
+      Object.defineProperty(layer, 'l', {
+        enumerable: true,
+        get() {
+          reads.count += 1;
+          return child;
+        },
+      });
+      Object.defineProperty(layer, 'r', {
+        enumerable: true,
+        get() {
+          reads.count += 1;
+          return child;
+        },
+      });
+      node = layer;
+    }
+    return node;
+  }
+
+  it('refuses a deep shared diamond before the walk can explode', () => {
+    const reads = { count: 0 };
+    const started = performance.now();
+    expect(() =>
+      decodeEventListV2({ readVersion: 2, view: 'events', junk: diamond(40, reads) }),
+    ).toThrow(expect.objectContaining({ code: 'RESPONSE_LIMIT_EXCEEDED' }));
+    const elapsed = performance.now() - started;
+    expect(reads.count).toBeLessThanOrEqual(MAX_PROVIDER_RESPONSE_BYTES);
+    expect(elapsed).toBeLessThan(250);
+  });
+
+  it('still accepts a large in-bound page and does not treat byte size as a visit cap', () => {
+    const accepted = detail({
+      body: segment('b'.repeat(DETAIL_BODY_MAX_CHARS), DETAIL_BODY_MAX_CHARS),
+    });
+    expect(decodeTaskDetailV2(accepted).task.body.text).toHaveLength(DETAIL_BODY_MAX_CHARS);
+    const overhead = Buffer.byteLength(
+      JSON.stringify({ readVersion: 2, view: 'events', filler: '' }),
+    );
+    const raw = {
+      readVersion: 2,
+      view: 'events' as const,
+      filler: 'x'.repeat(MAX_PROVIDER_RESPONSE_BYTES - overhead),
+    };
+    expect(Buffer.byteLength(JSON.stringify(raw))).toBe(MAX_PROVIDER_RESPONSE_BYTES);
+    expect(() => decodeEventListV2(raw)).toThrow(
+      expect.objectContaining({ code: 'MALFORMED_REPRESENTATION' }),
+    );
   });
 
   it('rejects self, ancestor, object-array, and mutual cycles', () => {

@@ -87,11 +87,13 @@ No SQL is shipped. A future database-owned read would take the same finite param
 
 ## Shared references and cycles
 
-Issue #151. The decoder walks a value before schema checks. A repeated plain object is a shared reference, not a cycle, when the two uses are not nested. Sibling event records may share one actor. Sibling task records may share one principal or one text segment. One array instance may hold those sibling records. A JSON clone of the same page decodes to the same value.
+Issue #151. The decoder walks a value before schema checks. A repeated plain object is a shared reference, not a cycle, when the two uses are not nested. Sibling event records may share one actor. Sibling task records may share one principal or one text segment. An array kept only outside the decoded page does not change that page. A JSON clone of the same page decodes to the same value.
 
 A cycle is still refused. That includes a record that contains itself, a child that points at an ancestor, an object and an array that contain each other, and two records that point at each other.
 
-Red on the previous candidate: the shared-reference cases were refused. Green on this candidate: those cases are accepted and the cycle cases stay refused. The candidate head is recorded in the PR and review evidence, because this file cannot contain its own commit sha.
+The walk also counts every value it enters and stops at the provider byte bound. A kept JSON value costs at least one byte, so a page inside that bound cannot need more visits. The refusal is the same response-limit code as an oversized provider payload, and it is not retryable. Explicit undefined is still counted, so a page full of omitted values can be refused even when its JSON is small. That keeps the walk finite.
+
+Red on the previous candidate: shared references were refused, and a shared diamond of modest depth ran long enough that the visit count was not bounded. Green on this candidate: shared references are accepted, cycles stay refused, and a deep shared diamond is refused immediately. The candidate head is recorded in the PR and review evidence, because this file cannot contain its own commit sha.
 
 What ran: the repository check on Node 22 (format, lint, typecheck, build, and the test suite), markdown lint of this note, and a local leak scan with a dummy pattern. Verification is synthetic. The port is in-memory. This is not runtime acceptance, and the consumer v1 gate stays open.
 

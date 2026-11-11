@@ -608,13 +608,22 @@ function isPlainRecord(value: object): boolean {
   return prototype === Object.prototype || prototype === null;
 }
 
-function assertDecodable(value: unknown, seen: Set<object>): void {
+type TraversalBudget = { count: number };
+
+function assertDecodable(value: unknown, seen: Set<object>, budget: TraversalBudget): void {
+  // A kept JSON value costs at least one byte, so a page inside the provider
+  // bound cannot need more visits than that bound. Values JSON omits, such as
+  // explicit undefined, are still counted.
+  budget.count += 1;
+  if (budget.count > MAX_PROVIDER_RESPONSE_BYTES) {
+    throw new TaskDetailsDecodeError('RESPONSE_LIMIT_EXCEEDED');
+  }
   if (typeof value !== 'object' || value === null) return;
   if (seen.has(value)) throw new TaskDetailsDecodeError('MALFORMED_REPRESENTATION');
   seen.add(value);
   try {
     if (Array.isArray(value)) {
-      for (const item of value) assertDecodable(item, seen);
+      for (const item of value) assertDecodable(item, seen, budget);
       return;
     }
     if (!isPlainRecord(value)) throw new TaskDetailsDecodeError('MALFORMED_REPRESENTATION');
@@ -622,7 +631,7 @@ function assertDecodable(value: unknown, seen: Set<object>): void {
       throw new TaskDetailsDecodeError('MALFORMED_REPRESENTATION');
     }
     for (const key of Object.keys(value)) {
-      assertDecodable((value as Record<string, unknown>)[key], seen);
+      assertDecodable((value as Record<string, unknown>)[key], seen, budget);
     }
   } finally {
     seen.delete(value);
@@ -664,7 +673,7 @@ function decodeStrict<T>(schema: z.ZodType<T>, raw: unknown): T {
   if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) {
     throw new TaskDetailsDecodeError('MALFORMED_REPRESENTATION');
   }
-  assertDecodable(raw, new Set());
+  assertDecodable(raw, new Set(), { count: 0 });
   const readVersion = readVersionOf(raw);
   if (typeof readVersion !== 'number') {
     throw new TaskDetailsDecodeError('MALFORMED_REPRESENTATION');
