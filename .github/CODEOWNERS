@@ -3,3 +3,7 @@
 /docs/ @jryski
 /.github/ @jryski
 /SECURITY.md @jryski
+
+# ADR-0007: release approvals require review independent of their author.
+/packages/server/src/capability-release-approvals.ts @jryski
+/packages/server/src/capability-mcp-registration.ts @jryski

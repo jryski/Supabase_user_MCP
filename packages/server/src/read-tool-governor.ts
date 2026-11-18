@@ -242,6 +242,9 @@ export function createReadToolExecutor<TInput extends z.ZodTypeAny, TOutput exte
     const startedAt = stableNow(now);
     let state: ReadToolLimiterState | undefined;
     let releaseConcurrencySlot = false;
+    let operationPending = false;
+    let requestFinished = false;
+    let removeOperationAbortListener: (() => void) | undefined;
     let rowCount = 0;
     let outcome: 'success' | 'blocked' = 'blocked';
     let denialClass: ReadToolErrorCode | undefined;
@@ -306,6 +309,12 @@ export function createReadToolExecutor<TInput extends z.ZodTypeAny, TOutput exte
 
     state.active += 1;
     releaseConcurrencySlot = true;
+    const releaseSlot = () => {
+      if (releaseConcurrencySlot && state !== undefined) {
+        releaseConcurrencySlot = false;
+        releaseConcurrency(state);
+      }
+    };
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), descriptor.limits.maxExecutionMs);
     const onCallerAbort = () => {
@@ -317,7 +326,44 @@ export function createReadToolExecutor<TInput extends z.ZodTypeAny, TOutput exte
     }
 
     try {
-      const result = await execute(input.data, controller.signal);
+      // A cancelled caller must never start a new operation (including a
+      // storage write). Race the entire provider: AbortSignal cooperation is
+      // insufficient when a dependency stalls or returns a late success.
+      controller.signal.throwIfAborted();
+      const aborted = new Promise<{ readonly kind: 'aborted' }>((resolve) => {
+        const onAbort = () => resolve({ kind: 'aborted' });
+        controller.signal.addEventListener('abort', onAbort, { once: true });
+        removeOperationAbortListener = () =>
+          controller.signal.removeEventListener('abort', onAbort);
+        if (controller.signal.aborted) onAbort();
+      });
+      operationPending = true;
+      const operation = Promise.resolve()
+        .then(() => {
+          controller.signal.throwIfAborted();
+          return execute(input.data, controller.signal);
+        })
+        .then(
+          (result) => {
+            operationPending = false;
+            if (requestFinished) releaseSlot();
+            return { kind: 'result' as const, result };
+          },
+          (error: unknown) => {
+            operationPending = false;
+            if (requestFinished) releaseSlot();
+            // Convert late rejection to an observed outcome, never an
+            // unhandled promise after the public deadline response.
+            return { kind: 'error' as const, error };
+          },
+        );
+      const settled = await Promise.race([operation, aborted]);
+      if (settled.kind === 'aborted' || controller.signal.aborted) {
+        denialClass = descriptor.errorMapping.timeout;
+        return createReadToolError(denialClass) as z.infer<TOutput>;
+      }
+      if (settled.kind === 'error') throw settled.error;
+      const result = settled.result;
       const parsedResult = descriptor.outputSchema.safeParse(result);
       if (!parsedResult.success) {
         denialClass = descriptor.errorMapping.unexpected;
@@ -350,6 +396,7 @@ export function createReadToolExecutor<TInput extends z.ZodTypeAny, TOutput exte
         return createReadToolError(denialClass) as z.infer<TOutput>;
       }
 
+      controller.signal.throwIfAborted();
       outcome = 'success';
       return parsedResult.data;
     } catch (error) {
@@ -365,11 +412,13 @@ export function createReadToolExecutor<TInput extends z.ZodTypeAny, TOutput exte
       }
       return createReadToolError(denialClass) as z.infer<TOutput>;
     } finally {
+      requestFinished = true;
       clearTimeout(timeout);
       context.signal?.removeEventListener('abort', onCallerAbort);
-      if (releaseConcurrencySlot) {
-        releaseConcurrency(state);
-      }
+      removeOperationAbortListener?.();
+      // An ignored abort still consumes a slot until the actual provider
+      // settles. Returning early must not allow unlimited background work.
+      if (!operationPending) releaseSlot();
       emit();
     }
   };

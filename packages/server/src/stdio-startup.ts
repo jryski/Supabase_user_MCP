@@ -16,6 +16,7 @@ import { createReadOnlyServer, type ReadOnlyServer, type ReadOnlyServerOptions }
 export const STDIO_STARTUP_ERROR = 'STDIO_STARTUP_INVALID_CONFIGURATION';
 export const SUPABASE_ORIGIN_ENV = 'SUPABASE_USER_MCP_ORIGIN';
 export const CREDENTIAL_FILE_ENV = 'SUPABASE_USER_MCP_CREDENTIAL_FILE';
+export const RPC_SCHEMA_ENV = 'SUPABASE_USER_MCP_RPC_SCHEMA';
 export const STDIO_STARTUP_FAILURE_MESSAGE = 'Supabase User MCP failed to start.';
 export const STDIO_TRANSPORT_FAILURE_MESSAGE = 'Supabase User MCP stdio transport failed.';
 export const STDIO_SHUTDOWN_FAILURE_MESSAGE = 'Supabase User MCP failed to close cleanly.';
@@ -144,6 +145,7 @@ export async function startReadOnlyStdioFromEnvironment(
   const env = options.env ?? process.env;
   const origin = env[SUPABASE_ORIGIN_ENV];
   const credentialFile = env[CREDENTIAL_FILE_ENV];
+  const rpcSchema = env[RPC_SCHEMA_ENV];
   if (
     typeof origin !== 'string' ||
     origin.trim().length === 0 ||
@@ -155,7 +157,11 @@ export async function startReadOnlyStdioFromEnvironment(
 
   const dependencies = options.dependencies ?? defaultDependencies;
   const credentials = await dependencies.loadCredentials(credentialFile);
-  const client = dependencies.createClient({ origin, credentials });
+  const client = dependencies.createClient({
+    origin,
+    credentials,
+    ...(rpcSchema === undefined ? {} : { rpcSchema }),
+  });
   const server = await dependencies.createServer({ client });
   try {
     const stdioOptions: ServeStdioOptions = {

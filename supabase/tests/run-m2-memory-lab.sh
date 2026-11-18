@@ -105,6 +105,9 @@ npx tsx test/support/check-m2-postgrest-surface.ts \
 log "Running MCP client -> fixed Data API -> SECURITY INVOKER RPC -> PostgreSQL RLS and complete-frame tests."
 npx vitest run packages/server/src/m2-local-e2e.test.ts packages/server/src/read-only-server.test.ts
 
+log "Running user-scoped storage client -> PostgREST seam + Storage API -> RLS tests."
+npx vitest run packages/server/src/m2-storage-e2e.test.ts
+
 log "Checking malformed bearer fails before any governed record is returned."
 # Deliberately malformed synthetic bearer value; kept in a variable so secret
 # scanners do not treat the test literal as a credential.
@@ -127,7 +130,7 @@ SUPABASE_VERSION="$(supabase --version)"
   || fail "repository tree changed during acceptance"
 [[ -z "$(git status --porcelain --untracked-files=all)" ]] \
   || fail "acceptance worktree changed during execution"
-printf '{"schema":"supabase-user-mcp.m2-acceptance.v1","repositorySha":"%s","treeSha":"%s","baseSha":%s,"node":"%s","npm":"%s","supabase":"%s","cases":["db-rls-matrix","rpc-acl-census","official-auth-js-sign-in","postgrest-openapi-surface-census","auth-user-verification","principal-positive","principal-limiter-scope","cross-principal-denial","revoked-client-denial","missing-client-denial","expired-credential-denial","malformed-credential-file-denial","hostile-content-boundary","complete-frame-budget","malformed-bearer-denial"],"result":"pass"}\n' \
+printf '{"schema":"supabase-user-mcp.m2-acceptance.v1","repositorySha":"%s","treeSha":"%s","baseSha":%s,"node":"%s","npm":"%s","supabase":"%s","cases":["db-rls-matrix","rpc-acl-census","official-auth-js-sign-in","postgrest-openapi-surface-census","auth-user-verification","principal-positive","principal-limiter-scope","cross-principal-denial","revoked-client-denial","missing-client-denial","expired-credential-denial","malformed-credential-file-denial","hostile-content-boundary","complete-frame-budget","storage-session-rpc-seam","storage-object-round-trip","storage-cross-principal-denial","malformed-bearer-denial"],"result":"pass"}\n' \
   "$HEAD_SHA" "$TREE_SHA" "$BASE_JSON" "$NODE_VERSION" "$NPM_VERSION" "$SUPABASE_VERSION" \
   > "$TMP_DIR/m2-acceptance-receipt.json"
 cat "$TMP_DIR/m2-acceptance-receipt.json"

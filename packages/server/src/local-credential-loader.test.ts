@@ -1,6 +1,6 @@
-import { mkdtemp, symlink, writeFile } from 'node:fs/promises';
+import { mkdtemp, rename, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import {
   LocalCredentialError,
@@ -289,5 +289,33 @@ describe('loadLocalCredentials', () => {
     expect(inspected).toHaveLength(1);
     expect(inspected[0]?.mode).toBeTypeOf('number');
     expect(inspected[0]?.ownerUid).toBeTypeOf('number');
+  });
+
+  it('refuses a leaf changed to a symlink during trusted permission inspection', async () => {
+    const target = await fixture();
+    const parked = join(dirname(target), 'parked.json');
+    const error = await loadLocalCredentials(target, {
+      permissionInspector: async () => {
+        await rename(target, parked);
+        await symlink(parked, target);
+        return 'secure' as const;
+      },
+    }).catch((caught: unknown) => caught);
+    expectSecretFree(error);
+    expect((error as LocalCredentialError).code).toBe('CREDENTIAL_SYMLINK');
+  });
+
+  it('refuses a different file at the inspected path instead of reading its already-open predecessor', async () => {
+    const target = await fixture();
+    const parked = join(dirname(target), 'parked.json');
+    const error = await loadLocalCredentials(target, {
+      permissionInspector: async () => {
+        await rename(target, parked);
+        await writeFile(target, validBody, { mode: 0o600 });
+        return 'secure' as const;
+      },
+    }).catch((caught: unknown) => caught);
+    expectSecretFree(error);
+    expect((error as LocalCredentialError).code).toBe('CREDENTIAL_READ_FAILED');
   });
 });

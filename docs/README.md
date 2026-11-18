@@ -8,6 +8,7 @@ must satisfy.
 
 | Document | Question answered |
 | --- | --- |
+| [Multi-user integration handoff](INTEGRATION_HANDOFF.md) | Which branch, PRs and source files should maintainers integrate? |
 | [Product definition](PRODUCT.md) | Who is this for, and what problem is in scope? |
 | [Architecture](ARCHITECTURE.md) | What are the components and trust boundaries? |
 | [Feature catalog](FEATURES.md) | Which tools and platform capabilities are planned? |
