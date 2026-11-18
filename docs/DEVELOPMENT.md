@@ -21,12 +21,12 @@ fixtures must be synthetic.
 | Node.js | `22.20.0` | Pinned runtime |
 | npm | `11.19.0` | Pinned package manager |
 | TypeScript | `7.0.2` | Strict compiler and project references |
-| MCP server SDK | `@modelcontextprotocol/server@2.0.0` | Modern stdio server |
-| MCP client SDK | `@modelcontextprotocol/client@2.0.0` | Compatibility harness |
+| MCP server SDK | `@modelcontextprotocol/server@2.4.0` | Modern stdio server |
+| MCP client SDK | `@modelcontextprotocol/client@2.4.0` | Compatibility harness |
 | Supabase Auth client | `@supabase/auth-js@2.112.4` | Synthetic M2 sign-in only |
 | Supabase CLI | `2.115.0` | Synthetic local Auth/PostgREST/RLS lifecycle |
-| Zod | `4.4.3` | Runtime input/output contracts |
-| Vitest | `4.1.10` | Unit and stdio compatibility tests |
+| Zod | `4.6.7` | Runtime input/output contracts |
+| Vitest | `4.1.12` | Unit and stdio compatibility tests |
 | Biome | `2.5.8` | Formatting and linting |
 
 The root workspace and runtime dependencies use exact versions; `package-lock.json` is committed.
@@ -94,8 +94,9 @@ data remain unsupported.
 - Production and development configuration use the same schema.
 - The Supabase origin is operator-configured, normalized, HTTPS-only outside local
   development, and never overridable by a tool call.
-- Credentials are loaded from protected environment or platform secret storage, never
-  command arguments, URLs, committed files, or example values that resemble real tokens.
+- Local stdio reads credentials from an owner-only file. The environment supplies the
+  project origin and file path. Keep credentials out of command arguments, URLs,
+  committed files, and examples.
 - `service_role`, secret keys, PATs, and direct database-owner credentials are rejected in
   the public tool execution profile.
 - Safe global ceilings exist for query length, filters, rows, bytes, duration, rate,
