@@ -1,7 +1,7 @@
 # Evidence Index
 
 - **Status:** Active index of merged evidence and unmerged candidates
-- **Last reviewed:** 2026-09-04
+- **Last reviewed:** 2026-09-13
 
 This index maps public claims to exact artifacts. A commit in the merged table means the
 named artifact is present on `main`; it does not prove a larger milestone or deployment.
@@ -36,8 +36,9 @@ Draft candidates are listed separately and must not be described as merged or ac
 
 ## Unmerged candidate evidence
 
-There is no unmerged candidate at this documentation coordinate. S5a is merged only for the
-synthetic/local exact-search and acknowledged receipt-journal boundary recorded above.
+| Scope | Evidence | Executable seam | State |
+| --- | --- | --- | --- |
+| Isolated deployment control plane | [Issue #70 evidence](ISSUE_70_CONTROL_PLANE.md) | `control-plane-tools.test.ts`, `control-plane-client.test.ts`, and `control-plane-server.test.ts` | Synthetic checks pass; live database and exact-head review incomplete |
 
 Live S5 operational adoption remains gated on an approved caller-context Storage adapter and
 durable evidence backend. S6 semantic summaries have not started.

@@ -138,6 +138,18 @@ Acceptance highlights:
 - Cursors cannot change tenant, principal, filters, or sort direction.
 - Insertions between pages do not create unbounded duplication or omission.
 
+## Adjacent deployment control-plane trial
+
+Issue #70 adds a separate privileged server profile for two deployment coordination operations:
+
+- `create_work_item`, backed only by `planning.create_work_item`;
+- `post_model_message`, backed only by `public.post_model_message`.
+
+This trial is not part of the accepted M2 user-context server or the M3 canonical-memory write
+model. It does not add tools to the production read-only CLI. Its contracts, fixed RPC paths, and
+registration are documented in [the minimum control-plane API](CONTROL_PLANE_API.md) and
+[ADR-0006](decisions/0006-isolated-deployment-control-plane.md).
+
 ### `memory_append_observation`
 
 - **Milestone:** M3
