@@ -1,34 +1,28 @@
 # Multi-user MCP integration handoff
 
-Updated November 6, 2026. This is the maintainer entrypoint for the reusable
-multi-user implementation.
+Use [PR #149](https://github.com/jryski/Supabase_user_MCP/pull/149) for the
+integrated native candidate. The local stdio profile on `main` remains the
+alpha release baseline.
 
-## Checkout coordinate
-
-| Coordinate | Value |
-| --- | --- |
-| Canonical repository | [jryski/Supabase_user_MCP](https://github.com/jryski/Supabase_user_MCP) |
-| Integration PR | [#147](https://github.com/jryski/Supabase_user_MCP/pull/147) |
-| Integration branch | `codex/multiuser-completion-20261104` |
-| Stacked base | `grok/mcp-native-first`, [#139](https://github.com/jryski/Supabase_user_MCP/pull/139), baseline `3b7cf86685836227f5ede9e31ed4c85aa85ecb53` |
-| Previously qualified implementation | `4459c635374da7350b6fe70e896ea243e259fd89`, tree `33664db99cb1b65446a24d1b06c7fb8928323920` |
-| Fork mirror | [Balance-EQ integration branch](https://github.com/Balance-EQ/Supabase_user_MCP/tree/codex/multiuser-completion-20261104) |
-
-Use PR #147's current head for integration. The previously qualified SHA above
-is the immutable evidence coordinate, not a request to discard newer commits.
-The fork branch is a delivery mirror; contribute to the canonical PR to avoid
-splitting the implementation across repositories.
+## Checkout
 
 ```sh
 git remote add mcp-upstream https://github.com/jryski/Supabase_user_MCP.git
-git fetch mcp-upstream codex/multiuser-completion-20261104
-git switch --create mcp-multiuser --track mcp-upstream/codex/multiuser-completion-20261104
+git fetch mcp-upstream codex/mcp-release-candidate-20261107
+git switch --create mcp-multiuser-review --track mcp-upstream/codex/mcp-release-candidate-20261107
 git rev-parse HEAD
 ```
 
-If the remote or local branch already exists, reuse it. Fetch and inspect the
-current PR head before applying changes; do not force-push over maintainer work.
-Checking out `main` alone does not include this stacked implementation.
+Reuse the upstream remote if already configured. Compare the checkout SHA to
+PR #149 before testing. Pin an immutable revision when citing test results.
+
+PRs [#139](https://github.com/jryski/Supabase_user_MCP/pull/139) and
+[#147](https://github.com/jryski/Supabase_user_MCP/pull/147) are earlier
+implementations in the integration branch's history. The
+[compatibility review](https://github.com/jryski/Supabase_user_MCP/pull/136#issuecomment-6451572362),
+[changes requested](https://github.com/jryski/Supabase_user_MCP/pull/139#pullrequestreview-5674027521),
+and [consumer follow-up](https://github.com/jryski/Supabase_user_MCP/pull/139#issuecomment-6472688057)
+remain review inputs for the current candidate.
 
 ## What to integrate
 
@@ -40,31 +34,26 @@ Checking out `main` alone does not include this stacked implementation.
 | Native application composition and handler | [native composition](../packages/server/src/native-user-mcp.ts), [handler](../packages/server/src/native-user-mcp-read-handler.ts), [composition guide](MULTI_USER_APPLICATION_COMPOSITION.md) |
 | Host-mounted own-account consent | [GET/POST handler](../packages/server/src/hosted-oauth-consent.ts), [host contract](HOSTED_OAUTH_CONSENT.md) |
 | Isolation and transport evidence | [application integration tests](../packages/server/src/native-user-mcp-application.integration.test.ts), [evidence](evidence/MULTI_USER_APPLICATION_2026_11_04.md) |
-| Native-first storage foundation | Base PR #139 and [its branch](https://github.com/jryski/Supabase_user_MCP/tree/grok/mcp-native-first) |
+| Native-first storage foundation | [PR #139 history](https://github.com/jryski/Supabase_user_MCP/pull/139) |
 
-PR #126 supplied the design contract implemented in #147. PR #135 is the
-separate ADR0008 client-binding lane; it is not the application-registry PR.
-Review #139 before merging this stacked change or deliberately retarget it after
-that base merges. This handoff does not change the base or approve either PR.
+PR #126 supplied the capability registry design. PR #135 holds the separate
+client-bound RLS decision. Evaluate optional task details v2 in PR #150 as a
+separate unregistered adapter.
 
-## Security dependency relationship
+## Verification
 
-[PR #148](https://github.com/jryski/Supabase_user_MCP/pull/148) merged into
-`main` as `585f5464ec9c498857a928fce16f9b66b2f3817b`.
-The #147 implementation already pinned MCP SDK 2.4.0 and Zod 4.6.7.
-This handoff commit carries the remaining #148 root toolchain and lockfile delta
-(Vitest 4.1.12, Vite 8.2.4 and source-map-js 1.2.2) into the integration branch,
-preserving its native-first dependencies. It is a dependency backport, not a
-merge of all other `main` changes.
+Revision `4ab54df026fcbdc8f64190e5587952b7e0a39069` passed
+[Linux Build and M2](https://github.com/jryski/Supabase_user_MCP/actions/runs/42401052924),
+[documentation](https://github.com/jryski/Supabase_user_MCP/actions/runs/42401053018), and
+[trusted LEAK-01](https://github.com/jryski/Supabase_user_MCP/actions/runs/42401051009).
+The build reported 1,526 passed tests and six skips. The source includes
+the dependency updates from PR #148, fixed-schema UUID memory support, and the
+opt-in [SQLite consent challenge store](SQLITE_HOSTED_CONSENT_STORE.md).
 
-## Verification and deployment boundary
+The November 4 evidence and qualification at `4459c635` document an earlier
+integration. Review the current PR head and its checks before adoption.
 
-The previous implementation head `4459c635` passed the recorded Windows
-check/build/typecheck/format checks (1457 tests, six skipped), Linux CI and
-documentation workflows. Its Linux local-stack M2 receipt reports 18 synthetic
-acceptance cases. See the evidence document and PR for immutable run links.
-Those results belong to that head. The new handoff/dependency commit uses its
-own GitHub checks; check their status on PR #147 before merging.
+## Deployment boundary
 
 The shipped application approval list is empty. Default/read-only entrypoints
 remain bounded. Descriptor approval, a host's actual consent mounting and

@@ -26,7 +26,7 @@ fixtures must be synthetic.
 | Supabase Auth client | `@supabase/auth-js@2.112.4` | Synthetic M2 sign-in only |
 | Supabase CLI | `2.115.0` | Synthetic local Auth/PostgREST/RLS lifecycle |
 | Zod | `4.6.7` | Runtime input/output contracts |
-| Vitest | `4.1.10` | Unit and stdio compatibility tests |
+| Vitest | `4.1.12` | Unit and stdio compatibility tests |
 | Biome | `2.5.8` | Formatting and linting |
 
 The root workspace and runtime dependencies use exact versions; `package-lock.json` is committed.

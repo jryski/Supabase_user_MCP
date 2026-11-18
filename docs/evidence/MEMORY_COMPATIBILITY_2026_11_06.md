@@ -1,7 +1,14 @@
 # Memory identifier and fixed-schema compatibility candidate
 
-Status: local, synthetic, uncommitted preparation. No upstream claim, independent
-review, merge, deployment or credential/permission change is asserted.
+Historical local synthetic evidence for the predecessor of
+[PR #149](https://github.com/jryski/Supabase_user_MCP/pull/149). The predecessor
+below wired schema selection only in stdio. PR #149 extends the fixed schema
+and UUID compatibility to native and remote pilot entrypoints. Revision
+`4ab54df026fcbdc8f64190e5587952b7e0a39069` passed the
+[pinned Linux Build and M2 checks](https://github.com/jryski/Supabase_user_MCP/actions/runs/42401052924)
+and [trusted LEAK-01](https://github.com/jryski/Supabase_user_MCP/actions/runs/42401051009).
+See the [integration handoff](../INTEGRATION_HANDOFF.md) for current source and
+remaining hosted acceptance.
 
 ## Source and purpose
 
