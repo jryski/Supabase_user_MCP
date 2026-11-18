@@ -51,7 +51,7 @@
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | School-menu import and correction with readback | no | Not specified | none in this repository | Needs a conflict rule for corrections | none | remaining; needs a contract before code | delivery lead |
 | Intended household tool catalog | no | Not specified | Lives in a separate household repository | n/a | none | remaining; reconcile against this matrix | delivery lead |
-| User-scoped Storage (list, get, put, delete) | no | Storage path, size and MIME bounds merged in contracts | Not on this branch; list and get are in a separate draft | Put and delete conflict rules not yet specified | none | remaining | typed tool implementation |
+| User-scoped Storage (list, get, put, delete) | opt-in read pilot | Fixed path, size, MIME, request and response bounds | Two fixed API wrappers for caller-scoped list and get | The native pilot exposes read-only Storage; writes remain separately gated | Synthetic pilot and local PostgREST/Storage checks | Hosted OAuth-issued client binding and real-client acceptance remain | typed tool implementation |
 | Integrated release with rollback instructions | n/a | n/a | n/a | n/a | none | remaining | delivery lead |
 
 ## What this branch changes
