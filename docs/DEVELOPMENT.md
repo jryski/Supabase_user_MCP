@@ -14,6 +14,16 @@ identity and database boundaries.
 No command in this guide should be run against a production Supabase project. Development
 fixtures must be synthetic.
 
+## Native-first candidate work
+
+Follow the [native-first integration and compatibility record](NATIVE_FIRST.md) before
+adding OAuth/discovery or transport code. The existing remote source candidate already
+uses native Supabase helpers in the server workspace. Reuse that seam, exact pins and
+upstream consent components rather than creating a second server or sign-in system.
+Configure SDK request-body and tool-element limits and retain application-level identity,
+capability, error, deadline and response bounds. The candidate upgrade versions are not
+the merged M0 lockfile or proof of hosted acceptance.
+
 ## Pinned M0 stack
 
 | Component | Version | Role |

@@ -18,7 +18,12 @@ is early enough that careful disagreement is more valuable than volume.
 
 ## Active implementation plan
 
-The current contributor execution map is [the v0.1 read-only implementation plan](docs/IMPLEMENTATION_PLAN.md), tracked by [epic #19](https://github.com/jryski/Supabase_user_MCP/issues/19).
+The current direction is [native-first integration](docs/NATIVE_FIRST.md), with remaining
+storage work in [issue #123](https://github.com/jryski/Supabase_user_MCP/issues/123) and
+application writes in [epic #111](https://github.com/jryski/Supabase_user_MCP/issues/111).
+The [v0.1 read-only implementation plan](docs/IMPLEMENTATION_PLAN.md) and closed epic #19
+remain completion history, not the next implementation queue. Check existing claims
+before starting duplicate framework or domain work.
 
 To take a work package:
 

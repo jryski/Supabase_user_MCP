@@ -18,6 +18,14 @@ The [`v0.1.0-alpha.1` release candidate](docs/releases/v0.1.0-alpha.1.md) packag
 accepted local principal-bound read path. Remote HTTP and Supabase OAuth 2.1 remain a separately
 gated next profile under [issue #60](https://github.com/jryski/Supabase_user_MCP/issues/60).
 
+## Native-first integration direction
+
+The project is refocusing on Supabase's maintained application-MCP, authentication and
+consent components, while retaining bounded domain tools and database authorization.
+The [native-first plan and evidence](docs/NATIVE_FIRST.md) distinguishes the tested
+upgrade candidate from `main`, unresolved credential-boundary decisions and the
+remaining storage/write work. This is not a new supported deployment profile.
+
 ## Start here
 
 Read the [getting-started guide](docs/GETTING_STARTED.md) for prerequisites,
