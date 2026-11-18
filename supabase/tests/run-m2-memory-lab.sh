@@ -27,25 +27,19 @@ if [[ -n "$BASE_SHA" ]]; then
   BASE_JSON="\"${BASE_SHA}\""
 fi
 
-TMP_DIR="$(mktemp -d /tmp/supabase-user-mcp-m2.XXXXXX)"
+LC_TAG="m2-memory"
 NETWORK_NAME="${M2_DOCKER_NETWORK:-supabase-user-mcp-m2-loopback}"
-NETWORK_BINDING_OPTION="com.docker.network.bridge.host_binding_ipv4"
+# shellcheck source=lib/lifecycle.sh
+source "$PROJECT_ROOT/supabase/tests/lib/lifecycle.sh"
+lc_require_tools git docker supabase node npm npx curl
+lc_read_project_id
 
-cleanup() {
-  supabase stop --workdir "$PROJECT_ROOT" --no-backup >/dev/null 2>&1 || true
-  rm -rf "$TMP_DIR"
-}
-trap cleanup EXIT
+TMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/supabase-user-mcp-m2.XXXXXX")"
+trap lc_cleanup EXIT
 
-if docker network inspect "$NETWORK_NAME" >/dev/null 2>&1; then
-  binding="$(docker network inspect --format "{{ index .Options \"${NETWORK_BINDING_OPTION}\" }}" "$NETWORK_NAME")"
-  [[ "$binding" == "127.0.0.1" ]] || fail "existing Docker network is not loopback-only"
-else
-  docker network create --driver bridge \
-    --opt "${NETWORK_BINDING_OPTION}=127.0.0.1" "$NETWORK_NAME" >/dev/null
-fi
+lc_guard_project_collision
+lc_prepare_network
 
-supabase stop --workdir "$PROJECT_ROOT" --no-backup >/dev/null 2>&1 || true
 log "Starting pinned synthetic Supabase lifecycle."
 supabase start \
   --workdir "$PROJECT_ROOT" \

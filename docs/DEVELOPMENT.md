@@ -25,6 +25,7 @@ fixtures must be synthetic.
 | MCP client SDK | `@modelcontextprotocol/client@2.0.0` | Compatibility harness |
 | Supabase Auth client | `@supabase/auth-js@2.112.4` | Synthetic M2 sign-in only |
 | Supabase CLI | `2.115.0` | Synthetic local Auth/PostgREST/RLS lifecycle |
+| Docker, Bash, Git, curl | Host tools | Local stack, harness scripts, clean-checkout checks, HTTP denial probes |
 | Zod | `4.4.3` | Runtime input/output contracts |
 | Vitest | `4.1.10` | Unit and stdio compatibility tests |
 | Biome | `2.5.8` | Formatting and linting |
