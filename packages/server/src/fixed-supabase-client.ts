@@ -1,4 +1,5 @@
 import type { LocalCredentials } from './local-credential-loader.js';
+import { isPublishableProjectKey, isSecretProjectKey } from './publishable-key.js';
 import {
   MemoryGetInputSchema,
   type MemoryGetInput,
@@ -33,6 +34,8 @@ export type FixedMemoryRecordField = (typeof ALLOWED_MEMORY_ROW_FIELDS)[number];
 
 export type FixedSupabaseClientErrorCode =
   | 'FIXED_CLIENT_INVALID_CREDENTIAL'
+  | 'FIXED_CLIENT_SECRET_KEY'
+  | 'FIXED_CLIENT_KEY_NOT_PUBLISHABLE'
   | 'FIXED_CLIENT_INVALID_REQUEST'
   | 'FIXED_CLIENT_INVALID_CURSOR'
   | 'FIXED_CLIENT_TIMEOUT'
@@ -288,14 +291,16 @@ export function createFixedSupabaseClient(
   }
   const key = config.credentials.projectPublishableKey?.trim();
   const token = config.credentials.userAccessToken?.trim();
-  if (
-    !key ||
-    !token ||
-    key === token ||
-    key.split('.').length === 3 ||
-    token.split('.').length !== 3
-  ) {
+  if (!key || !token) invalid();
+  // Only an `sb_publishable_` key may fill the key slot. A secret key (any
+  // letter case) and a JWT-shaped key keep their specific codes; every other
+  // shape is refused as not publishable. No code ever echoes the key.
+  if (isSecretProjectKey(key)) throw new FixedSupabaseClientError('FIXED_CLIENT_SECRET_KEY');
+  if (key === token || key.split('.').length === 3 || token.split('.').length !== 3) {
     invalid();
+  }
+  if (!isPublishableProjectKey(key)) {
+    throw new FixedSupabaseClientError('FIXED_CLIENT_KEY_NOT_PUBLISHABLE');
   }
   const timeoutMs = config.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const maxResponseBytes = config.maxResponseBytes ?? DEFAULT_MAX_RESPONSE_BYTES;
