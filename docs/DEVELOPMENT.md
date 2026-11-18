@@ -94,8 +94,9 @@ data remain unsupported.
 - Production and development configuration use the same schema.
 - The Supabase origin is operator-configured, normalized, HTTPS-only outside local
   development, and never overridable by a tool call.
-- Credentials are loaded from protected environment or platform secret storage, never
-  command arguments, URLs, committed files, or example values that resemble real tokens.
+- Local stdio reads credentials from an owner-only file. The environment supplies the
+  project origin and file path. Keep credentials out of command arguments, URLs,
+  committed files, and examples.
 - `service_role`, secret keys, PATs, and direct database-owner credentials are rejected in
   the public tool execution profile.
 - Safe global ceilings exist for query length, filters, rows, bytes, duration, rate,
