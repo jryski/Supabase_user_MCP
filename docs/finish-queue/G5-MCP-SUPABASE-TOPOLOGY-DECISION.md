@@ -146,7 +146,7 @@ PR #79 / `LAB_DUAL_GRANT_R2.md` keeps ordinary remote fail-closed (`403 downstre
 
 ## Decision
 
-**NO**
+The recorded decision is **NO**.
 
 **Violated MUST (exact):**
 

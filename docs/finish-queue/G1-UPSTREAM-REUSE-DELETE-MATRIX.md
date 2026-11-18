@@ -5,7 +5,7 @@
 | Packet | Finish-queue G1 (upstream reuse/delete matrix) |
 | Writer | Research and documentation contributor |
 | Owner | Project maintainers |
-| Subject PR | https://github.com/jryski/Supabase_user_MCP/pull/79 |
+| Subject PR | <https://github.com/jryski/Supabase_user_MCP/pull/79> |
 | Exact head | `80ea3ead7e7daff04d1c86302ec5a5d6c4617d9e` |
 | Tree | `ba8c3a230dea7286184362235b1dcc315d7d3398` |
 | Repo | `jryski/Supabase_user_MCP` (Apache-2.0) |
@@ -19,10 +19,10 @@
 | `@supabase/server` | `^1.6.0` (docs examples); published `1.7.0` docs at unpkg (`docs/mcp.md`) | MIT |
 | `@supabase/middleware` | `^0.5.0` (pipeline composition in MCP docs) | MIT (package family) |
 | Supabase Auth OAuth 2.1 | Project Auth issuer `https://<ref>.supabase.co/auth/v1` | Hosted product (GoTrue) |
-| Docs: MCP Authentication | https://supabase.com/docs/guides/auth/oauth-server/mcp-authentication | Docs |
-| Docs: OAuth 2.1 flows | https://supabase.com/docs/guides/auth/oauth-server/oauth-flows | Docs |
-| Docs: Getting started | https://supabase.com/docs/guides/auth/oauth-server/getting-started | Docs |
-| Docs: `withOAuthProtectedResource` | https://supabase.com/docs/reference/server/middleware-withoauthprotectedresource | Docs |
+| Docs: MCP Authentication | <https://supabase.com/docs/guides/auth/oauth-server/mcp-authentication> | Docs |
+| Docs: OAuth 2.1 flows | <https://supabase.com/docs/guides/auth/oauth-server/oauth-flows> | Docs |
+| Docs: Getting started | <https://supabase.com/docs/guides/auth/oauth-server/getting-started> | Docs |
+| Docs: `withOAuthProtectedResource` | <https://supabase.com/docs/reference/server/middleware-withoauthprotectedresource> | Docs |
 | MCP SDK used by #79 | `@modelcontextprotocol/server@2.0.0`, `jose@6.2.9` | Apache-2.0 / MIT |
 
 ### Upstream authenticated BYO-MCP shape (official)
